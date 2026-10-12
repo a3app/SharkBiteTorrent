@@ -43,6 +43,12 @@
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
   }
 
+  // Frames are drawn off-screen and copied onto the visible canvas in one
+  // step. Resizing a canvas clears it, so the visible one is only resized
+  // when the panel's size changes; resizing it on every redraw made the bar
+  // flash blank once a second.
+  const off = document.createElement('canvas')
+
   // Each pixel column covers a slice of pieces. A column is drawn in the
   // "most interesting" state present (checking > downloading), otherwise
   // shaded by the share of its pieces that are done.
@@ -53,11 +59,25 @@
     if (!cv || w === 0) return
     const dpr = window.devicePixelRatio || 1
     const h = 18
-    cv.width = Math.round(w * dpr)
-    cv.height = Math.round(h * dpr)
-    const ctx = cv.getContext('2d')!
+    const pw = Math.round(w * dpr), ph = Math.round(h * dpr)
+    if (off.width !== pw || off.height !== ph) {
+      off.width = pw
+      off.height = ph
+    }
+    const ctx = off.getContext('2d')!
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    ctx.clearRect(0, 0, w, h)
+    ctx.globalAlpha = 1
+    draw(ctx, p, w, h)
+
+    if (cv.width !== pw || cv.height !== ph) {
+      cv.width = pw
+      cv.height = ph
+    }
+    const vis = cv.getContext('2d')!
+    vis.drawImage(off, 0, 0)
+  })
+
+  function draw(ctx: CanvasRenderingContext2D, p: Uint8Array, w: number, h: number) {
     const missing = color('--border')
     const done = color('--accent')
     const partial = color('--piece-partial')
@@ -96,7 +116,7 @@
       ctx.fillRect(x * colW, 0, Math.ceil(colW), h)
     }
     ctx.globalAlpha = 1
-  })
+  }
 
   const legend = $derived([
     { label: 'Done', n: counts[1], cls: 'done' },
