@@ -116,7 +116,7 @@ We checked this with the OS's own socket list: while downloading, the app's **on
 
 - **WARP can't forward ports**, so peers can't connect to you and seeding is limited. Use PIA, or a provider with port forwarding via `.conf` import.
 - **WARP isn't anonymous**: it hides your IP from peers, not your identity from Cloudflare.
-- **TCP peers only**: no uTP yet.
+- **TCP peers only (no uTP), by choice**: the only uTP library that can run inside the tunnel is an older, slower pure-Go one. TCP already reaches 35–40 MB/s through WARP, so it isn't worth the CPU cost and complexity.
 - **macOS:** no tray icon yet (the tray library and Wails both need the main thread), and the app is unsigned.
 - **Linux and macOS** builds are new and much less tested than Windows.
 - VPN sign-in follows each provider's official flow and is tested against their real server lists, but not yet with real paid accounts for every provider. Please report problems.
