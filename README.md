@@ -274,4 +274,17 @@ Downloads default to `Downloads/Torrents` in your home folder.
 
 Built on [wireguard-go](https://git.zx2c4.com/wireguard-go/) and [gVisor](https://gvisor.dev/) netstack, [anacrolix/torrent](https://github.com/anacrolix/torrent), [wgcf](https://github.com/ViRb3/wgcf), [Wails](https://wails.io/), [Svelte](https://svelte.dev/), [fyne.io/systray](https://github.com/fyne-io/systray) and [go-keyring](https://github.com/zalando/go-keyring). The PIA certificate and connection flow come from PIA's [manual-connections](https://github.com/pia-foss/manual-connections) scripts.
 
+## License
+
+Shark BiteTorrent is free software, licensed under the **[GNU General Public License v3.0 or later](LICENSE)**.
+
+You can use, study, share and modify it. If you distribute a modified version, you must make its source available under the same license, so forks stay open (no closed-source or adware repackaging).
+
+It includes third-party libraries under MIT, BSD, ISC, Apache-2.0 and MPL-2.0 licenses, all compatible with the GPL. Their notices are in [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt), which also ships with every release. To regenerate it after changing dependencies, use [`go-licenses`](https://github.com/google/go-licenses):
+
+```sh
+go install github.com/google/go-licenses/v2@latest
+go-licenses report .   # lists every Go dependency and its license
+```
+
 Please use Shark BiteTorrent only for content you have the right to download and share.

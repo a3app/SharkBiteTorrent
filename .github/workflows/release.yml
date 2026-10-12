@@ -75,7 +75,7 @@ jobs:
           v=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)
           name="SharkBiteTorrent-${v}-linux-x86_64"
           mkdir -p "dist/$name"
-          cp build/bin/SharkBiteTorrent packaging/linux/sharkbitetorrent.desktop "dist/$name/"
+          cp build/bin/SharkBiteTorrent packaging/linux/sharkbitetorrent.desktop LICENSE THIRD_PARTY_LICENSES.txt "dist/$name/"
           cp build/appicon.png "dist/$name/sharkbitetorrent.png"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           # makepkg refuses to run as root, so build the package as a normal user.
@@ -109,6 +109,7 @@ jobs:
           go install github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}
           export PATH="$PATH:$(go env GOPATH)/bin"
           wails build -clean -trimpath -ldflags "-s -w" -platform darwin/universal
+          for app in build/bin/*.app; do cp LICENSE THIRD_PARTY_LICENSES.txt "$app/Contents/Resources/"; done
           # Unsigned builds still need an ad-hoc signature to launch on Apple Silicon.
           codesign --force --deep --sign - "build/bin/Shark BiteTorrent.app" || codesign --force --deep --sign - build/bin/*.app
           cd build/bin && ditto -c -k --keepParent *.app SharkBiteTorrent-macos-universal.zip

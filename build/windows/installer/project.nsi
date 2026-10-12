@@ -98,6 +98,9 @@ Section
     SetOutPath $INSTDIR
 
     !insertmacro wails.files
+    # License texts ship with the app (GPL-3.0-or-later + third-party notices).
+    File "..\..\..\LICENSE"
+    File "..\..\..\THIRD_PARTY_LICENSES.txt"
 
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"

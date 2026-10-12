@@ -6,7 +6,7 @@ pkgrel=1
 pkgdesc="Lightweight BitTorrent client with a built-in per-app VPN (WARP/WireGuard)"
 arch=('x86_64')
 url="https://github.com/trevercomb/torrent-client"
-license=('custom')
+license=('GPL-3.0-or-later')
 depends=('gtk3' 'webkit2gtk-4.1' 'xdg-utils')
 optdepends=(
   'kwallet: stores the encryption key for saved VPN logins (KDE)'
@@ -20,4 +20,5 @@ package() {
   install -Dm755 SharkBiteTorrent "${pkgdir}/usr/bin/sharkbitetorrent"
   install -Dm644 sharkbitetorrent.desktop "${pkgdir}/usr/share/applications/sharkbitetorrent.desktop"
   install -Dm644 sharkbitetorrent.png "${pkgdir}/usr/share/pixmaps/sharkbitetorrent.png"
+  install -Dm644 THIRD_PARTY_LICENSES.txt "${pkgdir}/usr/share/licenses/${pkgname}/THIRD_PARTY_LICENSES.txt"
 }
