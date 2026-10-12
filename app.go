@@ -671,8 +671,25 @@ func (a *App) SaveSettings(s Settings) error {
 func (a *App) ChooseDirectory(current string) (string, error) {
 	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
 		Title:            "Download folder",
-		DefaultDirectory: current,
+		DefaultDirectory: existingAncestor(current),
 	})
+}
+
+// existingAncestor returns dir, or its nearest parent that exists, or "" if
+// none does. The OS folder picker fails if told to start in a missing folder
+// (e.g. the user deleted the download folder).
+func existingAncestor(dir string) string {
+	for dir != "" {
+		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return ""
 }
 
 // ChooseDownloadDir picks and immediately saves a new default download folder.
