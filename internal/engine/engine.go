@@ -100,7 +100,10 @@ func New(tun *tunnel.Tunnel, opts Options) (*Engine, error) {
 	// firewalled and never answer, so short timeouts and more parallel
 	// attempts reach the connectable peers much sooner.
 	cfg.NominalDialTimeout = 8 * time.Second
-	cfg.EstablishedConnsPerTorrent = 80
+	// Effectively unlimited for real swarms (most peers behind a VPN are
+	// unreachable anyway); still bounded so one huge swarm can't exhaust memory.
+	// Bandwidth is controlled with the speed limits, not the peer count.
+	cfg.EstablishedConnsPerTorrent = 200
 	cfg.HalfOpenConnsPerTorrent = 60
 	cfg.TotalHalfOpenConns = 250
 	cfg.DialRateLimiter = rate.NewLimiter(40, 40)
