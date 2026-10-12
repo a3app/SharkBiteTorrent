@@ -157,8 +157,8 @@ All platforms need:
 Clone the repo:
 
 ```sh
-git clone https://github.com/trevercomb/torrent-client.git
-cd torrent-client
+git clone https://github.com/trevercomb/SharkBiteTorrent.git
+cd SharkBiteTorrent
 ```
 
 ### Windows

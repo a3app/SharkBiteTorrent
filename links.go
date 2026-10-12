@@ -13,7 +13,7 @@ import (
 // them. Referral links are disclosed in the UI ("supports development"), and
 // providers are never ordered or recommended by commission.
 var links = Links{
-	Repo: "https://github.com/trevercomb/torrent-client",
+	Repo: "https://github.com/trevercomb/SharkBiteTorrent",
 	// Sponsor is hidden in the app until set, e.g.
 	// "https://github.com/sponsors/trevercomb".
 	Sponsor: "",
