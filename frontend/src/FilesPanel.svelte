@@ -2,6 +2,7 @@
   import { GetFiles, SetFilesWanted } from '../wailsjs/go/main/App.js'
   import type { engine } from '../wailsjs/go/models'
   import { bytes } from './format'
+  import PieceMap from './PieceMap.svelte'
 
   let { torrent, onError }: { torrent: engine.Status; onError: (e: string) => void } = $props()
 
@@ -40,6 +41,7 @@
     <b title={torrent.name}>{torrent.name || torrent.hash}</b>
     <span class="muted">{files.length} file{files.length === 1 ? '' : 's'}</span>
   </div>
+  <PieceMap hash={torrent.hash} />
   {#if files.length === 0}
     <div class="empty">Waiting for metadata from peers…</div>
   {:else}

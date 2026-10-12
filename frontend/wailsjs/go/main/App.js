@@ -26,6 +26,10 @@ export function GetFiles(arg1) {
   return window['go']['main']['App']['GetFiles'](arg1);
 }
 
+export function GetPieceMap(arg1) {
+  return window['go']['main']['App']['GetPieceMap'](arg1);
+}
+
 export function GetSettings() {
   return window['go']['main']['App']['GetSettings']();
 }

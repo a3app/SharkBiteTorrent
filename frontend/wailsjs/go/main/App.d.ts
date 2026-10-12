@@ -17,6 +17,8 @@ export function GetAbout():Promise<main.About>;
 
 export function GetFiles(arg1:string):Promise<Array<engine.FileStatus>>;
 
+export function GetPieceMap(arg1:string):Promise<Array<engine.PieceRun>>;
+
 export function GetSettings():Promise<main.SettingsView>;
 
 export function GetVpnRegions(arg1:string):Promise<Array<vpnprov.Region>>;

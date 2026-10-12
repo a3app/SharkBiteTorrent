@@ -20,6 +20,20 @@ export namespace engine {
 	        this.wanted = source["wanted"];
 	    }
 	}
+	export class PieceRun {
+	    s: string;
+	    n: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PieceRun(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.s = source["s"];
+	        this.n = source["n"];
+	    }
+	}
 	export class Status {
 	    hash: string;
 	    name: string;

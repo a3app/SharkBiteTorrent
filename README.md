@@ -44,6 +44,7 @@ It works out of the box with **free Cloudflare WARP**, so there's protection fro
 **Torrents**
 - Magnet links and `.torrent` files: paste, open, drag and drop, or click a magnet link in your browser.
 - **Choose which files to download** in a torrent.
+- **Piece map**: a qBittorrent-style bar showing which pieces are done, downloading, being checked, missing or skipped.
 - Pause/resume, and **remove with or without deleting the downloaded files**.
 - **Speed limits** that apply immediately.
 - **Per-torrent download folders**: changing the folder affects new torrents only, and the choice is remembered.

@@ -611,3 +611,44 @@ func (e *Engine) ContentPath(hash string) (path string, isDir bool, ok bool) {
 	}
 	return filepath.Join(en.dir, info.BestName()), info.IsDir(), true
 }
+
+// PieceRun is a run of consecutive pieces in the same state, for the
+// piece map. State is one of: done, checking, partial (downloading),
+// missing, skipped (in files the user unticked).
+type PieceRun struct {
+	State string `json:"s"`
+	Count int    `json:"n"`
+}
+
+// PieceMap returns the torrent's pieces as runs of states, in order. Empty
+// until metadata is known.
+func (e *Engine) PieceMap(hash string) ([]PieceRun, error) {
+	en, err := e.find(hash)
+	if err != nil {
+		return nil, err
+	}
+	if en.t.Info() == nil {
+		return []PieceRun{}, nil
+	}
+	var out []PieceRun
+	for _, r := range en.t.PieceStateRuns() {
+		s := "missing"
+		switch {
+		case r.Complete:
+			s = "done"
+		case r.Hashing || r.QueuedForHash || r.Marking || r.Checking:
+			s = "checking"
+		case r.Partial:
+			s = "partial"
+		case r.Priority == torrent.PiecePriorityNone:
+			s = "skipped"
+		}
+		// Merge with the previous run if only fields we don't show differ.
+		if n := len(out); n > 0 && out[n-1].State == s {
+			out[n-1].Count += r.Length
+		} else {
+			out = append(out, PieceRun{State: s, Count: r.Length})
+		}
+	}
+	return out, nil
+}

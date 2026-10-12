@@ -850,3 +850,12 @@ func copyFile(src, dst string) error {
 	}
 	return out.Close()
 }
+
+// GetPieceMap returns a torrent's pieces as runs of states for the piece map.
+func (a *App) GetPieceMap(hash string) ([]engine.PieceRun, error) {
+	eng, err := a.engine()
+	if err != nil {
+		return nil, err
+	}
+	return eng.PieceMap(hash)
+}
