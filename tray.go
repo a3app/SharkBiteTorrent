@@ -1,16 +1,14 @@
+//go:build !darwin
+
 package main
 
 import (
-	_ "embed"
 	"fmt"
 	goruntime "runtime"
 	"time"
 
 	"fyne.io/systray"
 )
-
-//go:embed build/windows/icon.ico
-var trayIcon []byte
 
 // runTray shows the notification-area icon. systray needs its own locked OS
 // thread on Windows, since it runs a separate message loop from Wails.

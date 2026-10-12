@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/ViRb3/wgcf/v2/cloudflare"
 	"github.com/ViRb3/wgcf/v2/wireguard"
+
+	"sharkbite/internal/secret"
 )
 
 // Account is the persisted WARP registration.
@@ -24,10 +25,10 @@ type Account struct {
 	ClientID      string `json:"client_id"` // base64, used for "reserved" bytes
 }
 
-// LoadOrRegister returns the account stored at path, registering a new one if
-// the file doesn't exist.
+// LoadOrRegister returns the account stored (encrypted) at path, registering
+// a new one if the file doesn't exist.
 func LoadOrRegister(path string) (*Account, error) {
-	if data, err := os.ReadFile(path); err == nil {
+	if data, err := secret.ReadFile(path); err == nil {
 		var acc Account
 		if err := json.Unmarshal(data, &acc); err != nil {
 			return nil, fmt.Errorf("parse %s: %w", path, err)
@@ -41,11 +42,8 @@ func LoadOrRegister(path string) (*Account, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
 	data, _ := json.MarshalIndent(acc, "", "  ")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := secret.WriteFile(path, data); err != nil {
 		return nil, err
 	}
 	return acc, nil

@@ -1,3 +1,5 @@
+//go:build windows
+
 // Package winassoc registers the app as the handler for magnet: links and
 // .torrent files for the current user (HKCU, no admin needed).
 package winassoc

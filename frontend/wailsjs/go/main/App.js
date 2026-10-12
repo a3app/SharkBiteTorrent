@@ -22,6 +22,10 @@ export function GetSettings() {
   return window['go']['main']['App']['GetSettings']();
 }
 
+export function GetVpnRegions(arg1) {
+  return window['go']['main']['App']['GetVpnRegions'](arg1);
+}
+
 export function GetVpnStatus() {
   return window['go']['main']['App']['GetVpnStatus']();
 }
@@ -32,6 +36,18 @@ export function ImportWireGuardConfig() {
 
 export function ListTorrents() {
   return window['go']['main']['App']['ListTorrents']();
+}
+
+export function ListVpnProviders() {
+  return window['go']['main']['App']['ListVpnProviders']();
+}
+
+export function LoginVpnAccount(arg1, arg2) {
+  return window['go']['main']['App']['LoginVpnAccount'](arg1, arg2);
+}
+
+export function LogoutVpnAccount(arg1) {
+  return window['go']['main']['App']['LogoutVpnAccount'](arg1);
 }
 
 export function OpenDefaultAppsSettings() {

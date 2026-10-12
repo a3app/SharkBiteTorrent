@@ -5,9 +5,12 @@ through the VPN; the rest of the PC is unaffected.
 
 ## Features
 
-- **Built-in VPN, per app**: free Cloudflare WARP out of the box, or import a
-  WireGuard `.conf` from any provider (Mullvad, Proton, AirVPN, ...). A forwarded
-  port can be entered for providers that offer one, so peers can connect to you.
+- **Built-in VPN, per app**: free Cloudflare WARP by default; sign in to Mullvad,
+  Private Internet Access (with automatic port forwarding), NordVPN or IVPN; or
+  import a WireGuard `.conf` from any provider (Proton, AirVPN, ...), with an
+  optional forwarded port.
+- **Encrypted secrets**: WARP keys, VPN sign-ins and imported configs are
+  encrypted at rest (DPAPI on Windows, the OS keyring + AES-GCM on macOS/Linux).
 - **Kill switch by design**: torrents only start after the tunnel is verified, and
   the torrent engine has no network path except the tunnel.
 - Magnet links and `.torrent` files (file picker, drag and drop, or opened from the
@@ -27,6 +30,11 @@ through the VPN; the rest of the PC is unaffected.
   sockets disabled. Peers, HTTP/UDP trackers, DHT and webseeds are dialed through
   the tunnel, and all DNS lookups in the process are forced through the tunnel's
   DNS server. UPnP and WebRTC are disabled.
+- **VPN providers** (`internal/vpnprov`): one file per provider, following each
+  provider's official client or scripts (mullvad-wg.sh, pia-foss/manual-connections,
+  ivpn/desktop-app; NordVPN access tokens).
+- **Platform layer** (`internal/platform`, `internal/secret`, `tray_*.go`): Windows,
+  Linux (freedesktop `.desktop` + `xdg-mime`) and macOS implementations.
 - **Windows integration** (`internal/winassoc`, `tray.go`): HKCU file/protocol
   registration and Default Apps capabilities, plus the notification-area icon.
 - **`earlyinit`**: a tiny module that switches anacrolix's file storage from mmap

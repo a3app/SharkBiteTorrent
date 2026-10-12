@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	_ "a.local/earlyinit" // must stay: see package doc
-	"sharkbite/internal/winassoc"
+	"sharkbite/internal/platform"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -24,9 +24,9 @@ func main() {
 		var err error
 		switch os.Args[1] {
 		case "--register-associations":
-			err = winassoc.Register(exe)
+			err = platform.RegisterAssociations(exe)
 		case "--unregister-associations":
-			err = winassoc.Unregister(exe)
+			err = platform.UnregisterAssociations(exe)
 		default:
 			err = fmt.Errorf("unknown option %s", os.Args[1])
 		}

@@ -57,10 +57,46 @@ export namespace engine {
 
 export namespace main {
 	
+	export class LoginResult {
+	    display: string;
+	    needField?: vpnprov.Field;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LoginResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.display = source["display"];
+	        this.needField = this.convertValues(source["needField"], vpnprov.Field);
+	        this.message = source["message"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class Settings {
 	    downloadDir: string;
 	    vpnProvider: string;
 	    forwardedPort: number;
+	    accountProvider: string;
+	    accountRegion: string;
 	    downLimitKB: number;
 	    upLimitKB: number;
 	    closeToTray: boolean;
@@ -74,6 +110,8 @@ export namespace main {
 	        this.downloadDir = source["downloadDir"];
 	        this.vpnProvider = source["vpnProvider"];
 	        this.forwardedPort = source["forwardedPort"];
+	        this.accountProvider = source["accountProvider"];
+	        this.accountRegion = source["accountRegion"];
 	        this.downLimitKB = source["downLimitKB"];
 	        this.upLimitKB = source["upLimitKB"];
 	        this.closeToTray = source["closeToTray"];
@@ -82,7 +120,8 @@ export namespace main {
 	export class SettingsView {
 	    settings: Settings;
 	    customEndpoint: string;
-	    assoc: winassoc.AssocStatus;
+	    assoc: platform.AssocStatus;
+	    accounts: Record<string, string>;
 	
 	    static createFrom(source: any = {}) {
 	        return new SettingsView(source);
@@ -92,7 +131,8 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.settings = this.convertValues(source["settings"], Settings);
 	        this.customEndpoint = source["customEndpoint"];
-	        this.assoc = this.convertValues(source["assoc"], winassoc.AssocStatus);
+	        this.assoc = this.convertValues(source["assoc"], platform.AssocStatus);
+	        this.accounts = source["accounts"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -116,10 +156,13 @@ export namespace main {
 	export class VpnStatus {
 	    state: string;
 	    provider: string;
+	    name: string;
+	    server: string;
 	    exitIP: string;
 	    location: string;
 	    colo: string;
 	    port: number;
+	    warning: string;
 	    error: string;
 	
 	    static createFrom(source: any = {}) {
@@ -130,21 +173,26 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.state = source["state"];
 	        this.provider = source["provider"];
+	        this.name = source["name"];
+	        this.server = source["server"];
 	        this.exitIP = source["exitIP"];
 	        this.location = source["location"];
 	        this.colo = source["colo"];
 	        this.port = source["port"];
+	        this.warning = source["warning"];
 	        this.error = source["error"];
 	    }
 	}
 
 }
 
-export namespace winassoc {
+export namespace platform {
 	
 	export class AssocStatus {
+	    supported: boolean;
 	    magnet: boolean;
 	    torrent: boolean;
+	    canOpenSettings: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new AssocStatus(source);
@@ -152,8 +200,87 @@ export namespace winassoc {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.supported = source["supported"];
 	        this.magnet = source["magnet"];
 	        this.torrent = source["torrent"];
+	        this.canOpenSettings = source["canOpenSettings"];
+	    }
+	}
+
+}
+
+export namespace vpnprov {
+	
+	export class Field {
+	    key: string;
+	    label: string;
+	    kind: string;
+	    help?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Field(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.label = source["label"];
+	        this.kind = source["kind"];
+	        this.help = source["help"];
+	    }
+	}
+	export class Info {
+	    id: string;
+	    name: string;
+	    fields: Field[];
+	    portForwarding: boolean;
+	    note?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Info(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.fields = this.convertValues(source["fields"], Field);
+	        this.portForwarding = source["portForwarding"];
+	        this.note = source["note"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Region {
+	    id: string;
+	    name: string;
+	    portForward: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Region(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.portForward = source["portForward"];
 	    }
 	}
 

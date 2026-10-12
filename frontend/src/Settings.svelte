@@ -1,16 +1,18 @@
 <script lang="ts">
   import {
-    GetSettings, SaveSettings, ChooseDirectory, ImportWireGuardConfig,
+    GetSettings, SaveSettings, ChooseDirectory,
     RegisterAssociations, OpenDefaultAppsSettings,
   } from '../wailsjs/go/main/App.js'
-  import { main, type winassoc } from '../wailsjs/go/models'
+  import { main, type platform } from '../wailsjs/go/models'
+  import VpnSettings from './VpnSettings.svelte'
 
   let { onClose }: { onClose: () => void } = $props()
 
   let s = $state<main.Settings | null>(null)
   let original = $state<main.Settings | null>(null)
   let endpoint = $state('')
-  let assoc = $state<winassoc.AssocStatus>({ magnet: false, torrent: false })
+  let accounts = $state<Record<string, string>>({})
+  let assoc = $state<platform.AssocStatus>({ supported: false, magnet: false, torrent: false, canOpenSettings: false })
   let error = $state('')
   let saving = $state(false)
 
@@ -18,13 +20,16 @@
     s = { ...v.settings } as main.Settings
     original = { ...v.settings } as main.Settings
     endpoint = v.customEndpoint
+    accounts = v.accounts ?? {}
     assoc = v.assoc
   })
 
   const vpnChanged = $derived(
     !!s && !!original &&
       (s.vpnProvider !== original.vpnProvider ||
-        (s.vpnProvider === 'custom' && s.forwardedPort !== original.forwardedPort)),
+        (s.vpnProvider === 'custom' && s.forwardedPort !== original.forwardedPort) ||
+        (s.vpnProvider === 'account' &&
+          (s.accountProvider !== original.accountProvider || s.accountRegion !== original.accountRegion))),
   )
 
   async function attempt(fn: () => Promise<unknown>) {
@@ -40,15 +45,6 @@
     attempt(async () => {
       const d = await ChooseDirectory(s!.downloadDir)
       if (d) s!.downloadDir = d
-    })
-
-  const importConf = () =>
-    attempt(async () => {
-      const ep = await ImportWireGuardConfig()
-      if (ep) {
-        endpoint = ep
-        s!.vpnProvider = 'custom'
-      }
     })
 
   const register = () => attempt(async () => (assoc = await RegisterAssociations()))
@@ -85,29 +81,7 @@
       <div class="body">
         <fieldset>
           <legend>VPN</legend>
-          <label class="radio">
-            <input type="radio" bind:group={s.vpnProvider} value="warp" />
-            <span><b>Cloudflare WARP</b> <span class="muted">free, no sign-up. Downloads only; peers can't connect to you.</span></span>
-          </label>
-          <label class="radio">
-            <input type="radio" bind:group={s.vpnProvider} value="custom" disabled={!endpoint} />
-            <span>
-              <b>Custom WireGuard</b>
-              {#if endpoint}
-                <span class="muted">· {endpoint}</span>
-              {:else}
-                <span class="muted">import a .conf from your VPN provider first</span>
-              {/if}
-            </span>
-          </label>
-          <div class="row indent">
-            <button onclick={importConf}>{endpoint ? 'Replace' : 'Import'} WireGuard config…</button>
-          </div>
-          <label class="row indent">
-            <span>Forwarded port</span>
-            <input type="number" min="0" max="65535" bind:value={s.forwardedPort} disabled={s.vpnProvider !== 'custom'} class="short" />
-            <span class="muted">If your provider forwards a port to you, enter it to accept incoming peers. 0 = off.</span>
-          </label>
+          <VpnSettings {s} bind:endpoint bind:accounts onError={e => (error = e)} />
           {#if vpnChanged}<p class="note">Saving will reconnect the VPN. Torrents pick up where they left off.</p>{/if}
         </fieldset>
 
@@ -134,26 +108,28 @@
         </fieldset>
 
         <fieldset>
-          <legend>Windows</legend>
+          <legend>Desktop</legend>
           <label class="check">
             <input type="checkbox" bind:checked={s.closeToTray} />
             <span>Closing the window keeps Shark BiteTorrent running in the tray</span>
           </label>
-          <div class="row">
-            <span class="status">
-              Magnet links: <b class:ok={assoc.magnet}>{assoc.magnet ? 'open here' : 'not set'}</b> ·
-              .torrent files: <b class:ok={assoc.torrent}>{assoc.torrent ? 'open here' : 'not set'}</b>
-            </span>
-          </div>
-          <div class="row">
-            <button onclick={register}>Open magnet links &amp; .torrent files with Shark BiteTorrent</button>
-          </div>
-          {#if !(assoc.magnet && assoc.torrent)}
-            <p class="muted small">
-              If another app was chosen in Windows before, Windows keeps using it.
-              <button class="link" onclick={() => OpenDefaultAppsSettings()}>Open Default Apps</button>
-              and pick Shark BiteTorrent there.
-            </p>
+          {#if assoc.supported}
+            <div class="row">
+              <span class="status">
+                Magnet links: <b class:ok={assoc.magnet}>{assoc.magnet ? 'open here' : 'not set'}</b> ·
+                .torrent files: <b class:ok={assoc.torrent}>{assoc.torrent ? 'open here' : 'not set'}</b>
+              </span>
+            </div>
+            <div class="row">
+              <button onclick={register}>Open magnet links &amp; .torrent files with Shark BiteTorrent</button>
+            </div>
+            {#if !(assoc.magnet && assoc.torrent) && assoc.canOpenSettings}
+              <p class="muted small">
+                If you picked another app before, your system keeps using it.
+                <button class="link" onclick={() => OpenDefaultAppsSettings()}>Open Default Apps</button>
+                and pick Shark BiteTorrent there.
+              </p>
+            {/if}
           {/if}
         </fieldset>
       </div>
@@ -184,9 +160,8 @@
   fieldset { border: none; border-top: 1px solid var(--border); margin: 0; padding: 12px 0 14px; }
   legend { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; padding-right: 8px; }
   .row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-  .indent { margin-left: 26px; }
-  .radio, .check { display: flex; align-items: flex-start; gap: 10px; margin-top: 8px; cursor: pointer; }
-  .radio input, .check input { margin-top: 3px; }
+  .check { display: flex; align-items: flex-start; gap: 10px; margin-top: 8px; cursor: pointer; }
+  .check input { margin-top: 3px; }
   .lbl { width: 72px; }
   .short { width: 100px; }
   .grow { flex: 1; min-width: 0; }

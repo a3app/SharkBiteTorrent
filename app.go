@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -18,9 +17,11 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"sharkbite/internal/engine"
+	"sharkbite/internal/platform"
+	"sharkbite/internal/secret"
 	"sharkbite/internal/tunnel"
+	"sharkbite/internal/vpnprov"
 	"sharkbite/internal/warp"
-	"sharkbite/internal/winassoc"
 )
 
 type App struct {
@@ -42,20 +43,27 @@ type App struct {
 type VpnStatus struct {
 	State    string `json:"state"` // connecting, connected, error
 	Provider string `json:"provider"`
+	Name     string `json:"name"`   // display name: "WARP", "Mullvad", "WireGuard"
+	Server   string `json:"server"` // server picked by an account provider
 	ExitIP   string `json:"exitIP"`
 	Location string `json:"location"`
 	Colo     string `json:"colo"`
-	Port     int    `json:"port"` // forwarded port accepting inbound peers, 0 if none
+	Port     int    `json:"port"`    // forwarded port accepting inbound peers, 0 if none
+	Warning  string `json:"warning"` // non-fatal problem, e.g. port forwarding failed
 	Error    string `json:"error"`
 }
 
 type Settings struct {
 	DownloadDir   string `json:"downloadDir"`
-	VpnProvider   string `json:"vpnProvider"` // "warp" or "custom"
-	ForwardedPort int    `json:"forwardedPort"`
-	DownLimitKB   int64  `json:"downLimitKB"` // 0 = unlimited
-	UpLimitKB     int64  `json:"upLimitKB"`
-	CloseToTray   bool   `json:"closeToTray"`
+	VpnProvider   string `json:"vpnProvider"`   // "warp", "account" or "custom"
+	ForwardedPort int    `json:"forwardedPort"` // custom only; accounts forward automatically
+	// AccountProvider/AccountRegion apply when VpnProvider is "account".
+	// An empty region means a server in the user's own country.
+	AccountProvider string `json:"accountProvider"`
+	AccountRegion   string `json:"accountRegion"`
+	DownLimitKB     int64  `json:"downLimitKB"` // 0 = unlimited
+	UpLimitKB       int64  `json:"upLimitKB"`
+	CloseToTray     bool   `json:"closeToTray"`
 }
 
 // savedTorrent is persisted so torrents survive restarts. Source is a magnet
@@ -170,17 +178,39 @@ func (a *App) connect() {
 		return
 	}
 	set := a.settings
-	a.vpn = VpnStatus{State: "connecting", Provider: set.VpnProvider}
+	name := "WARP"
+	switch set.VpnProvider {
+	case "custom":
+		name = "WireGuard"
+	case "account":
+		name = set.AccountProvider
+		if p, ok := vpnprov.Get(set.AccountProvider); ok {
+			name = p.Info().Name
+		}
+	}
+	a.vpn = VpnStatus{State: "connecting", Provider: set.VpnProvider, Name: name}
 	a.mu.Unlock()
 	fail := func(err error) {
-		a.setVpn(VpnStatus{State: "error", Provider: set.VpnProvider, Error: err.Error()})
+		a.setVpn(VpnStatus{State: "error", Provider: set.VpnProvider, Name: name, Error: err.Error()})
+	}
+
+	// Only WARP reports warp=on, so for other providers we confirm the tunnel
+	// by checking that the exit IP differs from the real one. The real
+	// connection's country also picks the automatic server location.
+	var realIP, home string
+	if set.VpnProvider != "warp" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if tr, err := tunnel.DirectTrace(ctx); err == nil {
+			realIP, home = tr.IP, tr.Location
+		}
+		cancel()
 	}
 
 	var cfg tunnel.Config
-	var realIP string
+	var conn *vpnprov.Connection
 	switch set.VpnProvider {
 	case "custom":
-		data, err := os.ReadFile(a.customConfPath())
+		data, err := secret.ReadFile(a.customConfPath())
 		if err != nil {
 			fail(errors.New("no WireGuard config imported; open Settings to import one"))
 			return
@@ -189,13 +219,21 @@ func (a *App) connect() {
 			fail(err)
 			return
 		}
-		// Only WARP reports warp=on, so for other providers we confirm the
-		// tunnel by checking that the exit IP differs from the real one.
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if tr, err := tunnel.DirectTrace(ctx); err == nil {
-			realIP = tr.IP
+	case "account":
+		p, ok := vpnprov.Get(set.AccountProvider)
+		acc := a.account(set.AccountProvider)
+		if !ok || acc == nil {
+			fail(errors.New("not signed in to a VPN account; open Settings to sign in"))
+			return
 		}
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		c, err := p.Connect(ctx, acc, set.AccountRegion, home)
 		cancel()
+		if err != nil {
+			fail(err)
+			return
+		}
+		conn, cfg = c, c.Config
 	default:
 		acc, err := warp.LoadOrRegister(filepath.Join(a.configDir, "warp.json"))
 		if err != nil {
@@ -222,7 +260,7 @@ func (a *App) connect() {
 	switch {
 	case err != nil:
 		err = fmt.Errorf("VPN not passing traffic: %w", err)
-	case set.VpnProvider != "custom" && tr.Warp != "on" && tr.Warp != "plus":
+	case set.VpnProvider == "warp" && tr.Warp != "on" && tr.Warp != "plus":
 		err = fmt.Errorf("tunnel is up but Cloudflare reports warp=%q", tr.Warp)
 	case realIP != "" && tr.IP == realIP:
 		err = errors.New("VPN exit IP is the same as your real IP")
@@ -234,8 +272,22 @@ func (a *App) connect() {
 	}
 
 	port := 0
-	if set.VpnProvider == "custom" {
+	var pfWarning string
+	var keepalive func(context.Context) error
+	var every time.Duration
+	switch {
+	case set.VpnProvider == "custom":
 		port = set.ForwardedPort
+	case conn != nil && conn.PortForward != nil:
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		p, keep, ev, err := conn.PortForward(ctx, tun)
+		cancel()
+		if err != nil {
+			// Not fatal: downloading still works, peers just can't connect in.
+			pfWarning = "port forwarding unavailable: " + err.Error()
+		} else {
+			port, keepalive, every = p, keep, ev
+		}
 	}
 	eng, err := engine.New(tun, engine.Options{
 		ForwardedPort: port,
@@ -251,7 +303,11 @@ func (a *App) connect() {
 	mctx, stop := context.WithCancel(context.Background())
 	a.mu.Lock()
 	a.tun, a.eng, a.stopMonitor = tun, eng, stop
-	a.vpn = VpnStatus{State: "connected", Provider: set.VpnProvider, ExitIP: tr.IP, Location: tr.Location, Colo: tr.Colo, Port: port}
+	a.vpn = VpnStatus{State: "connected", Provider: set.VpnProvider, Name: name,
+		ExitIP: tr.IP, Location: tr.Location, Colo: tr.Colo, Port: port, Warning: pfWarning}
+	if conn != nil {
+		a.vpn.Server = conn.Server
+	}
 	saved := append([]savedTorrent(nil), a.saved...)
 	pending := a.pending
 	a.pending = nil
@@ -269,6 +325,31 @@ func (a *App) connect() {
 		}
 	}
 	go a.monitor(mctx, tun)
+	if keepalive != nil {
+		go a.keepPortForward(mctx, keepalive, every)
+	}
+}
+
+// keepPortForward refreshes a provider's port mapping; PIA drops it if not
+// renewed every 15 minutes.
+func (a *App) keepPortForward(ctx context.Context, keep func(context.Context) error, every time.Duration) {
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		err := keep(cctx)
+		cancel()
+		if err != nil && ctx.Err() == nil {
+			a.mu.Lock()
+			a.vpn.Warning = "port forwarding refresh failed: " + err.Error()
+			a.mu.Unlock()
+		}
+	}
 }
 
 func (a *App) disconnect() {
@@ -513,7 +594,7 @@ func (a *App) OpenFolder(hash string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return exec.Command("explorer", dir).Start()
+	return platform.OpenFolder(dir)
 }
 
 // --- Settings (bound to the frontend) ---
@@ -521,19 +602,24 @@ func (a *App) OpenFolder(hash string) error {
 type SettingsView struct {
 	Settings       Settings             `json:"settings"`
 	CustomEndpoint string               `json:"customEndpoint"` // "" if no config imported
-	Assoc          winassoc.AssocStatus `json:"assoc"`
+	Assoc          platform.AssocStatus `json:"assoc"`
+	// Accounts maps provider ID to a display name for signed-in accounts.
+	Accounts map[string]string `json:"accounts"`
 }
 
 func (a *App) GetSettings() SettingsView {
 	a.mu.Lock()
-	v := SettingsView{Settings: a.settings}
+	v := SettingsView{Settings: a.settings, Accounts: map[string]string{}}
 	a.mu.Unlock()
-	if data, err := os.ReadFile(a.customConfPath()); err == nil {
+	for id, acc := range a.loadAccounts() {
+		v.Accounts[id] = acc.Display
+	}
+	if data, err := secret.ReadFile(a.customConfPath()); err == nil {
 		if cfg, err := tunnel.ParseWGQuick(string(data)); err == nil {
 			v.CustomEndpoint = cfg.Endpoint
 		}
 	}
-	v.Assoc = winassoc.Status(a.exe)
+	v.Assoc = platform.Associations(a.exe)
 	return v
 }
 
@@ -543,8 +629,11 @@ func (a *App) SaveSettings(s Settings) error {
 	if s.DownloadDir == "" {
 		return errors.New("download folder can't be empty")
 	}
-	if s.VpnProvider != "custom" {
+	if s.VpnProvider != "custom" && s.VpnProvider != "account" {
 		s.VpnProvider = "warp"
+	}
+	if s.VpnProvider == "account" && a.account(s.AccountProvider) == nil {
+		return errors.New("sign in to a VPN account before switching to it")
 	}
 	if s.ForwardedPort < 0 || s.ForwardedPort > 65535 {
 		return errors.New("forwarded port must be between 0 and 65535")
@@ -569,7 +658,10 @@ func (a *App) SaveSettings(s Settings) error {
 	if eng != nil {
 		eng.SetLimits(s.DownLimitKB*1024, s.UpLimitKB*1024)
 	}
-	if old.VpnProvider != s.VpnProvider || (s.VpnProvider == "custom" && old.ForwardedPort != s.ForwardedPort) {
+	vpnChanged := old.VpnProvider != s.VpnProvider ||
+		(s.VpnProvider == "custom" && old.ForwardedPort != s.ForwardedPort) ||
+		(s.VpnProvider == "account" && (old.AccountProvider != s.AccountProvider || old.AccountRegion != s.AccountRegion))
+	if vpnChanged {
 		a.Reconnect()
 	}
 	return nil
@@ -615,7 +707,8 @@ func (a *App) ImportWireGuardConfig() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := writeFile(a.customConfPath(), data); err != nil {
+	// Stored encrypted; the original file the user picked is left alone.
+	if err := secret.WriteFile(a.customConfPath(), data); err != nil {
 		return "", err
 	}
 	a.mu.Lock()
@@ -627,15 +720,15 @@ func (a *App) ImportWireGuardConfig() (string, error) {
 	return cfg.Endpoint, nil
 }
 
-func (a *App) RegisterAssociations() (winassoc.AssocStatus, error) {
-	if err := winassoc.Register(a.exe); err != nil {
-		return winassoc.AssocStatus{}, err
+func (a *App) RegisterAssociations() (platform.AssocStatus, error) {
+	if err := platform.RegisterAssociations(a.exe); err != nil {
+		return platform.AssocStatus{}, err
 	}
-	return winassoc.Status(a.exe), nil
+	return platform.Associations(a.exe), nil
 }
 
 func (a *App) OpenDefaultAppsSettings() error {
-	return winassoc.OpenDefaultAppsSettings()
+	return platform.OpenDefaultAppsSettings()
 }
 
 // --- Persistence ---

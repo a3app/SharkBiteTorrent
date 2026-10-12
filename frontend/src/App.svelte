@@ -130,13 +130,14 @@
     <div class="vpn {vpn.state}">
       <span class="dot"></span>
       {#if vpn.state === 'connected'}
-        <span class="text">
-          <b>VPN on</b> · {vpn.provider === 'custom' ? 'WireGuard' : 'WARP'} exit {vpn.exitIP} · {vpn.location}{vpn.colo ? ` (${vpn.colo})` : ''}
+        <span class="text" title={vpn.server ? `Server: ${vpn.server}` : ''}>
+          <b>VPN on</b> · {vpn.name} · exit {vpn.exitIP} · {vpn.location}{vpn.colo ? ` (${vpn.colo})` : ''}
           {#if vpn.port}· port {vpn.port} open{/if}
         </span>
         {#if vpn.error}<span class="warn" title={vpn.error}>⚠ check failed</span>{/if}
+        {#if vpn.warning}<span class="warn" title={vpn.warning}>⚠ no port forwarding</span>{/if}
       {:else if vpn.state === 'connecting'}
-        <span class="text"><b>Connecting VPN…</b> Torrents start once the tunnel is verified.</span>
+        <span class="text"><b>Connecting {vpn.name || 'VPN'}…</b> Torrents start once the tunnel is verified.</span>
       {:else}
         <span class="text" title={vpn.error}><b>VPN error</b> · {vpn.error}</span>
         <button onclick={() => run(Reconnect)}>Retry</button>
