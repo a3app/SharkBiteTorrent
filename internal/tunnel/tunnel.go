@@ -36,6 +36,7 @@ type Tunnel struct {
 	dev  *device.Device
 	tnet *netstack.Net
 	dns  string // host:port of the DNS server reached through the tunnel
+	v4   netip.Addr // our IPv4 address inside the tunnel
 }
 
 func Start(cfg Config) (*Tunnel, error) {
@@ -105,6 +106,12 @@ func Start(cfg Config) (*Tunnel, error) {
 		return nil, fmt.Errorf("bring up wireguard: %w", err)
 	}
 	t := &Tunnel{dev: dev, tnet: tnet, dns: "1.1.1.1:53"}
+	for _, a := range addrs {
+		if a.Is4() {
+			t.v4 = a
+			break
+		}
+	}
 	if len(dns) > 0 {
 		t.dns = netip.AddrPortFrom(dns[0], 53).String()
 	}
@@ -148,16 +155,26 @@ func (t *Tunnel) DNSServer() string { return t.dns }
 // ListenTCP4 listens for inbound connections on port inside the tunnel. Only
 // useful with providers that forward a port to you.
 func (t *Tunnel) ListenTCP4(port int) (net.Listener, error) {
-	return t.tnet.ListenTCPAddrPort(netip.AddrPortFrom(netip.IPv4Unspecified(), uint16(port)))
+	return t.tnet.ListenTCPAddrPort(netip.AddrPortFrom(t.localV4(), uint16(port)))
+}
+
+// localV4 is the tunnel's own IPv4 address. Sockets must bind to it: netstack
+// has no route for packets sent from a socket bound to 0.0.0.0, so writes
+// fail with "no route to host" (this silently broke DHT and UDP trackers).
+func (t *Tunnel) localV4() netip.Addr {
+	if t.v4.IsValid() {
+		return t.v4
+	}
+	return netip.IPv4Unspecified()
 }
 
 // Net exposes the userspace stack for dialing/listening (TCP and UDP).
 func (t *Tunnel) Net() *netstack.Net { return t.tnet }
 
-// ListenUDP4 opens an IPv4 UDP socket on an ephemeral port inside the tunnel.
-// (netstack panics if the local address is left empty.)
+// ListenUDP4 opens an IPv4 UDP socket on an ephemeral port inside the tunnel,
+// bound to the tunnel's address (see localV4).
 func (t *Tunnel) ListenUDP4() (net.PacketConn, error) {
-	return t.tnet.ListenUDPAddrPort(netip.AddrPortFrom(netip.IPv4Unspecified(), 0))
+	return t.tnet.ListenUDPAddrPort(netip.AddrPortFrom(t.localV4(), 0))
 }
 
 func (t *Tunnel) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {

@@ -133,5 +133,4 @@ require (
 	zombiezen.com/go/sqlite v0.13.1 // indirect
 )
 
-
 replace a.local/earlyinit => ./earlyinit

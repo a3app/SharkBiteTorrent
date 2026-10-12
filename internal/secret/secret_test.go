@@ -29,14 +29,16 @@ func TestRoundTrip(t *testing.T) {
 
 func TestPlaintextUpgraded(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "old.json")
-	plain := []byte(`{"token":"abc"}`)
+	// A long, distinctive secret: short strings like "abc" can appear in the
+	// base64 ciphertext by chance and make the check below flaky.
+	plain := []byte(`{"token":"plaintext-token-must-not-survive"}`)
 	os.WriteFile(path, plain, 0o600)
 	got, err := ReadFile(path)
 	if err != nil || !bytes.Equal(got, plain) {
 		t.Fatalf("got %q, %v", got, err)
 	}
 	raw, _ := os.ReadFile(path)
-	if bytes.Contains(raw, []byte("abc")) {
+	if !bytes.HasPrefix(raw, []byte(header)) || bytes.Contains(raw, []byte("plaintext-token")) {
 		t.Fatal("file was not re-encrypted")
 	}
 	if got, err := ReadFile(path); err != nil || !bytes.Equal(got, plain) {
