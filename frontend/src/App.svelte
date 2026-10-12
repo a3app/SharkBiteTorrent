@@ -5,7 +5,7 @@
     Pause, Resume, Remove, Reconnect, OpenFolder, ChooseDownloadDir,
     InstallUpdate, SkipUpdate, OpenURL,
   } from '../wailsjs/go/main/App.js'
-  import { EventsOn } from '../wailsjs/runtime/runtime.js'
+  import { EventsOn, OnFileDrop } from '../wailsjs/runtime/runtime.js'
   import type { engine, main } from '../wailsjs/go/models'
   import FilesPanel from './FilesPanel.svelte'
   import Settings from './Settings.svelte'
@@ -44,7 +44,20 @@
     const id = setInterval(refresh, 1000)
     const off = EventsOn('error', (msg: string) => (error = msg))
     const offUpdate = EventsOn('update-available', (info: main.UpdateInfo) => (update = info))
+    // Wails only attaches its window drop listeners when OnFileDrop is called
+    // from JS. Dropped file paths are then handled in Go (runtime.OnFileDrop in
+    // app.go), so the JS callback has nothing to do. useDropTarget=false: the
+    // whole window accepts drops, including the magnet input.
+    OnFileDrop(() => {}, false)
+    window.addEventListener('dragenter', onDragEnter)
+    window.addEventListener('dragover', onDragOverText)
+    window.addEventListener('dragleave', onDragLeaveWindow)
+    window.addEventListener('drop', onDropText)
     return () => {
+      window.removeEventListener('dragenter', onDragEnter)
+      window.removeEventListener('dragover', onDragOverText)
+      window.removeEventListener('dragleave', onDragLeaveWindow)
+      window.removeEventListener('drop', onDropText)
       clearInterval(id)
       off()
       offUpdate()
@@ -67,6 +80,35 @@
     run(async () => {
       await AddMagnet(magnet)
       magnet = ''
+    })
+  }
+
+  // Drag and drop. Files (.torrent) are handled by Wails + Go; magnet links
+  // dragged from a browser arrive as text and are handled here.
+  let dragging = $state(false)
+  const isDroppable = (e: DragEvent) =>
+    !!e.dataTransfer && ['Files', 'text/uri-list', 'text/plain'].some(t => e.dataTransfer!.types.includes(t))
+
+  function onDragEnter(e: DragEvent) {
+    if (isDroppable(e)) dragging = true
+  }
+  function onDragOverText(e: DragEvent) {
+    // Allow text (magnet) drops anywhere; Wails already handles file drags.
+    if (e.dataTransfer && !e.dataTransfer.types.includes('Files') && isDroppable(e)) e.preventDefault()
+  }
+  function onDragLeaveWindow(e: DragEvent) {
+    if (!e.relatedTarget) dragging = false // left the window, not just a child element
+  }
+  function onDropText(e: DragEvent) {
+    dragging = false
+    const dt = e.dataTransfer
+    if (!dt || dt.types.includes('Files')) return
+    const text = (dt.getData('text/uri-list') || dt.getData('text/plain')).trim()
+    const links = text.split(/\s+/).filter(l => l.startsWith('magnet:'))
+    if (links.length === 0) return
+    e.preventDefault()
+    run(async () => {
+      for (const l of links) await AddMagnet(l)
     })
   }
 
@@ -276,6 +318,12 @@
 
 <svelte:window onkeydown={onKey} />
 
+{#if dragging}
+  <div class="drop-overlay" aria-hidden="true">
+    <div>🦈 Drop .torrent files or magnet links to add them</div>
+  </div>
+{/if}
+
 {#if showSettings}
   <Settings onClose={() => { showSettings = false; loadSettings(); refresh() }} />
 {/if}
@@ -379,6 +427,13 @@
   }
   footer .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   footer button { padding: 4px 10px; }
+
+  .drop-overlay {
+    position: fixed; inset: 0; z-index: 30; pointer-events: none;
+    display: grid; place-items: center;
+    background: rgba(24, 26, 31, 0.75); border: 3px dashed var(--accent); border-radius: 8px;
+  }
+  .drop-overlay div { font-size: 18px; padding: 16px 24px; background: var(--panel); border-radius: 10px; }
 
   .menu-catcher { position: fixed; inset: 0; z-index: 20; }
   .menu {
