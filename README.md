@@ -274,6 +274,14 @@ Downloads default to `Downloads/Torrents` in your home folder.
 
 Built on [wireguard-go](https://git.zx2c4.com/wireguard-go/) and [gVisor](https://gvisor.dev/) netstack, [anacrolix/torrent](https://github.com/anacrolix/torrent), [wgcf](https://github.com/ViRb3/wgcf), [Wails](https://wails.io/), [Svelte](https://svelte.dev/), [fyne.io/systray](https://github.com/fyne-io/systray) and [go-keyring](https://github.com/zalando/go-keyring). The PIA certificate and connection flow come from PIA's [manual-connections](https://github.com/pia-foss/manual-connections) scripts.
 
+## Support the project
+
+Shark BiteTorrent has no ads, no tracking and no bundled offers, and never will. If it's useful to you:
+
+- **Sponsor development** with the **Sponsor** button at the top of this repo.
+- **Get your VPN through the app.** In Settings → VPN account, the *Get a VPN* link for some providers is a referral link: the provider pays a small commission at no extra cost to you. These links are labelled in the app. Providers are never ranked or recommended by commission, and free WARP plus WireGuard import always stay available. (Mullvad and IVPN don't run referral programs, by their own choice, so their links are plain.)
+- **Star the repo, report bugs and send pull requests.**
+
 ## License
 
 Shark BiteTorrent is free software, licensed under the **[GNU General Public License v3.0 or later](LICENSE)**.

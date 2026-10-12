@@ -14,6 +14,10 @@ export function ChooseDownloadDir() {
   return window['go']['main']['App']['ChooseDownloadDir']();
 }
 
+export function GetAbout() {
+  return window['go']['main']['App']['GetAbout']();
+}
+
 export function GetFiles(arg1) {
   return window['go']['main']['App']['GetFiles'](arg1);
 }
@@ -56,6 +60,10 @@ export function OpenDefaultAppsSettings() {
 
 export function OpenFolder(arg1) {
   return window['go']['main']['App']['OpenFolder'](arg1);
+}
+
+export function OpenURL(arg1) {
+  return window['go']['main']['App']['OpenURL'](arg1);
 }
 
 export function Pause(arg1) {

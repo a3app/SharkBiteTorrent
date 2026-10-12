@@ -1,7 +1,7 @@
 <script lang="ts">
   import {
     GetSettings, SaveSettings, ChooseDirectory,
-    RegisterAssociations, OpenDefaultAppsSettings,
+    RegisterAssociations, OpenDefaultAppsSettings, GetAbout, OpenURL,
   } from '../wailsjs/go/main/App.js'
   import { main, type platform } from '../wailsjs/go/models'
   import VpnSettings from './VpnSettings.svelte'
@@ -15,6 +15,10 @@
   let assoc = $state<platform.AssocStatus>({ supported: false, magnet: false, torrent: false, canOpenSettings: false })
   let error = $state('')
   let saving = $state(false)
+  let about = $state<main.About | null>(null)
+  const hasReferrals = $derived(!!about && Object.values(about.links.providers ?? {}).some(p => p.referral))
+
+  GetAbout().then(a => (about = a))
 
   GetSettings().then(v => {
     s = { ...v.settings } as main.Settings
@@ -132,6 +136,29 @@
             {/if}
           {/if}
         </fieldset>
+
+        {#if about}
+          <fieldset>
+            <legend>About</legend>
+            <div class="row">
+              <span>Shark BiteTorrent {about.version}</span>
+              <span class="muted">· free software ({about.license})</span>
+              <button class="link" onclick={() => OpenURL(about!.links.repo)}>Source code ↗</button>
+            </div>
+            {#if about.links.sponsor}
+              <div class="row">
+                <button class="sponsor" onclick={() => OpenURL(about!.links.sponsor)}>♥ Support development</button>
+                <span class="muted small">No ads, no tracking. Donations keep it that way.</span>
+              </div>
+            {/if}
+            {#if hasReferrals}
+              <p class="muted small">
+                Some “Get a VPN” links are referral links: the provider pays a commission that supports
+                development, at no extra cost to you. Free WARP and config import are always available.
+              </p>
+            {/if}
+          </fieldset>
+        {/if}
       </div>
     {/if}
 
@@ -171,6 +198,8 @@
   .status b { font-weight: 600; color: var(--warn); }
   .status b.ok { color: var(--ok); }
   .link { background: none; border: none; padding: 0; color: var(--accent); text-decoration: underline; }
+  .sponsor { border-color: #db61a2; color: #f0a6cf; }
+  .sponsor:hover { background: rgba(219, 97, 162, 0.15) !important; }
   .error {
     margin: 8px 20px 0; padding: 8px 12px; border-radius: 6px; user-select: text;
     background: rgba(248, 81, 73, 0.12); border: 1px solid rgba(248, 81, 73, 0.4);

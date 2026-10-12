@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     ListVpnProviders, GetVpnRegions, LoginVpnAccount, LogoutVpnAccount, ImportWireGuardConfig,
+    GetAbout, OpenURL,
   } from '../wailsjs/go/main/App.js'
   import type { main, vpnprov } from '../wailsjs/go/models'
 
@@ -31,6 +32,9 @@
   })
 
   const provider = $derived(providers.find(p => p.id === s.accountProvider))
+  let providerLinks = $state<Record<string, main.ProviderLink>>({})
+  GetAbout().then(a => (providerLinks = a.links.providers ?? {}))
+  const signup = $derived(providerLinks[s.accountProvider])
   const signedIn = $derived(!!accounts[s.accountProvider])
 
   // Load server locations for the selected provider.
@@ -172,6 +176,13 @@
             <button class="primary" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
           </div>
           {#if provider.note}<p class="muted small indent">{provider.note}</p>{/if}
+          {#if signup}
+            <p class="small indent">
+              <span class="muted">Don't have an account?</span>
+              <button type="button" class="link" onclick={() => OpenURL(signup.url)}>Get {provider.name} ↗</button>
+              {#if signup.referral}<span class="muted">· referral link, supports development</span>{/if}
+            </p>
+          {/if}
         </form>
       {/if}
     {/if}
@@ -217,6 +228,7 @@
   .small { font-size: 12px; margin: 4px 0 0; }
   .note { color: var(--warn); margin: 10px 0 0; font-size: 13px; }
   .ok { color: var(--ok); }
+  .link { background: none; border: none; padding: 0; color: var(--accent); text-decoration: underline; }
   .check { display: flex; align-items: center; gap: 8px; margin-top: 8px; cursor: pointer; }
   select {
     font: inherit; color: var(--text); background: var(--bg);
