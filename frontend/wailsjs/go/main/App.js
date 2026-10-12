@@ -6,6 +6,10 @@ export function AddMagnet(arg1) {
   return window['go']['main']['App']['AddMagnet'](arg1);
 }
 
+export function CheckForUpdates() {
+  return window['go']['main']['App']['CheckForUpdates']();
+}
+
 export function ChooseDirectory(arg1) {
   return window['go']['main']['App']['ChooseDirectory'](arg1);
 }
@@ -36,6 +40,10 @@ export function GetVpnStatus() {
 
 export function ImportWireGuardConfig() {
   return window['go']['main']['App']['ImportWireGuardConfig']();
+}
+
+export function InstallUpdate(arg1) {
+  return window['go']['main']['App']['InstallUpdate'](arg1);
 }
 
 export function ListTorrents() {
@@ -104,4 +112,8 @@ export function SaveSettings(arg1) {
 
 export function SetFilesWanted(arg1, arg2, arg3) {
   return window['go']['main']['App']['SetFilesWanted'](arg1, arg2, arg3);
+}
+
+export function SkipUpdate(arg1) {
+  return window['go']['main']['App']['SkipUpdate'](arg1);
 }

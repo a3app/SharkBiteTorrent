@@ -7,6 +7,8 @@ import {platform} from '../models';
 
 export function AddMagnet(arg1:string):Promise<void>;
 
+export function CheckForUpdates():Promise<main.UpdateInfo>;
+
 export function ChooseDirectory(arg1:string):Promise<string>;
 
 export function ChooseDownloadDir():Promise<string>;
@@ -22,6 +24,8 @@ export function GetVpnRegions(arg1:string):Promise<Array<vpnprov.Region>>;
 export function GetVpnStatus():Promise<main.VpnStatus>;
 
 export function ImportWireGuardConfig():Promise<string>;
+
+export function InstallUpdate(arg1:string):Promise<void>;
 
 export function ListTorrents():Promise<Array<engine.Status>>;
 
@@ -56,3 +60,5 @@ export function ResumeAll():Promise<void>;
 export function SaveSettings(arg1:main.Settings):Promise<void>;
 
 export function SetFilesWanted(arg1:string,arg2:Array<number>,arg3:boolean):Promise<void>;
+
+export function SkipUpdate(arg1:string):Promise<void>;

@@ -64,6 +64,10 @@ type Settings struct {
 	DownLimitKB     int64  `json:"downLimitKB"` // 0 = unlimited
 	UpLimitKB       int64  `json:"upLimitKB"`
 	CloseToTray     bool   `json:"closeToTray"`
+	// Update checks (see updater.go).
+	AutoUpdateCheck bool   `json:"autoUpdateCheck"`
+	SkippedVersion  string `json:"skippedVersion"`
+	LastUpdateCheck int64  `json:"lastUpdateCheck"` // unix seconds
 }
 
 // savedTorrent is persisted so torrents survive restarts. Source is a magnet
@@ -325,6 +329,7 @@ func (a *App) connect() {
 		}
 	}
 	go a.monitor(mctx, tun)
+	go a.autoCheckUpdate()
 	if keepalive != nil {
 		go a.keepPortForward(mctx, keepalive, every)
 	}
@@ -755,9 +760,10 @@ func (a *App) customConfPath() string { return filepath.Join(a.configDir, "wireg
 func (a *App) loadSettings() {
 	home, _ := os.UserHomeDir()
 	a.settings = Settings{
-		DownloadDir: filepath.Join(home, "Downloads", "Torrents"),
-		VpnProvider: "warp",
-		CloseToTray: true,
+		DownloadDir:     filepath.Join(home, "Downloads", "Torrents"),
+		VpnProvider:     "warp",
+		CloseToTray:     true,
+		AutoUpdateCheck: true,
 	}
 	if data, err := os.ReadFile(filepath.Join(a.configDir, "settings.json")); err == nil {
 		json.Unmarshal(data, &a.settings)

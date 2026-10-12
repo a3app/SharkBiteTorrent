@@ -47,7 +47,7 @@ We'd rather tell you upfront than have you find out later.
 
 **What never happens:**
 - No ads, no bundled software, no "recommended offers" in the installer.
-- **No telemetry or analytics.** The app never sends data to us; there is no server of ours for it to talk to. Its only connections are the torrent network (peers, trackers and web seeds, all through the VPN), your VPN provider's own API when you sign in or connect, and Cloudflare's public trace page to check your exit IP.
+- **No telemetry or analytics.** The app never sends data to us; there is no server of ours for it to talk to. Its only connections are the torrent network (peers, trackers and web seeds, all through the VPN), your VPN provider's own API when you sign in or connect, Cloudflare's public trace page to check your exit IP, and GitHub to check for updates (through the VPN, about once a day; you can turn this off in Settings).
 - Your data, logins and download history are never sold or shared.
 
 Every link lives in one file, [`links.go`](links.go), so anyone can check exactly what the app links to. Because this is GPL software, you're free to build it with those links changed or removed.
@@ -74,6 +74,7 @@ Every link lives in one file, [`links.go`](links.go), so anyone can check exactl
 
 **Desktop**
 - **Tray icon** with close-to-tray, Pause all / Resume all, and live speeds in the tooltip.
+- **Updates**: on launch the app checks GitHub (through the VPN) and offers new versions. On Windows, *Update now* downloads the installer, verifies its SHA-256 checksum and upgrades in place. There's also *Check for updates* in Settings.
 - **Single instance**: clicking a magnet link while the app is open sends it to the running window.
 - **Windows installer**: per-user, no admin. It registers magnet links and `.torrent` files and cleans up on uninstall.
 

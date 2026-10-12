@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -35,8 +36,9 @@ type Config struct {
 type Tunnel struct {
 	dev  *device.Device
 	tnet *netstack.Net
-	dns  string // host:port of the DNS server reached through the tunnel
+	dns  string     // host:port of the DNS server reached through the tunnel
 	v4   netip.Addr // our IPv4 address inside the tunnel
+	v6   netip.Addr // our IPv6 address inside the tunnel, if any
 }
 
 func Start(cfg Config) (*Tunnel, error) {
@@ -107,9 +109,11 @@ func Start(cfg Config) (*Tunnel, error) {
 	}
 	t := &Tunnel{dev: dev, tnet: tnet, dns: "1.1.1.1:53"}
 	for _, a := range addrs {
-		if a.Is4() {
+		if a.Is4() && !t.v4.IsValid() {
 			t.v4 = a
-			break
+		}
+		if a.Is6() && !t.v6.IsValid() {
+			t.v6 = a
 		}
 	}
 	if len(dns) > 0 {
@@ -175,6 +179,18 @@ func (t *Tunnel) Net() *netstack.Net { return t.tnet }
 // bound to the tunnel's address (see localV4).
 func (t *Tunnel) ListenUDP4() (net.PacketConn, error) {
 	return t.tnet.ListenUDPAddrPort(netip.AddrPortFrom(t.localV4(), 0))
+}
+
+// ListenUDP opens a UDP socket for network "udp6" (bound to the tunnel's
+// IPv6 address, if it has one) or anything else (IPv4).
+func (t *Tunnel) ListenUDP(network string) (net.PacketConn, error) {
+	if network == "udp6" {
+		if !t.v6.IsValid() {
+			return nil, errors.New("tunnel has no IPv6 address")
+		}
+		return t.tnet.ListenUDPAddrPort(netip.AddrPortFrom(t.v6, 0))
+	}
+	return t.ListenUDP4()
 }
 
 func (t *Tunnel) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {

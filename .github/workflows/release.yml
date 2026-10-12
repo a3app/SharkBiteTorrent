@@ -130,6 +130,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Checksums let the in-app updater verify what it downloads.
+          (cd artifacts && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt)
           ls -la artifacts
           gh release create "$GITHUB_REF_NAME" artifacts/* \
             --repo "$GITHUB_REPOSITORY" \

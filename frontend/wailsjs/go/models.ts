@@ -184,6 +184,9 @@ export namespace main {
 	    downLimitKB: number;
 	    upLimitKB: number;
 	    closeToTray: boolean;
+	    autoUpdateCheck: boolean;
+	    skippedVersion: string;
+	    lastUpdateCheck: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -199,6 +202,9 @@ export namespace main {
 	        this.downLimitKB = source["downLimitKB"];
 	        this.upLimitKB = source["upLimitKB"];
 	        this.closeToTray = source["closeToTray"];
+	        this.autoUpdateCheck = source["autoUpdateCheck"];
+	        this.skippedVersion = source["skippedVersion"];
+	        this.lastUpdateCheck = source["lastUpdateCheck"];
 	    }
 	}
 	export class SettingsView {
@@ -236,6 +242,28 @@ export namespace main {
 		    }
 		    return a;
 		}
+	}
+	export class UpdateInfo {
+	    current: string;
+	    latest: string;
+	    available: boolean;
+	    notesURL: string;
+	    canInstall: boolean;
+	    direct: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.current = source["current"];
+	        this.latest = source["latest"];
+	        this.available = source["available"];
+	        this.notesURL = source["notesURL"];
+	        this.canInstall = source["canInstall"];
+	        this.direct = source["direct"];
+	    }
 	}
 	export class VpnStatus {
 	    state: string;

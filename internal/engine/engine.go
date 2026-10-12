@@ -61,6 +61,7 @@ type entry struct {
 	storage storage.ClientImplCloser
 	paused  bool
 	skipped map[int]bool // file indexes the user doesn't want
+	added   time.Time
 
 	last               time.Time
 	lastRead, lastWrit int64
@@ -108,7 +109,7 @@ func New(tun *tunnel.Tunnel, opts Options) (*Engine, error) {
 	cfg.TrackerDialContext = tun.DialContext
 	cfg.HTTPDialContext = tun.DialContext
 	cfg.TrackerListenPacket = func(network, addr string) (net.PacketConn, error) {
-		return tun.ListenUDP4()
+		return tun.ListenUDP(network)
 	}
 	cfg.DhtStartingNodes = func(string) dht.StartingNodesGetter {
 		return func() ([]dht.Addr, error) { return resolveBootstrap(tnet.LookupHost) }
@@ -242,7 +243,7 @@ func (e *Engine) Add(o AddOptions) (string, error) {
 	// from the files on disk, so no database is needed per folder.
 	st := storage.NewFileOpts(storage.NewFileClientOpts{ClientBaseDir: o.Dir})
 	spec.Storage = st
-	en := &entry{dir: o.Dir, storage: st, paused: o.Paused, skipped: map[int]bool{}}
+	en := &entry{dir: o.Dir, storage: st, paused: o.Paused, skipped: map[int]bool{}, added: time.Now()}
 	for _, i := range o.Skipped {
 		en.skipped[i] = true
 	}
@@ -432,7 +433,7 @@ type Status struct {
 	Hash     string  `json:"hash"`
 	Name     string  `json:"name"`
 	Dir      string  `json:"dir"`
-	State    string  `json:"state"` // metadata, downloading, seeding, paused
+	State    string  `json:"state"` // metadata, needs-torrent-file, downloading, seeding, paused
 	Size     int64   `json:"size"`  // bytes of wanted files
 	Done     int64   `json:"done"`  // completed bytes of wanted files
 	Progress float64 `json:"progress"`
@@ -492,6 +493,10 @@ func (e *Engine) List() []Status {
 		switch {
 		case en.paused:
 			row.State = "paused"
+		case t.Info() == nil && st.ActivePeers > 0 && now.Sub(en.added) > metadataStallAfter:
+			// Connected, but nobody will send the file list: almost always a
+			// private torrent, whose peers disable metadata exchange (ut_metadata).
+			row.State = "needs-torrent-file"
 		case t.Info() == nil:
 			row.State = "metadata"
 		case row.Done >= row.Size:
@@ -507,3 +512,7 @@ func (e *Engine) List() []Status {
 
 // WriteStatus dumps the client's internal state (trackers, DHT, peers) for debugging.
 func (e *Engine) WriteStatus(w io.Writer) { e.cl.WriteStatus(w) }
+
+// metadataStallAfter is how long a magnet may sit connected to peers without
+// receiving metadata before the UI suggests using the .torrent file instead.
+const metadataStallAfter = 45 * time.Second

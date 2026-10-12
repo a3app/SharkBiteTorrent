@@ -3,6 +3,7 @@
   import {
     GetVpnStatus, ListTorrents, AddMagnet, PickTorrentFile, GetSettings,
     Pause, Resume, Remove, Reconnect, OpenFolder, ChooseDownloadDir,
+    InstallUpdate, SkipUpdate, OpenURL,
   } from '../wailsjs/go/main/App.js'
   import { EventsOn } from '../wailsjs/runtime/runtime.js'
   import type { engine, main } from '../wailsjs/go/models'
@@ -42,9 +43,11 @@
     refresh()
     const id = setInterval(refresh, 1000)
     const off = EventsOn('error', (msg: string) => (error = msg))
+    const offUpdate = EventsOn('update-available', (info: main.UpdateInfo) => (update = info))
     return () => {
       clearInterval(id)
       off()
+      offUpdate()
     }
   })
 
@@ -65,6 +68,20 @@
       await AddMagnet(magnet)
       magnet = ''
     })
+  }
+
+  // Update offered by the launch-time check (or Settings → Check for updates).
+  let update = $state<main.UpdateInfo | null>(null)
+  let installing = $state(false)
+
+  async function installUpdate() {
+    installing = true
+    try {
+      await InstallUpdate(update!.latest) // the app quits and the installer relaunches it
+    } catch (e) {
+      error = String(e)
+      installing = false
+    }
   }
 
   // Right-click menu on a torrent row.
@@ -104,7 +121,7 @@
   }
 
   const stateLabel: Record<string, string> = {
-    metadata: 'Fetching metadata', downloading: 'Downloading', seeding: 'Seeding', paused: 'Paused',
+    metadata: 'Fetching metadata', 'needs-torrent-file': '⚠ Needs .torrent file', downloading: 'Downloading', seeding: 'Seeding', paused: 'Paused',
   }
 
   const limitText = $derived.by(() => {
@@ -162,6 +179,24 @@
     <button onclick={() => { removing = sel ?? null; deleteFiles = false }} disabled={!sel}>Remove…</button>
   </div>
 
+  {#if update}
+    <div class="update" role="status">
+      <span>🦈 <b>Shark BiteTorrent {update.latest}</b> is available (you have {update.current}).</span>
+      {#if installing}
+        <span class="muted">Downloading and verifying the update…</span>
+      {:else}
+        {#if update.canInstall}
+          <button class="primary" onclick={installUpdate}>Update now</button>
+        {:else}
+          <button class="primary" onclick={() => OpenURL(update!.notesURL)}>Download</button>
+        {/if}
+        <button onclick={() => OpenURL(update!.notesURL)}>What's new</button>
+        <button onclick={() => { SkipUpdate(update!.latest); update = null }}>Skip this version</button>
+        <button class="close" onclick={() => (update = null)} aria-label="Later">✕</button>
+      {/if}
+    </div>
+  {/if}
+
   {#if error}<div class="error" role="alert"><span>{error}</span> <button onclick={() => (error = '')} aria-label="Dismiss">✕</button></div>{/if}
 
   <main class:split={!!sel}>
@@ -195,7 +230,12 @@
                   <div class="bar {t.state}"><div style="width:{(t.progress * 100).toFixed(1)}%"></div></div>
                   <span>{(t.progress * 100).toFixed(1)}%</span>
                 </td>
-                <td>{stateLabel[t.state] ?? t.state}</td>
+                <td
+                  class:warn={t.state === 'needs-torrent-file'}
+                  title={t.state === 'needs-torrent-file'
+                    ? "Peers are connected but won't share the file list. This usually means a private torrent, which can't start from a magnet link. Download its .torrent file and open that instead."
+                    : ''}
+                >{stateLabel[t.state] ?? t.state}</td>
                 <td>{rate(t.downRate)}</td>
                 <td>{rate(t.upRate)}</td>
                 <td>{eta(t)}</td>
@@ -290,6 +330,16 @@
   .toolbar form { display: flex; gap: 8px; flex: 1; min-width: 0; }
   .toolbar input { flex: 1; min-width: 0; }
   .sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
+
+  .update {
+    margin: 0 14px 8px; padding: 8px 12px; border-radius: 6px;
+    background: rgba(79, 140, 255, 0.12); border: 1px solid rgba(79, 140, 255, 0.4);
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .update > span:first-child { flex: 1; min-width: 240px; }
+  .update button { padding: 3px 10px; }
+  .update .close { background: none; border: none; }
+  .muted { color: var(--muted); }
 
   .error {
     margin: 0 14px 8px; padding: 8px 12px; border-radius: 6px;

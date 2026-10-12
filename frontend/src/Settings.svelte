@@ -2,6 +2,7 @@
   import {
     GetSettings, SaveSettings, ChooseDirectory,
     RegisterAssociations, OpenDefaultAppsSettings, GetAbout, OpenURL,
+    CheckForUpdates, InstallUpdate,
   } from '../wailsjs/go/main/App.js'
   import { main, type platform } from '../wailsjs/go/models'
   import VpnSettings from './VpnSettings.svelte'
@@ -26,6 +27,23 @@
   const referralNames = $derived(referralIds.map(id => providerNames[id] ?? id).join(' and '))
 
   GetAbout().then(a => (about = a))
+
+  let checking = $state(false)
+  let installing = $state(false)
+  let updateResult = $state<main.UpdateInfo | null>(null)
+
+  async function checkUpdates() {
+    checking = true
+    updateResult = null
+    await attempt(async () => (updateResult = await CheckForUpdates()))
+    checking = false
+  }
+
+  async function installUpdate() {
+    installing = true
+    await attempt(() => InstallUpdate(updateResult!.latest)) // the app quits and relaunches
+    installing = false
+  }
 
   GetSettings().then(v => {
     s = { ...v.settings } as main.Settings
@@ -152,6 +170,33 @@
               <span class="muted">· free software ({about.license})</span>
               <button class="link" onclick={() => OpenURL(about!.links.repo)}>Source code ↗</button>
             </div>
+            <div class="row">
+              <button onclick={checkUpdates} disabled={checking || installing}>
+                {checking ? 'Checking…' : 'Check for updates'}
+              </button>
+              {#if updateResult}
+                {#if updateResult.available}
+                  <span>Version <b>{updateResult.latest}</b> is available.</span>
+                  {#if updateResult.canInstall}
+                    <button class="primary" onclick={installUpdate} disabled={installing}>
+                      {installing ? 'Downloading…' : 'Update now'}
+                    </button>
+                  {:else}
+                    <button class="primary" onclick={() => OpenURL(updateResult!.notesURL)}>Download</button>
+                  {/if}
+                  <button class="link" onclick={() => OpenURL(updateResult!.notesURL)}>What's new ↗</button>
+                {:else}
+                  <span class="ok">You're up to date.</span>
+                {/if}
+              {/if}
+            </div>
+            {#if updateResult?.direct}
+              <p class="muted small">The VPN was off, so this check used your normal connection.</p>
+            {/if}
+            <label class="check">
+              <input type="checkbox" bind:checked={s.autoUpdateCheck} />
+              <span>Check for updates automatically <span class="muted">(about once a day, through the VPN)</span></span>
+            </label>
             {#if about.links.sponsor}
               <div class="row">
                 <button class="sponsor" onclick={() => OpenURL(about!.links.sponsor)}>♥ Support development</button>
@@ -206,6 +251,7 @@
   .note { color: var(--warn); margin: 10px 0 0; font-size: 13px; }
   .status b { font-weight: 600; color: var(--warn); }
   .status b.ok { color: var(--ok); }
+  .ok { color: var(--ok); }
   .link { background: none; border: none; padding: 0; color: var(--accent); text-decoration: underline; }
   .sponsor { border-color: #db61a2; color: #f0a6cf; }
   .sponsor:hover { background: rgba(219, 97, 162, 0.15) !important; }
