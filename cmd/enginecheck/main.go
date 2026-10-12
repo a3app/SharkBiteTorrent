@@ -23,6 +23,9 @@ func main() {
 	secs := flag.Int("seconds", 60, "how long to run")
 	down := flag.Int64("down", 0, "download limit in KB/s (0 = unlimited)")
 	del := flag.Bool("delete", false, "remove the torrent and its files at the end")
+	recheck := flag.Bool("recheck", false, "verify existing data first, as the app does after a restart")
+	dirFlag := flag.String("dir", "", "download folder (default: a temp folder)")
+	state := flag.String("state", "", "folder for the progress database (default: in memory)")
 	flag.Parse()
 	if flag.NArg() != 1 {
 		flag.Usage()
@@ -57,13 +60,16 @@ func main() {
 	fmt.Printf("tunnel up, exit IP %s warp=%s\n", tr.IP, tr.Warp)
 
 	out := filepath.Join(os.TempDir(), "sharkbite-enginecheck")
-	e, err := engine.New(t, engine.Options{DownLimit: *down * 1024})
+	if *dirFlag != "" {
+		out = *dirFlag
+	}
+	e, err := engine.New(t, engine.Options{DownLimit: *down * 1024, StateDir: *state})
 	if err != nil {
 		fmt.Println("engine:", err)
 		os.Exit(1)
 	}
 	defer e.Close()
-	hash, err := e.Add(engine.AddOptions{Source: flag.Arg(0), Dir: out})
+	hash, err := e.Add(engine.AddOptions{Source: flag.Arg(0), Dir: out, Recheck: *recheck})
 	if err != nil {
 		fmt.Println("add:", err)
 		os.Exit(1)

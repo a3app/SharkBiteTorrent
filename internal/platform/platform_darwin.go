@@ -19,3 +19,11 @@ func Associations(string) AssocStatus { return AssocStatus{Supported: false} }
 func OpenDefaultAppsSettings() error {
 	return errors.New("not needed on macOS")
 }
+
+// RevealPath shows a file selected in Finder, or opens a folder.
+func RevealPath(path string, isDir bool) error {
+	if isDir {
+		return exec.Command("open", path).Start()
+	}
+	return exec.Command("open", "-R", path).Start()
+}

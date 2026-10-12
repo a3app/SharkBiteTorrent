@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/anacrolix/dht/v2"
@@ -41,6 +42,9 @@ type Options struct {
 	// Speed limits in bytes/second; 0 means unlimited.
 	DownLimit int64
 	UpLimit   int64
+	// StateDir holds the piece-completion database (the app data folder).
+	// Empty keeps completion in memory only (tests and tools).
+	StateDir string
 }
 
 type Engine struct {
@@ -49,6 +53,7 @@ type Engine struct {
 	listener net.Listener
 	tun      *tunnel.Tunnel
 	down, up *rate.Limiter
+	pc       storage.PieceCompletion // shared by all torrents; persists progress
 
 	mu      sync.Mutex
 	entries map[metainfo.Hash]*entry
@@ -56,12 +61,13 @@ type Engine struct {
 
 // entry is our per-torrent state on top of anacrolix's.
 type entry struct {
-	t       *torrent.Torrent
-	dir     string
-	storage storage.ClientImplCloser
-	paused  bool
-	skipped map[int]bool // file indexes the user doesn't want
-	added   time.Time
+	t        *torrent.Torrent
+	dir      string
+	storage  storage.ClientImpl
+	paused   bool
+	skipped  map[int]bool // file indexes the user doesn't want
+	added    time.Time
+	checking atomic.Bool // verifying existing data after a restart
 
 	last               time.Time
 	lastRead, lastWrit int64
@@ -89,6 +95,15 @@ func New(tun *tunnel.Tunnel, opts Options) (*Engine, error) {
 		entries: map[metainfo.Hash]*entry{},
 	}
 	e.SetLimits(opts.DownLimit, opts.UpLimit)
+	if opts.StateDir != "" {
+		pc, err := storage.NewBoltPieceCompletion(opts.StateDir)
+		if err != nil {
+			return nil, fmt.Errorf("opening download progress database: %w", err)
+		}
+		e.pc = pc
+	} else {
+		e.pc = storage.NewMapPieceCompletion()
+	}
 
 	cfg := torrent.NewDefaultClientConfig()
 	cfg.Seed = true
@@ -107,6 +122,11 @@ func New(tun *tunnel.Tunnel, opts Options) (*Engine, error) {
 	cfg.HalfOpenConnsPerTorrent = 60
 	cfg.TotalHalfOpenConns = 250
 	cfg.DialRateLimiter = rate.NewLimiter(40, 40)
+	// Check (hash) and write finished pieces in parallel. Each check now also
+	// writes the piece to disk in one go, which on a NAS means network
+	// latency; with the default 2 hashers, checking fell far behind the
+	// download and unchecked pieces piled up in memory.
+	cfg.PieceHashersPerTorrent = 16
 	// Torrents get their own storage (see Add); this only catches anything
 	// added without one, and is never written to in practice.
 	cfg.DataDir = os.TempDir()
@@ -189,11 +209,8 @@ func (e *Engine) closeClient() {
 	if e.listener != nil {
 		e.listener.Close()
 	}
-	e.mu.Lock()
-	for _, en := range e.entries {
-		en.storage.Close()
-	}
-	e.mu.Unlock()
+	// After the client: dropping torrents flushes their last completion writes.
+	e.pc.Close()
 }
 
 // Close stops the client. Call before closing the tunnel.
@@ -231,6 +248,10 @@ type AddOptions struct {
 	Dir     string // folder to save data in
 	Skipped []int  // file indexes not to download
 	Paused  bool
+	// Recheck verifies data already on disk before downloading. Set it when
+	// restoring a torrent after a restart: the storage forgets the progress of
+	// unfinished (.part) files, and verifying recovers it.
+	Recheck bool
 }
 
 // Add starts a torrent and returns its info hash.
@@ -254,9 +275,7 @@ func (e *Engine) Add(o AddOptions) (string, error) {
 		e.mu.Unlock()
 		return spec.InfoHash.HexString(), nil
 	}
-	// Part files: incomplete files end in .part, and completion is inferred
-	// from the files on disk, so no database is needed per folder.
-	st := storage.NewFileOpts(storage.NewFileClientOpts{ClientBaseDir: o.Dir})
+	st := newFileStore(o.Dir, e.pc)
 	spec.Storage = st
 	en := &entry{dir: o.Dir, storage: st, paused: o.Paused, skipped: map[int]bool{}, added: time.Now()}
 	for _, i := range o.Skipped {
@@ -270,7 +289,6 @@ func (e *Engine) Add(o AddOptions) (string, error) {
 		e.mu.Lock()
 		delete(e.entries, spec.InfoHash)
 		e.mu.Unlock()
-		st.Close()
 		return "", err
 	}
 	en.t = t
@@ -281,6 +299,9 @@ func (e *Engine) Add(o AddOptions) (string, error) {
 	go func() {
 		select {
 		case <-t.GotInfo():
+			if o.Recheck {
+				recheck(en)
+			}
 			e.applyPriorities(en)
 		case <-t.Closed():
 		}
@@ -364,8 +385,14 @@ func (e *Engine) Remove(hash string, deleteFiles bool) error {
 	e.mu.Lock()
 	delete(e.entries, en.t.InfoHash())
 	e.mu.Unlock()
-	en.t.Drop()
-	en.storage.Close()
+	info := en.t.Info()
+	en.t.Drop() // closes the storage, releasing its file handles
+	if info != nil {
+		// Forget its progress, so re-adding it later starts clean.
+		for i := range info.NumPieces() {
+			e.pc.Set(metainfo.PieceKey{InfoHash: en.t.InfoHash(), Index: i}, false)
+		}
+	}
 
 	var errs []error
 	for _, p := range paths {
@@ -448,7 +475,7 @@ type Status struct {
 	Hash     string  `json:"hash"`
 	Name     string  `json:"name"`
 	Dir      string  `json:"dir"`
-	State    string  `json:"state"` // metadata, needs-torrent-file, downloading, seeding, paused
+	State    string  `json:"state"` // metadata, needs-torrent-file, checking, downloading, seeding, paused
 	Size     int64   `json:"size"`  // bytes of wanted files
 	Done     int64   `json:"done"`  // completed bytes of wanted files
 	Progress float64 `json:"progress"`
@@ -508,6 +535,8 @@ func (e *Engine) List() []Status {
 		switch {
 		case en.paused:
 			row.State = "paused"
+		case en.checking.Load():
+			row.State = "checking"
 		case t.Info() == nil && st.ActivePeers > 0 && now.Sub(en.added) > metadataStallAfter:
 			// Connected, but nobody will send the file list: almost always a
 			// private torrent, whose peers disable metadata exchange (ut_metadata).
@@ -531,3 +560,54 @@ func (e *Engine) WriteStatus(w io.Writer) { e.cl.WriteStatus(w) }
 // metadataStallAfter is how long a magnet may sit connected to peers without
 // receiving metadata before the UI suggests using the .torrent file instead.
 const metadataStallAfter = 45 * time.Second
+
+// recheck verifies the pieces of every unfinished file, so progress saved in
+// .part files survives a restart. The storage marks those pieces incomplete
+// on open (anacrolix's part-file mode only trusts finished files), so without
+// this they would be downloaded again. It runs before priorities are applied,
+// so nothing is re-requested while checking. Finished files are skipped.
+func recheck(en *entry) {
+	t := en.t
+	var pieces []int
+	for _, f := range t.Files() {
+		if f.BytesCompleted() < f.Length() {
+			for i := f.BeginPieceIndex(); i < f.EndPieceIndex(); i++ {
+				pieces = append(pieces, i)
+			}
+		}
+	}
+	if len(pieces) == 0 {
+		return
+	}
+	en.checking.Store(true)
+	defer en.checking.Store(false)
+
+	// VerifyData queues the piece on the library's hashers and waits; run a
+	// bounded number at once so the queue stays full.
+	sem := make(chan struct{}, 32)
+	var wg sync.WaitGroup
+	for _, i := range pieces {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(i int) {
+			defer func() { <-sem; wg.Done() }()
+			t.Piece(i).VerifyData()
+		}(i)
+	}
+	wg.Wait()
+}
+
+// ContentPath returns where a torrent's data lives: its folder for
+// multi-file torrents, or its file for single-file ones. ok is false until
+// the torrent's metadata is known.
+func (e *Engine) ContentPath(hash string) (path string, isDir bool, ok bool) {
+	en, err := e.find(hash)
+	if err != nil {
+		return "", false, false
+	}
+	info := en.t.Info()
+	if info == nil {
+		return en.dir, true, false
+	}
+	return filepath.Join(en.dir, info.BestName()), info.IsDir(), true
+}

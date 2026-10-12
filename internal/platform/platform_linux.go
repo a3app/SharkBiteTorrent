@@ -80,3 +80,12 @@ func Associations(string) AssocStatus {
 func OpenDefaultAppsSettings() error {
 	return errors.New("use your desktop's Default Applications settings")
 }
+
+// RevealPath opens the folder (or the folder containing the file). There's
+// no portable "select this file" across Linux file managers.
+func RevealPath(path string, isDir bool) error {
+	if !isDir {
+		path = filepath.Dir(path)
+	}
+	return exec.Command("xdg-open", path).Start()
+}

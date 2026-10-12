@@ -16,3 +16,11 @@ func Associations(exe string) AssocStatus {
 	s := winassoc.Status(exe)
 	return AssocStatus{Supported: true, Magnet: s.Magnet, Torrent: s.Torrent, CanOpenSettings: true}
 }
+
+// RevealPath shows a file selected in Explorer, or opens a folder.
+func RevealPath(path string, isDir bool) error {
+	if isDir {
+		return exec.Command("explorer", path).Start()
+	}
+	return exec.Command("explorer", "/select,"+path).Start()
+}

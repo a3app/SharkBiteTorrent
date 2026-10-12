@@ -297,6 +297,7 @@ func (a *App) connect() {
 		ForwardedPort: port,
 		DownLimit:     set.DownLimitKB * 1024,
 		UpLimit:       set.UpLimitKB * 1024,
+		StateDir:      a.configDir, // download progress database
 	})
 	if err != nil {
 		tun.Close()
@@ -596,6 +597,17 @@ func (a *App) OpenFolder(hash string) error {
 		}
 	}
 	a.mu.Unlock()
+	// Show the torrent's own folder, or select its file if it's a single
+	// file, once its data exists. Otherwise fall back to the download folder.
+	if hash != "" {
+		if eng, err := a.engine(); err == nil {
+			if p, isDir, ok := eng.ContentPath(hash); ok {
+				if _, err := os.Stat(p); err == nil {
+					return platform.RevealPath(p, isDir)
+				}
+			}
+		}
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
