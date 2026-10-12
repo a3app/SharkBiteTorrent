@@ -2,6 +2,7 @@ package platform
 
 import (
 	"os/exec"
+	"syscall"
 
 	"sharkbite/internal/winassoc"
 )
@@ -22,5 +23,11 @@ func RevealPath(path string, isDir bool) error {
 	if isDir {
 		return exec.Command("explorer", path).Start()
 	}
-	return exec.Command("explorer", "/select,"+path).Start()
+	// Explorer only understands /select,"C:\path with spaces\file" with the
+	// quotes around the path alone. Go's argument quoting wraps the whole
+	// "/select,..." argument instead, which Explorer can't parse (it falls
+	// back to opening Documents), so pass the command line verbatim.
+	cmd := exec.Command("explorer")
+	cmd.SysProcAttr = &syscall.SysProcAttr{CmdLine: `explorer /select,"` + path + `"`}
+	return cmd.Start()
 }
