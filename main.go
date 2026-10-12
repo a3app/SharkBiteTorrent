@@ -12,6 +12,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/mac"
 )
 
 //go:embed all:frontend/dist
@@ -56,6 +57,12 @@ func main() {
 		SingleInstanceLock: &options.SingleInstanceLock{
 			UniqueId:               "sharkbitetorrent-3f6c2b1e",
 			OnSecondInstanceLaunch: app.onSecondInstance,
+		},
+		// macOS delivers magnet links and opened .torrent files as events
+		// (declared via "protocols"/"fileAssociations" in wails.json).
+		Mac: &mac.Options{
+			OnUrlOpen:  func(u string) { app.handleArgs([]string{u}) },
+			OnFileOpen: func(p string) { app.handleArgs([]string{p}) },
 		},
 		DragAndDrop: &options.DragAndDrop{
 			EnableFileDrop:     true,

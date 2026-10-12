@@ -13,6 +13,22 @@
   "info": {
     "productName": "Shark BiteTorrent",
     "productVersion": "0.2.0",
-    "comments": "BitTorrent client with a built-in per-app VPN"
+    "comments": "BitTorrent client with a built-in per-app VPN",
+    "fileAssociations": [
+      {
+        "ext": "torrent",
+        "name": "BitTorrent file",
+        "description": "Torrent file",
+        "iconName": "appicon",
+        "role": "Viewer"
+      }
+    ],
+    "protocols": [
+      {
+        "scheme": "magnet",
+        "description": "Magnet link",
+        "role": "Viewer"
+      }
+    ]
   }
 }

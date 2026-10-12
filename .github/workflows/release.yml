@@ -1,0 +1,149 @@
+# Builds Windows, Linux (on Arch, for CachyOS) and macOS, and publishes them
+# as a GitHub Release when a version tag (v1.2.3) is pushed. Running it by hand
+# (Actions → Release → Run workflow) builds everything without releasing.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  WAILS_VERSION: v2.16.0
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: sed -i "s/\"productVersion\": \"[^\"]*\"/\"productVersion\": \"${GITHUB_REF_NAME#v}\"/" wails.json
+      - run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
+      - run: choco install nsis -y --no-progress
+      - name: Test
+        run: go test ./...
+      - name: Build
+        shell: bash
+        run: |
+          export PATH="$PATH:/c/Program Files (x86)/NSIS"
+          wails build -clean -trimpath -ldflags "-s -w" -nsis -installscope user
+          ls -la build/bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            build/bin/SharkBiteTorrent.exe
+            build/bin/SharkBiteTorrent-amd64-installer.exe
+
+  linux:
+    runs-on: ubuntu-latest
+    # Built on Arch so the binary matches CachyOS's library versions.
+    container: archlinux:latest
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git go nodejs npm gtk3 webkit2gtk-4.1 pkgconf
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          sed -i "s/\"productVersion\": \"[^\"]*\"/\"productVersion\": \"$v\"/" wails.json
+          sed -i "s/^pkgver=.*/pkgver=$v/" packaging/arch/PKGBUILD
+      - name: Build
+        env:
+          GOFLAGS: -buildvcs=false
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          go vet ./...
+          wails build -clean -trimpath -ldflags "-s -w" -tags webkit2_41
+      - name: Package tarball and Arch package
+        run: |
+          v=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)
+          name="SharkBiteTorrent-${v}-linux-x86_64"
+          mkdir -p "dist/$name"
+          cp build/bin/SharkBiteTorrent packaging/linux/sharkbitetorrent.desktop "dist/$name/"
+          cp build/appicon.png "dist/$name/sharkbitetorrent.png"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          # makepkg refuses to run as root, so build the package as a normal user.
+          useradd -m builder
+          mkdir /tmp/pkg && cp packaging/arch/PKGBUILD "dist/$name.tar.gz" /tmp/pkg/
+          chown -R builder /tmp/pkg
+          su builder -c "cd /tmp/pkg && makepkg --nodeps --noconfirm"
+          cp /tmp/pkg/*.pkg.tar.zst dist/
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/*.tar.gz
+            dist/*.pkg.tar.zst
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: sed -i '' "s/\"productVersion\": \"[^\"]*\"/\"productVersion\": \"${GITHUB_REF_NAME#v}\"/" wails.json
+      - name: Build universal app
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          wails build -clean -trimpath -ldflags "-s -w" -platform darwin/universal
+          # Unsigned builds still need an ad-hoc signature to launch on Apple Silicon.
+          codesign --force --deep --sign - "build/bin/Shark BiteTorrent.app" || codesign --force --deep --sign - build/bin/*.app
+          cd build/bin && ditto -c -k --keepParent *.app SharkBiteTorrent-macos-universal.zip
+          ls -la
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: build/bin/SharkBiteTorrent-macos-universal.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts, merge-multiple: true }
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la artifacts
+          gh release create "$GITHUB_REF_NAME" artifacts/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Shark BiteTorrent ${GITHUB_REF_NAME#v}" \
+            --notes "$(cat <<'EOF'
+          ## Downloads
+
+          | Platform | File |
+          |---|---|
+          | **Windows** (recommended) | `SharkBiteTorrent-amd64-installer.exe` (registers magnet links and .torrent files) |
+          | Windows (portable) | `SharkBiteTorrent.exe` |
+          | **Linux: Arch / CachyOS** | `sharkbitetorrent-*.pkg.tar.zst`, install with `sudo pacman -U <file>` |
+          | Linux (other) | `SharkBiteTorrent-*-linux-x86_64.tar.gz` (needs GTK3 and WebKitGTK 4.1) |
+          | **macOS** (Intel + Apple Silicon) | `SharkBiteTorrent-macos-universal.zip` |
+
+          The macOS app isn't signed with an Apple developer certificate. The first time,
+          right-click the app → **Open**, or run `xattr -cr "/Applications/Shark BiteTorrent.app"`.
+
+          Linux and macOS builds are new and less tested than Windows.
+          EOF
+          )"
