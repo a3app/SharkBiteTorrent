@@ -162,6 +162,13 @@
     return duration(Math.round((t.size - t.done) / t.downRate))
   }
 
+  // Antivirus status takes over the Status column once a torrent finishes.
+  function statusText(t: engine.Status): string {
+    if (t.state === 'seeding' && t.scanState === 'scanning') return 'Scanning for malware…'
+    if (t.scanState === 'threat') return '⚠ Threat found'
+    return stateLabel[t.state] ?? t.state
+  }
+
   const stateLabel: Record<string, string> = {
     metadata: 'Fetching metadata', 'needs-torrent-file': '⚠ Needs .torrent file', downloading: 'Downloading', seeding: 'Seeding', paused: 'Paused',
   }
@@ -266,7 +273,14 @@
                 onclick={() => (selected = t.hash)}
                 oncontextmenu={e => openMenu(e, t)}
               >
-                <td class="name" title={t.name}>{t.name || t.hash}</td>
+                <td class="name" title={t.name}>
+                  {#if t.scanState === 'threat'}
+                    <span class="flag threat" title="Antivirus found: {(t.threats ?? []).join(', ')}">⚠</span>
+                  {:else if (t.warnings ?? []).length > 0}
+                    <span class="flag caution" title={(t.warnings ?? []).map(w => w.reason).join('\n')}>⚠</span>
+                  {/if}
+                  {t.name || t.hash}
+                </td>
                 <td>{t.size ? bytes(t.size) : '–'}</td>
                 <td class="prog">
                   <div class="bar {t.state}"><div style="width:{(t.progress * 100).toFixed(1)}%"></div></div>
@@ -274,10 +288,11 @@
                 </td>
                 <td
                   class:warn={t.state === 'needs-torrent-file'}
+                  class:threat={t.scanState === 'threat'}
                   title={t.state === 'needs-torrent-file'
                     ? "Peers are connected but won't share the file list. This usually means a private torrent, which can't start from a magnet link. Download its .torrent file and open that instead."
                     : ''}
-                >{stateLabel[t.state] ?? t.state}</td>
+                >{statusText(t)}</td>
                 <td>{rate(t.downRate)}</td>
                 <td>{rate(t.upRate)}</td>
                 <td>{eta(t)}</td>
@@ -373,6 +388,10 @@
   }
   .icon { padding: 2px 9px; font-size: 16px; }
   .warn { color: var(--warn); }
+  td.threat { color: var(--err); font-weight: 600; }
+  .flag { margin-right: 4px; font-weight: 700; }
+  .flag.caution { color: var(--warn); }
+  .flag.threat { color: var(--err); }
 
   .toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 14px; }
   .toolbar form { display: flex; gap: 8px; flex: 1; min-width: 0; }

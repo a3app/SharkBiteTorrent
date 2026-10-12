@@ -9,6 +9,8 @@
   let files = $state<engine.FileStatus[]>([])
   const allWanted = $derived(files.length > 0 && files.every(f => f.wanted))
   const noneWanted = $derived(files.every(f => !f.wanted))
+  const warnings = $derived(torrent.warnings ?? [])
+  const flagged = $derived(new Set(warnings.map(w => w.file)))
 
   async function load() {
     try {
@@ -44,6 +46,25 @@
     <b title={torrent.name}>{torrent.name || torrent.hash}</b>
     <span class="muted">{files.length} file{files.length === 1 ? '' : 's'}</span>
   </div>
+  {#if warnings.length > 0 || torrent.scanState}
+    <div class="safety">
+      {#each warnings as w (w.file)}
+        <div class="caution">⚠ <b>{w.file}</b>: {w.reason}</div>
+      {/each}
+      {#if torrent.scanState === 'scanning'}
+        <div class="muted">Scanning the finished files for malware…</div>
+      {:else if torrent.scanState === 'clean'}
+        <div class="ok">✓ {torrent.scanEngine} found no threats.</div>
+      {:else if torrent.scanState === 'threat'}
+        <div class="threat">
+          ⚠ {torrent.scanEngine} found: {(torrent.threats ?? []).join(', ')}. Don't open these files.
+          Removing the torrent with its files is the safest option.
+        </div>
+      {:else if torrent.scanState === 'error'}
+        <div class="muted">Not scanned for malware: {torrent.scanError}.</div>
+      {/if}
+    </div>
+  {/if}
   <PieceMap hash={torrent.hash} />
   {#if files.length === 0}
     <div class="empty">Waiting for metadata from peers…</div>
@@ -70,7 +91,9 @@
               <td class="check">
                 <input type="checkbox" checked={f.wanted} onchange={() => setWanted([f.index], !f.wanted)} />
               </td>
-              <td class="path" title={f.path}>{f.path}</td>
+              <td class="path" title={f.path}>
+                {#if flagged.has(f.path)}<span class="flag">⚠</span>{/if}{f.path}
+              </td>
               <td class="num">{bytes(f.size)}</td>
               <td class="num">{f.size ? ((f.done / f.size) * 100).toFixed(0) : 100}%</td>
             </tr>
@@ -90,6 +113,11 @@
   .head b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
   .muted { color: var(--muted); white-space: nowrap; }
   .empty { padding: 16px; color: var(--muted); }
+  .safety { padding: 8px 14px; border-bottom: 1px solid var(--border); display: grid; gap: 4px; font-size: 13px; user-select: text; }
+  .safety .caution { color: var(--warn); }
+  .safety .threat { color: var(--err); font-weight: 600; }
+  .safety .ok { color: var(--ok); }
+  .flag { color: var(--warn); font-weight: 700; margin-right: 5px; }
   .list { overflow: auto; flex: 1; }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
   th {

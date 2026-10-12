@@ -25,6 +25,7 @@ import (
 	"github.com/anacrolix/torrent/storage"
 	"golang.org/x/time/rate"
 
+	"sharkbite/internal/scan"
 	"sharkbite/internal/tunnel"
 )
 
@@ -61,13 +62,15 @@ type Engine struct {
 
 // entry is our per-torrent state on top of anacrolix's.
 type entry struct {
-	t        *torrent.Torrent
-	dir      string
-	storage  storage.ClientImpl
-	paused   bool
-	skipped  map[int]bool // file indexes the user doesn't want
-	added    time.Time
-	checking atomic.Bool // verifying existing data after a restart
+	t         *torrent.Torrent
+	dir       string
+	storage   storage.ClientImpl
+	paused    bool
+	skipped   map[int]bool // file indexes the user doesn't want
+	added     time.Time
+	warnings  []scan.Warning // from the file list, computed once metadata arrives
+	inspected bool
+	checking  atomic.Bool // verifying existing data after a restart
 
 	last               time.Time
 	lastRead, lastWrit int64
@@ -483,6 +486,13 @@ type Status struct {
 	UpRate   int64   `json:"upRate"`
 	Peers    int     `json:"peers"`
 	Seeds    int     `json:"seeds"`
+	// Warnings from the file list (see scan.Inspect), known before downloading.
+	Warnings []scan.Warning `json:"warnings"`
+	// Antivirus scan of the finished files; filled in by the app.
+	ScanState  string   `json:"scanState"` // "", scanning, clean, threat, error
+	ScanEngine string   `json:"scanEngine"`
+	Threats    []string `json:"threats"`
+	ScanError  string   `json:"scanError"`
 }
 
 // List returns a snapshot of all torrents. Rates are computed from the
@@ -518,6 +528,14 @@ func (e *Engine) List() []Status {
 			Peers:    st.ActivePeers,
 			Seeds:    st.ConnectedSeeders,
 		}
+		if t.Info() != nil && !en.inspected {
+			var fs []scan.File
+			for _, f := range t.Files() {
+				fs = append(fs, scan.File{Path: f.DisplayPath(), Size: f.Length()})
+			}
+			en.warnings, en.inspected = scan.Inspect(fs), true
+		}
+		row.Warnings = en.warnings
 		if t.Info() != nil {
 			for i, f := range t.Files() {
 				if en.skipped[i] {

@@ -18,6 +18,7 @@ import (
 
 	"sharkbite/internal/engine"
 	"sharkbite/internal/platform"
+	"sharkbite/internal/scan"
 	"sharkbite/internal/secret"
 	"sharkbite/internal/tunnel"
 	"sharkbite/internal/vpnprov"
@@ -38,6 +39,7 @@ type App struct {
 	settings    Settings
 	pending     []string // magnets/.torrent paths received before the VPN was up
 	quitting    bool
+	scanning    map[string]bool // torrents being scanned right now
 }
 
 type VpnStatus struct {
@@ -68,6 +70,8 @@ type Settings struct {
 	AutoUpdateCheck bool   `json:"autoUpdateCheck"`
 	SkippedVersion  string `json:"skippedVersion"`
 	LastUpdateCheck int64  `json:"lastUpdateCheck"` // unix seconds
+	// ScanDownloads scans finished torrents with the system antivirus.
+	ScanDownloads bool `json:"scanDownloads"`
 }
 
 // savedTorrent is persisted so torrents survive restarts. Source is a magnet
@@ -78,6 +82,8 @@ type savedTorrent struct {
 	Dir     string `json:"dir"`
 	Skipped []int  `json:"skipped,omitempty"`
 	Paused  bool   `json:"paused"`
+	// Scan is the antivirus result once the torrent finished (nil = not yet).
+	Scan *scanRecord `json:"scan,omitempty"`
 }
 
 func NewApp() *App {
@@ -331,6 +337,7 @@ func (a *App) connect() {
 	}
 	go a.monitor(mctx, tun)
 	go a.autoCheckUpdate()
+	go a.scanLoop(mctx)
 	if keepalive != nil {
 		go a.keepPortForward(mctx, keepalive, every)
 	}
@@ -431,7 +438,7 @@ func (a *App) ListTorrents() []engine.Status {
 	if err != nil {
 		return []engine.Status{}
 	}
-	return eng.List()
+	return a.withScans(eng.List())
 }
 
 func (a *App) AddMagnet(link string) error {
@@ -622,11 +629,15 @@ type SettingsView struct {
 	Assoc          platform.AssocStatus `json:"assoc"`
 	// Accounts maps provider ID to a display name for signed-in accounts.
 	Accounts map[string]string `json:"accounts"`
+	// Antivirus the app scans finished downloads with, and whether it's installed.
+	Scanner          string `json:"scanner"`
+	ScannerAvailable bool   `json:"scannerAvailable"`
 }
 
 func (a *App) GetSettings() SettingsView {
 	a.mu.Lock()
 	v := SettingsView{Settings: a.settings, Accounts: map[string]string{}}
+	v.Scanner, v.ScannerAvailable = scan.Scanner()
 	a.mu.Unlock()
 	for id, acc := range a.loadAccounts() {
 		v.Accounts[id] = acc.Display
@@ -776,6 +787,7 @@ func (a *App) loadSettings() {
 		VpnProvider:     "warp",
 		CloseToTray:     true,
 		AutoUpdateCheck: true,
+		ScanDownloads:   true,
 	}
 	if data, err := os.ReadFile(filepath.Join(a.configDir, "settings.json")); err == nil {
 		json.Unmarshal(data, &a.settings)

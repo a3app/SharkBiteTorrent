@@ -14,6 +14,8 @@
   let endpoint = $state('')
   let accounts = $state<Record<string, string>>({})
   let assoc = $state<platform.AssocStatus>({ supported: false, magnet: false, torrent: false, canOpenSettings: false })
+  let scanner = $state("")
+  let scannerAvailable = $state(false)
   let error = $state('')
   let saving = $state(false)
   let about = $state<main.About | null>(null)
@@ -51,6 +53,8 @@
     endpoint = v.customEndpoint
     accounts = v.accounts ?? {}
     assoc = v.assoc
+    scanner = v.scanner
+    scannerAvailable = v.scannerAvailable
   })
 
   const vpnChanged = $derived(
@@ -142,6 +146,24 @@
             <input type="checkbox" bind:checked={s.closeToTray} />
             <span>Closing the window keeps Shark BiteTorrent running in the tray</span>
           </label>
+          <label class="check">
+            <input type="checkbox" bind:checked={s.scanDownloads} disabled={!scannerAvailable} />
+            <span>
+              Scan finished downloads for malware with {scanner}
+              {#if !scannerAvailable}<span class="muted">(not installed)</span>{/if}
+            </span>
+          </label>
+          {#if !scannerAvailable && scanner === 'ClamAV'}
+            <p class="muted small">
+              Install ClamAV to enable scanning: <code>sudo pacman -S clamav</code> on Arch/CachyOS,
+              <code>brew install clamav</code> on macOS. Torrents are still checked for disguised programs either way.
+            </p>
+          {:else}
+            <p class="muted small">
+              Every torrent is also checked for disguised programs as soon as its file list arrives, and finished
+              files are marked as downloaded from the internet so the system checks them when opened.
+            </p>
+          {/if}
           {#if assoc.supported}
             <div class="row">
               <span class="status">

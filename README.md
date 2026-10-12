@@ -45,6 +45,7 @@ It works out of the box with **free Cloudflare WARP**, so there's protection fro
 - Magnet links and `.torrent` files: paste, open, drag and drop, or click a magnet link in your browser.
 - **Choose which files to download** in a torrent.
 - **Piece map**: a qBittorrent-style bar showing which pieces are done, downloading, being checked, missing or skipped.
+- **Malware checks**: every torrent is checked for disguised programs as soon as its file list arrives (e.g. `movie.mp4.exe`, or a program inside a video torrent). Finished files are marked as downloaded from the internet (Windows SmartScreen and Defender, macOS Gatekeeper and XProtect check them when opened) and scanned with Microsoft Defender on Windows, or ClamAV on Linux and macOS if it's installed.
 - Pause/resume, and **remove with or without deleting the downloaded files**.
 - **Speed limits** that apply immediately.
 - **Per-torrent download folders**: changing the folder affects new torrents only, and the choice is remembered.

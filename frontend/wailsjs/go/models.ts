@@ -46,6 +46,11 @@ export namespace engine {
 	    upRate: number;
 	    peers: number;
 	    seeds: number;
+	    warnings: scan.Warning[];
+	    scanState: string;
+	    scanEngine: string;
+	    threats: string[];
+	    scanError: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Status(source);
@@ -64,7 +69,30 @@ export namespace engine {
 	        this.upRate = source["upRate"];
 	        this.peers = source["peers"];
 	        this.seeds = source["seeds"];
+	        this.warnings = this.convertValues(source["warnings"], scan.Warning);
+	        this.scanState = source["scanState"];
+	        this.scanEngine = source["scanEngine"];
+	        this.threats = source["threats"];
+	        this.scanError = source["scanError"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }
@@ -203,6 +231,7 @@ export namespace main {
 	    autoUpdateCheck: boolean;
 	    skippedVersion: string;
 	    lastUpdateCheck: number;
+	    scanDownloads: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -221,6 +250,7 @@ export namespace main {
 	        this.autoUpdateCheck = source["autoUpdateCheck"];
 	        this.skippedVersion = source["skippedVersion"];
 	        this.lastUpdateCheck = source["lastUpdateCheck"];
+	        this.scanDownloads = source["scanDownloads"];
 	    }
 	}
 	export class SettingsView {
@@ -228,6 +258,8 @@ export namespace main {
 	    customEndpoint: string;
 	    assoc: platform.AssocStatus;
 	    accounts: Record<string, string>;
+	    scanner: string;
+	    scannerAvailable: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SettingsView(source);
@@ -239,6 +271,8 @@ export namespace main {
 	        this.customEndpoint = source["customEndpoint"];
 	        this.assoc = this.convertValues(source["assoc"], platform.AssocStatus);
 	        this.accounts = source["accounts"];
+	        this.scanner = source["scanner"];
+	        this.scannerAvailable = source["scannerAvailable"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -332,6 +366,25 @@ export namespace platform {
 	        this.magnet = source["magnet"];
 	        this.torrent = source["torrent"];
 	        this.canOpenSettings = source["canOpenSettings"];
+	    }
+	}
+
+}
+
+export namespace scan {
+	
+	export class Warning {
+	    file: string;
+	    reason: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Warning(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.file = source["file"];
+	        this.reason = source["reason"];
 	    }
 	}
 
