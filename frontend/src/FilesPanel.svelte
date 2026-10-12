@@ -12,15 +12,18 @@
 
   async function load() {
     try {
-      files = (await GetFiles(torrent.hash)) ?? []
+      files = (await GetFiles(hash)) ?? []
     } catch (e) {
       onError(String(e))
     }
   }
 
-  // Reload when the selection changes, and poll for progress.
+  // Only restart when a different torrent is selected: the torrent object
+  // itself is re-created on every 1s list refresh.
+  const hash = $derived(torrent.hash)
+
   $effect(() => {
-    torrent.hash
+    void hash
     load()
     const id = setInterval(load, 1500)
     return () => clearInterval(id)
@@ -28,7 +31,7 @@
 
   async function setWanted(indexes: number[], wanted: boolean) {
     try {
-      await SetFilesWanted(torrent.hash, indexes, wanted)
+      await SetFilesWanted(hash, indexes, wanted)
       await load()
     } catch (e) {
       onError(String(e))

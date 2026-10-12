@@ -13,7 +13,7 @@
 
   async function load() {
     try {
-      const runs: engine.PieceRun[] = (await GetPieceMap(hash)) ?? []
+      const runs: engine.PieceRun[] = (await GetPieceMap(id)) ?? []
       const total = runs.reduce((s, r) => s + r.n, 0)
       const out = new Uint8Array(total)
       const c = [0, 0, 0, 0, 0]
@@ -31,12 +31,18 @@
     }
   }
 
+  // The parent re-creates the torrent object on every 1s list refresh, so
+  // depending on the prop directly re-ran this effect every second: the map
+  // was cleared (and unmounted) and redrawn, which flickered. A derived of
+  // the hash string only changes when another torrent is selected.
+  const id = $derived(hash)
+
   $effect(() => {
-    hash
+    void id
     pieces = new Uint8Array(0)
     load()
-    const id = setInterval(load, 1000)
-    return () => clearInterval(id)
+    const timer = setInterval(load, 1000)
+    return () => clearInterval(timer)
   })
 
   function color(name: string) {
