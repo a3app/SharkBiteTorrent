@@ -180,8 +180,13 @@
             <p class="small indent">
               <span class="muted">Don't have an account?</span>
               <button type="button" class="link" onclick={() => OpenURL(signup.url)}>Get {provider.name} ↗</button>
-              {#if signup.referral}<span class="muted">· referral link, supports development</span>{/if}
             </p>
+            {#if signup.referral}
+              <p class="muted small indent disclosure">
+                Referral link: if you subscribe through it, {provider.name} pays this project a commission.
+                Your price is the same, and {provider.name}'s website will know you came from Shark BiteTorrent.
+              </p>
+            {/if}
           {/if}
         </form>
       {/if}
@@ -222,6 +227,7 @@
   .row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
   .lbl { width: 96px; flex: none; }
   .indent { margin-left: 104px; }
+  .disclosure { margin-top: 2px; max-width: 460px; }
   .grow { flex: 1; min-width: 0; }
   .short { width: 110px; }
   .muted { color: var(--muted); }

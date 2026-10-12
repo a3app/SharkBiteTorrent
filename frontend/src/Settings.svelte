@@ -16,7 +16,14 @@
   let error = $state('')
   let saving = $state(false)
   let about = $state<main.About | null>(null)
-  const hasReferrals = $derived(!!about && Object.values(about.links.providers ?? {}).some(p => p.referral))
+  const providerNames: Record<string, string> = {
+    ivpn: 'IVPN', mullvad: 'Mullvad', nordvpn: 'NordVPN', pia: 'Private Internet Access',
+  }
+  const referralIds = $derived(
+    Object.entries(about?.links.providers ?? {}).filter(([, p]) => p.referral).map(([id]) => id).sort(),
+  )
+  const hasReferrals = $derived(referralIds.length > 0)
+  const referralNames = $derived(referralIds.map(id => providerNames[id] ?? id).join(' and '))
 
   GetAbout().then(a => (about = a))
 
@@ -151,12 +158,14 @@
                 <span class="muted small">No ads, no tracking. Donations keep it that way.</span>
               </div>
             {/if}
-            {#if hasReferrals}
-              <p class="muted small">
-                Some “Get a VPN” links are referral links: the provider pays a commission that supports
-                development, at no extra cost to you. Free WARP and config import are always available.
-              </p>
-            {/if}
+            <p class="muted small">
+              <b>How this app is funded:</b> optional donations{#if hasReferrals}, and referral links for
+                {referralNames}: if you subscribe through one, the provider pays this project a commission
+                (same price for you; the provider's site will know you came from this app){/if}.
+              Providers are listed alphabetically, never by commission. Free WARP and WireGuard import are always available.
+              No ads, no telemetry: the app never sends anything to us.
+              <button class="link" onclick={() => OpenURL(about!.links.repo + '#how-this-project-is-funded')}>Details ↗</button>
+            </p>
           </fieldset>
         {/if}
       </div>

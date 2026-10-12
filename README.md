@@ -30,6 +30,28 @@ Shark BiteTorrent puts the VPN **inside the app**. The torrent engine has no net
 
 It works out of the box with **free Cloudflare WARP**, so there's protection from the first launch, and you can switch to a paid VPN provider at any time.
 
+## How this project is funded
+
+We'd rather tell you upfront than have you find out later.
+
+**What earns money:**
+- **Donations** through GitHub Sponsors (the **Sponsor** button on this repo, and *Support development* in the app's Settings → About). Entirely optional.
+- **Referral links for two VPN providers: NordVPN and Private Internet Access.** In Settings → VPN account, each provider has a *"Don't have an account? Get …"* link. For these two, it's a referral link: if you buy a subscription through it, the provider pays this project a commission. The price you pay is the same.
+
+**What that means for you:**
+- **Every referral link is labelled as one in the app**, right next to the link.
+- **The provider's website will know you came from Shark BiteTorrent.** That's how referral tracking works (a code in the link, usually stored in a cookie on their site). The app itself shares nothing with them.
+- **No link is ever a recommendation.** Providers are listed alphabetically, and support for a provider is never added, removed or reordered because of a commission.
+- **Mullvad and IVPN links are plain links.** Neither runs a referral program, by their own choice. We include them because they're good providers.
+- **You never have to pay anything.** The free Cloudflare WARP default and WireGuard config import (for any provider) will always be available.
+
+**What never happens:**
+- No ads, no bundled software, no "recommended offers" in the installer.
+- **No telemetry or analytics.** The app never sends data to us; there is no server of ours for it to talk to. Its only connections are the torrent network (peers, trackers and web seeds, all through the VPN), your VPN provider's own API when you sign in or connect, and Cloudflare's public trace page to check your exit IP.
+- Your data, logins and download history are never sold or shared.
+
+Every link lives in one file, [`links.go`](links.go), so anyone can check exactly what the app links to. Because this is GPL software, you're free to build it with those links changed or removed.
+
 ## Features
 
 **VPN**
@@ -274,13 +296,9 @@ Downloads default to `Downloads/Torrents` in your home folder.
 
 Built on [wireguard-go](https://git.zx2c4.com/wireguard-go/) and [gVisor](https://gvisor.dev/) netstack, [anacrolix/torrent](https://github.com/anacrolix/torrent), [wgcf](https://github.com/ViRb3/wgcf), [Wails](https://wails.io/), [Svelte](https://svelte.dev/), [fyne.io/systray](https://github.com/fyne-io/systray) and [go-keyring](https://github.com/zalando/go-keyring). The PIA certificate and connection flow come from PIA's [manual-connections](https://github.com/pia-foss/manual-connections) scripts.
 
-## Support the project
+## Contributing
 
-Shark BiteTorrent has no ads, no tracking and no bundled offers, and never will. If it's useful to you:
-
-- **Sponsor development** with the **Sponsor** button at the top of this repo.
-- **Get your VPN through the app.** In Settings → VPN account, the *Get a VPN* link for some providers is a referral link: the provider pays a small commission at no extra cost to you. These links are labelled in the app. Providers are never ranked or recommended by commission, and free WARP plus WireGuard import always stay available. (Mullvad and IVPN don't run referral programs, by their own choice, so their links are plain.)
-- **Star the repo, report bugs and send pull requests.**
+Bug reports, ideas and pull requests are welcome. Please open an issue first for big changes.
 
 ## License
 
