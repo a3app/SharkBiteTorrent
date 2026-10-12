@@ -12,6 +12,10 @@ import (
 // Support and sign-up links shown in the app. This is the one place to edit
 // them. Referral links are disclosed in the UI ("supports development"), and
 // providers are never ordered or recommended by commission.
+//
+// Building with `-tags nofunding` removes all of it (see links_nofunding.go):
+// no sponsor button, plain provider links (plainProviderURLs), no referral
+// labels, and no in-app installs of the official (funded) release.
 var links = Links{
 	Repo: "https://github.com/trevercomb/SharkBiteTorrent",
 	// Sponsor is hidden in the app until set, e.g.
@@ -26,6 +30,15 @@ var links = Links{
 		"mullvad": {URL: "https://mullvad.net/"},
 		"ivpn":    {URL: "https://www.ivpn.net/"},
 	},
+}
+
+// plainProviderURLs are the providers' ordinary homepages, used for every
+// provider in nofunding builds.
+var plainProviderURLs = map[string]string{
+	"nordvpn": "https://nordvpn.com/",
+	"pia":     "https://www.privateinternetaccess.com/",
+	"mullvad": "https://mullvad.net/",
+	"ivpn":    "https://www.ivpn.net/",
 }
 
 type Links struct {
@@ -46,6 +59,8 @@ type About struct {
 	Version string `json:"version"`
 	License string `json:"license"`
 	Links   Links  `json:"links"`
+	// Funding is false in builds made with -tags nofunding.
+	Funding bool `json:"funding"`
 }
 
 // GetAbout returns the version (from wails.json, which the release workflow
@@ -57,7 +72,7 @@ func (a *App) GetAbout() About {
 		} `json:"info"`
 	}
 	json.Unmarshal(wailsJSON, &w)
-	return About{Version: w.Info.ProductVersion, License: "GPL-3.0-or-later", Links: links}
+	return About{Version: w.Info.ProductVersion, License: "GPL-3.0-or-later", Links: links, Funding: fundingEnabled}
 }
 
 // OpenURL opens an http(s) link in the user's default browser.

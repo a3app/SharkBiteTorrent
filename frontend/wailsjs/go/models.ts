@@ -109,6 +109,7 @@ export namespace main {
 	    version: string;
 	    license: string;
 	    links: Links;
+	    funding: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new About(source);
@@ -119,6 +120,7 @@ export namespace main {
 	        this.version = source["version"];
 	        this.license = source["license"];
 	        this.links = this.convertValues(source["links"], Links);
+	        this.funding = source["funding"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -63,7 +63,7 @@ func (a *App) updateClient(allowDirect bool) (*http.Client, bool, error) {
 }
 
 func (a *App) checkUpdate(ctx context.Context, allowDirect bool) (UpdateInfo, error) {
-	info := UpdateInfo{Current: a.currentVersion(), CanInstall: canSelfUpdate(a.exe)}
+	info := UpdateInfo{Current: a.currentVersion(), CanInstall: a.canInstallUpdates()}
 	hc, direct, err := a.updateClient(allowDirect)
 	if err != nil {
 		return info, err
@@ -166,7 +166,7 @@ func (a *App) SkipUpdate(version string) error {
 // against the release's SHA256SUMS.txt, runs it silently and quits. The
 // installer closes this app and relaunches the new version.
 func (a *App) InstallUpdate(version string) error {
-	if !canSelfUpdate(a.exe) {
+	if !a.canInstallUpdates() {
 		return errors.New("automatic install isn't available for this version; download it from the release page")
 	}
 	hc, _, err := a.updateClient(true)
@@ -253,4 +253,11 @@ func download(ctx context.Context, hc *http.Client, url, path string) (string, e
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// canInstallUpdates reports whether "Update now" may install the official
+// release. Not in nofunding builds: the official release has the funding
+// links back in, so those users get a link to rebuild or download instead.
+func (a *App) canInstallUpdates() bool {
+	return fundingEnabled && canSelfUpdate(a.exe)
 }

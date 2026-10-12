@@ -111,6 +111,7 @@ We checked this with the OS's own socket list: while downloading, the app's **on
 | **"Unlimited" speed is a very large finite limit** | With an infinite rate limiter, anacrolix stopped connecting to peers: it saw zero download "tokens" and treated that as no budget. |
 | **Per-user installer (no admin)** | Matches the per-user magnet registration, avoids a UAC prompt, and upgrades in place. |
 | **Linux release built in an Arch container** | CachyOS is the main Linux target, and building on Arch matches its library versions. |
+| **A `nofunding` build flag** | The funding is optional for users, so removing it shouldn't need code changes. One flag strips the sponsor button and referral links, and stops the updater from installing the official (funded) release over it. |
 
 ## Limitations
 
@@ -221,6 +222,24 @@ codesign --force --deep --sign - build/bin/*.app   # ad-hoc signature so it laun
 
 Magnet links and `.torrent` files are declared in the app's `Info.plist` (generated from `wails.json`), and macOS registers them when the app is moved to Applications.
 
+### Build without funding links
+
+Add the `nofunding` build tag to any build command above, on any platform:
+
+```sh
+wails build -tags nofunding -trimpath -ldflags "-s -w"                    # Windows / macOS
+wails build -tags "webkit2_41 nofunding" -trimpath -ldflags "-s -w"     # Linux
+```
+
+That build has:
+
+- no sponsor button,
+- plain links to every VPN provider (no referral codes, no referral labels),
+- an About section that says funding links are turned off,
+- update notices that link to the release page instead of installing the official release, which has the links back in.
+
+Everything else is identical. To check it, run `go test -tags nofunding -run TestLinks .`
+
 ### Development
 
 ```sh
@@ -246,6 +265,7 @@ Running the **Release** workflow by hand from the Actions tab builds everything 
 ```
 main.go, app.go          Wails entry point; app state, VPN connect/reconnect, torrents
 accounts.go              VPN provider sign-in/out (encrypted storage)
+links*.go                Sponsor and VPN sign-up links (links.go); the nofunding build flag strips them
 tray*.go                 Tray icon (per-OS files)
 internal/tunnel          In-process WireGuard + netstack, .conf parser, exit-IP check
 internal/engine          anacrolix/torrent wired to the tunnel; files, limits, removal
@@ -295,7 +315,7 @@ We'd rather tell you upfront than have you find out later.
 - **No telemetry or analytics.** The app never sends data to us; there is no server of ours for it to talk to. Its only connections are the torrent network (peers, trackers and web seeds, all through the VPN), your VPN provider's own API when you sign in or connect, Cloudflare's public trace page to check your exit IP, and GitHub to check for updates (through the VPN, about once a day; you can turn this off in Settings).
 - Your data, logins and download history are never sold or shared.
 
-Every link lives in one file, [`links.go`](links.go), so anyone can check exactly what the app links to. Because this is GPL software, you're free to build it with those links changed or removed.
+Every link lives in one file, [`links.go`](links.go), so anyone can check exactly what the app links to. To build without any of it, use the `nofunding` build flag (see [Build without funding links](#build-without-funding-links)): no sponsor button, plain provider links and no referral labels. Because this is GPL software, you're free to change or remove anything else too.
 
 ## Contributing
 

@@ -203,6 +203,13 @@
                 <span class="muted small">No ads, no tracking. Donations keep it that way.</span>
               </div>
             {/if}
+            {#if !about.funding}
+            <p class="muted small">
+              <b>This build has funding links turned off</b> (built with <code>-tags nofunding</code>): no sponsor
+              button and no referral links. No ads, no telemetry: the app never sends anything to the developers.
+              Updates are offered as a download rather than installed, because official releases include the links.
+            </p>
+            {:else}
             <p class="muted small">
               <b>How this app is funded:</b> optional donations{#if hasReferrals}, and referral links for
                 {referralNames}: if you subscribe through one, the provider pays this project a commission
@@ -211,6 +218,7 @@
               No ads, no telemetry: the app never sends anything to us.
               <button class="link" onclick={() => OpenURL(about!.links.repo + '#how-this-project-is-funded')}>Details ↗</button>
             </p>
+            {/if}
           </fieldset>
         {/if}
       </div>

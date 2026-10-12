@@ -14,7 +14,7 @@
     !define INFO_PRODUCTNAME "Shark BiteTorrent"
 !endif
 !ifndef INFO_PRODUCTVERSION
-    !define INFO_PRODUCTVERSION "0.2.1"
+    !define INFO_PRODUCTVERSION "0.2.3"
 !endif
 !ifndef INFO_COPYRIGHT
     !define INFO_COPYRIGHT "Copyright (C) 2026 Shark BiteTorrent contributors. Licensed under GPL-3.0-or-later."
