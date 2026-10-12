@@ -92,12 +92,35 @@ Section
 
     !insertmacro wails.webview2runtime
 
-    # Close a running copy so its exe can be replaced (upgrade install).
+    # Close a running copy so its exe can be replaced (upgrade install), and
+    # wait until it has really exited: the app takes a moment to close its
+    # files and progress database, and copying over a still-running exe fails.
+    # In silent mode (used by the in-app updater) that failure used to be
+    # skipped without any message, leaving the old version installed.
     nsExec::Exec 'taskkill /IM "${PRODUCT_EXECUTABLE}" /F'
+    nsExec::Exec 'powershell -NoProfile -NonInteractive -Command "Wait-Process -Name SharkBiteTorrent -Timeout 20 -ErrorAction SilentlyContinue"'
 
     SetOutPath $INSTDIR
 
+    # Copy the app, retrying while Windows still has the old exe locked.
+    SetOverwrite try
+    StrCpy $R9 0
+    copy_files:
+    ClearErrors
     !insertmacro wails.files
+    IfErrors 0 files_copied
+    IntOp $R9 $R9 + 1
+    IntCmp $R9 10 files_failed
+    DetailPrint "Shark BiteTorrent is still closing, retrying..."
+    nsExec::Exec 'taskkill /IM "${PRODUCT_EXECUTABLE}" /F'
+    Sleep 1000
+    Goto copy_files
+    files_failed:
+    SetErrorLevel 2
+    MessageBox MB_ICONSTOP "Couldn't replace ${PRODUCT_EXECUTABLE} because it's still running. Close Shark BiteTorrent (including from the tray) and run the installer again." /SD IDOK
+    Abort
+    files_copied:
+    SetOverwrite on
     # License texts ship with the app (GPL-3.0-or-later + third-party notices).
     File "..\..\..\LICENSE"
     File "..\..\..\THIRD_PARTY_LICENSES.txt"
@@ -122,6 +145,7 @@ Section "uninstall"
     !insertmacro wails.setShellContext
 
     nsExec::Exec 'taskkill /IM "${PRODUCT_EXECUTABLE}" /F'
+    nsExec::Exec 'powershell -NoProfile -NonInteractive -Command "Wait-Process -Name SharkBiteTorrent -Timeout 20 -ErrorAction SilentlyContinue"'
 
     # Remove magnet/.torrent registrations that still point at this app.
     ExecWait '"$INSTDIR\${PRODUCT_EXECUTABLE}" --unregister-associations'
