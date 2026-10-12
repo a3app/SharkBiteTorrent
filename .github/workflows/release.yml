@@ -30,14 +30,15 @@ jobs:
           sed -i "s/\"productVersion\": \"[^\"]*\"/\"productVersion\": \"${GITHUB_REF_NAME#v}\"/" wails.json
       - run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
       - run: choco install nsis -y --no-progress
-      - name: Test
-        run: go test ./...
       - name: Build
         shell: bash
         run: |
           export PATH="$PATH:/c/Program Files (x86)/NSIS"
           wails build -clean -trimpath -ldflags "-s -w" -nsis -installscope user
           ls -la build/bin
+      - name: Test
+        # After the build: the Go code embeds frontend/dist, which the build creates.
+        run: go test ./...
       - uses: actions/upload-artifact@v4
         with:
           name: windows
@@ -67,8 +68,8 @@ jobs:
         run: |
           go install github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}
           export PATH="$PATH:$(go env GOPATH)/bin"
-          go vet ./...
           wails build -clean -trimpath -ldflags "-s -w" -tags webkit2_41
+          go vet -tags webkit2_41 ./...   # after the build: needs frontend/dist
       - name: Package tarball and Arch package
         run: |
           v=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)

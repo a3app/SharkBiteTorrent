@@ -1,72 +1,277 @@
-# Shark BiteTorrent
+<p align="center">
+  <img src="docs/icon.png" width="96" alt="Shark BiteTorrent icon">
+</p>
 
-A lightweight Windows BitTorrent client with a built-in VPN. Only this app goes
-through the VPN; the rest of the PC is unaffected.
+<h1 align="center">Shark BiteTorrent</h1>
+
+<p align="center">
+  A lightweight BitTorrent client with a VPN built in. Only the torrent client goes through the VPN;<br>
+  the rest of your computer keeps its normal connection.
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/main.png" width="820" alt="Main window: VPN connected through Cloudflare WARP">
+</p>
+
+---
+
+## Why this exists
+
+Most people who want their torrent traffic on a VPN have two options, and neither is great:
+
+1. **Run a system-wide VPN.** Everything on the PC (games, streaming, work apps) now goes through it too, often slower or blocked.
+2. **Use split tunneling or bind the client to a VPN adapter.** That's fiddly to set up, depends on the VPN app, and can **leak your real IP** if the VPN drops and the client falls back to the normal connection.
+
+Shark BiteTorrent puts the VPN **inside the app**. The torrent engine has no network access except through its own WireGuard tunnel, so:
+
+- nothing else on your computer is affected,
+- there's nothing to install system-wide: no network adapter, no driver, no admin rights,
+- and if the VPN goes down, torrents stop instead of leaking. That kill switch is a consequence of the design, not a setting you have to remember.
+
+It works out of the box with **free Cloudflare WARP**, so there's protection from the first launch, and you can switch to a paid VPN provider at any time.
 
 ## Features
 
-- **Built-in VPN, per app**: free Cloudflare WARP by default; sign in to Mullvad,
-  Private Internet Access (with automatic port forwarding), NordVPN or IVPN; or
-  import a WireGuard `.conf` from any provider (Proton, AirVPN, ...), with an
-  optional forwarded port.
-- **Encrypted secrets**: WARP keys, VPN sign-ins and imported configs are
-  encrypted at rest (DPAPI on Windows, the OS keyring + AES-GCM on macOS/Linux).
-- **Kill switch by design**: torrents only start after the tunnel is verified, and
-  the torrent engine has no network path except the tunnel.
-- Magnet links and `.torrent` files (file picker, drag and drop, or opened from the
-  browser/Explorer), choosing which files to download, pause/resume, speed limits,
-  removing a torrent with or without its files, a right-click menu, and a tray icon.
-- An installer that registers magnet links and `.torrent` files for the current
-  user (no admin) and removes the registration on uninstall.
+**VPN**
+- 🦈 **Per-app VPN**: only this app's traffic uses the tunnel.
+- 🆓 **Cloudflare WARP by default**: free, no sign-up, registered automatically on first launch.
+- 🔑 **Sign in to your VPN provider**: **Mullvad**, **Private Internet Access**, **NordVPN** and **IVPN**. Pick a server location, or let the app choose one in your own country.
+- 🔓 **Automatic port forwarding with PIA**: other peers can connect to you, which means much better seeding. The forwarding is renewed every 15 minutes.
+- 📄 **Import any WireGuard `.conf` file**: works with any provider (Proton, AirVPN, …), with an optional forwarded port.
+- 🛑 **Kill switch by design**: the torrent engine starts only after the tunnel is verified (exit IP checked) and has no other network path.
+- 🔒 **Encrypted secrets**: WARP keys, VPN sign-ins and imported configs are encrypted on disk.
+
+**Torrents**
+- Magnet links and `.torrent` files: paste, open, drag and drop, or click a magnet link in your browser.
+- **Choose which files to download** in a torrent.
+- Pause/resume, and **remove with or without deleting the downloaded files**.
+- **Speed limits** that apply immediately.
+- **Per-torrent download folders**: changing the folder affects new torrents only, and the choice is remembered.
+- Torrents and settings survive restarts. Incomplete files are kept as `.part` files.
+- Right-click menu on a torrent: **Show files**, Pause/Resume, Remove.
+
+**Desktop**
+- **Tray icon** with close-to-tray, Pause all / Resume all, and live speeds in the tooltip.
+- **Single instance**: clicking a magnet link while the app is open sends it to the running window.
+- **Windows installer**: per-user, no admin. It registers magnet links and `.torrent` files and cleans up on uninstall.
+
+<p align="center">
+  <img src="docs/screenshots/settings-vpn.png" width="820" alt="Settings: VPN choices, provider sign-in and WireGuard import">
+</p>
+
+## Install
+
+Download the latest build from the [**Releases**](../../releases) page.
+
+| Platform | File | Notes |
+|---|---|---|
+| **Windows 10/11** | `SharkBiteTorrent-amd64-installer.exe` | Recommended. Installs for your user and registers magnet links. |
+| Windows (portable) | `SharkBiteTorrent.exe` | Run from anywhere. Use Settings → *Open magnet links…* to register. |
+| **Arch / CachyOS** | `sharkbitetorrent-*.pkg.tar.zst` | `sudo pacman -U sharkbitetorrent-*.pkg.tar.zst` |
+| Other Linux | `SharkBiteTorrent-*-linux-x86_64.tar.gz` | Needs GTK 3 and WebKitGTK 4.1. |
+| **macOS** (Intel + Apple Silicon) | `SharkBiteTorrent-macos-universal.zip` | Unsigned: the first time, right-click the app → **Open**. |
+
+> **Note:** On Windows 11, the first magnet link you click after installing shows a one-time *"Pick an app"* prompt. Choose Shark BiteTorrent. Windows requires you to confirm this yourself; no installer can skip it.
 
 ## How it works
 
-- **WARP registration** (`internal/warp`): registers a free WARP device on first
-  run using [wgcf](https://github.com/ViRb3/wgcf)'s API client.
-- **In-process tunnel** (`internal/tunnel`): runs `wireguard-go` with a userspace
-  TCP/IP stack (gVisor netstack). There's no network adapter, driver or admin rights,
-  and no system-wide routing.
-- **Engine** (`internal/engine`): `anacrolix/torrent` with all of its own OS
-  sockets disabled. Peers, HTTP/UDP trackers, DHT and webseeds are dialed through
-  the tunnel, and all DNS lookups in the process are forced through the tunnel's
-  DNS server. UPnP and WebRTC are disabled.
-- **VPN providers** (`internal/vpnprov`): one file per provider, following each
-  provider's official client or scripts (mullvad-wg.sh, pia-foss/manual-connections,
-  ivpn/desktop-app; NordVPN access tokens).
-- **Platform layer** (`internal/platform`, `internal/secret`, `tray_*.go`): Windows,
-  Linux (freedesktop `.desktop` + `xdg-mime`) and macOS implementations.
-- **Windows integration** (`internal/winassoc`, `tray.go`): HKCU file/protocol
-  registration and Default Apps capabilities, plus the notification-area icon.
-- **`earlyinit`**: a tiny module that switches anacrolix's file storage from mmap
-  to plain I/O before the library initializes. With mmap, Windows keeps removed
-  torrents' files locked until the app exits.
+```mermaid
+flowchart LR
+    subgraph App["Shark BiteTorrent process"]
+        UI["UI<br/>(Svelte in a WebView)"] <--> Go["Go backend"]
+        Go --> Engine["Torrent engine<br/>(anacrolix/torrent)<br/>OS sockets disabled"]
+        Engine -- "peers, trackers, DHT,<br/>webseeds, DNS" --> Stack["Userspace TCP/IP stack<br/>(gVisor netstack)"]
+        Stack --> WG["WireGuard<br/>(wireguard-go)"]
+    end
+    WG -- "one encrypted UDP socket" --> VPN["VPN server<br/>(WARP / Mullvad / PIA / …)"] --> Net(("Internet"))
+    Other["Everything else on your computer"] -- "normal connection" --> ISP["Your ISP"] --> Net
+```
 
-The process's only real OS socket is the WireGuard UDP socket to the VPN server.
+1. **WireGuard runs inside the app.** `wireguard-go` is paired with gVisor's userspace network stack, the same approach Tailscale uses. The app gets a private, in-memory network interface that the operating system doesn't know about.
+2. **The torrent engine only has that interface.** All of `anacrolix/torrent`'s own sockets (TCP, uTP, DHT, UPnP, WebRTC) are disabled, and the app supplies tunnel-backed replacements for peer connections, HTTP and UDP trackers, DHT and webseeds.
+3. **DNS goes through the tunnel too.** Every hostname lookup in the process goes to the VPN's DNS server, so your ISP doesn't see which trackers you contact.
+4. **Verification before anything starts.** After connecting, the app fetches its exit IP through the tunnel and checks it: `warp=on` for WARP, and for other providers, an IP different from your real one. Only then does the engine start.
+
+We checked this with the OS's own socket list: while downloading, the app's **only** real network socket is the WireGuard UDP socket to the VPN server.
+
+## Design decisions
+
+| Decision | Why |
+|---|---|
+| **Go + Wails** (Go backend, web UI in the system WebView) | One small native app per OS without bundling a browser like Electron does. Go has the best in-process WireGuard and torrent libraries. |
+| **Userspace WireGuard instead of a TUN adapter** | No driver, no admin rights, nothing system-wide to configure or leak. The kill switch comes for free. |
+| **WARP as the default VPN** | Free and needs no account, so users are protected from the first launch. It isn't a privacy VPN (Cloudflare knows who you are), which is why switching providers is one click away. |
+| **WARP registration via [wgcf](https://github.com/ViRb3/wgcf)'s library** | Cloudflare rejects requests that don't look like its official app (TLS fingerprinting). wgcf keeps up with that, and using it as a library means updates fix it. |
+| **WARP endpoint stored as an IP address** | Some DNS resolvers block `engage.cloudflareclient.com`. A literal IP also avoids a DNS lookup outside the tunnel. |
+| **VPN sign-in only where the provider supports it** | Mullvad, PIA and IVPN publish their login flow in official open-source scripts or clients, and NordVPN issues access tokens for manual setups. Proton and AirVPN have no public API, so they use `.conf` import instead of fragile reverse-engineering. |
+| **Keep `.conf` import for every provider** | Works with any WireGuard provider, and suits people who'd rather not give the app their login. |
+| **Encrypt secrets with the OS key store** | Windows uses DPAPI. macOS and Linux keep a random key in Keychain or the Secret Service (KWallet/GNOME Keyring) and use AES-256-GCM. A copied settings file is unreadable on another account or machine, and the user never has to type a master password. Code running as the same logged-in user can still decrypt, as with browser-saved passwords. |
+| **Plain file I/O instead of memory-mapping** | anacrolix's default memory-maps files and never unmaps them, so Windows kept removed torrents' files locked and "delete files" failed. A tiny `earlyinit` module switches the library to plain I/O before it initializes. |
+| **"Unlimited" speed is a very large finite limit** | With an infinite rate limiter, anacrolix stopped connecting to peers: it saw zero download "tokens" and treated that as no budget. |
+| **Per-user installer (no admin)** | Matches the per-user magnet registration, avoids a UAC prompt, and upgrades in place. |
+| **Linux release built in an Arch container** | CachyOS is the main Linux target, and building on Arch matches its library versions. |
 
 ## Limitations
 
-- Free WARP has no port forwarding, so other peers can't connect to you.
-  Downloading is fine, but seeding is limited.
-- WARP hides your IP from peers but is not a privacy VPN, because Cloudflare
-  knows who you are.
-- TCP peers only (no uTP) for now.
+- **WARP can't forward ports**, so peers can't connect to you and seeding is limited. Use PIA, or a provider with port forwarding via `.conf` import.
+- **WARP isn't anonymous**: it hides your IP from peers, not your identity from Cloudflare.
+- **TCP peers only**: no uTP yet.
+- **macOS:** no tray icon yet (the tray library and Wails both need the main thread), and the app is unsigned.
+- **Linux and macOS** builds are new and much less tested than Windows.
+- VPN sign-in follows each provider's official flow and is tested against their real server lists, but not yet with real paid accounts for every provider. Please report problems.
 
-## Development
+## Build from source
 
-Requires Go, Node, the Wails CLI (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`)
-and, for the installer, NSIS (`winget install NSIS.NSIS`).
+All platforms need:
 
+- **Go 1.26+**: <https://go.dev/dl/>
+- **Node.js 22+** (with npm): <https://nodejs.org/>
+- **Wails CLI v2.16**:
+  ```sh
+  go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
+  ```
+  Make sure `$(go env GOPATH)/bin` is on your `PATH`, then check your setup with `wails doctor`.
+
+Clone the repo:
+
+```sh
+git clone https://github.com/trevercomb/torrent-client.git
+cd torrent-client
 ```
-wails dev                                    # live-reload dev mode
+
+### Windows
+
+Requirements: WebView2 (built into Windows 10/11) and, for the installer, [NSIS](https://nsis.sourceforge.io/):
+
+```powershell
+winget install GoLang.Go OpenJS.NodeJS.LTS NSIS.NSIS
+```
+
+Build:
+
+```powershell
+# App only -> build\bin\SharkBiteTorrent.exe
+wails build -trimpath -ldflags "-s -w"
+
+# App + per-user installer -> build\bin\SharkBiteTorrent-amd64-installer.exe
 wails build -trimpath -ldflags "-s -w" -nsis -installscope user
-                                             # -> build/bin/SharkBiteTorrent.exe + installer
-go test ./internal/...
-go run ./cmd/tunnelcheck                     # verify WARP tunnel + exit IP
-go run ./cmd/enginecheck [-seconds N] [-down KB/s] [-delete] <magnet|file.torrent>
-                                             # headless download test (ENGINE_STATUS=1 dumps client state)
 ```
 
-The exe also takes `--register-associations` / `--unregister-associations`
-(used by the installer). App data lives in `%APPDATA%\SharkBiteTorrent`:
-`warp.json`, `settings.json`, `torrents.json`, `wireguard.conf` (if imported) and
-copies of added `.torrent` files.
+If `makensis` isn't found, add `C:\Program Files (x86)\NSIS` to your `PATH`.
+
+### Linux
+
+**Arch / CachyOS:**
+
+```sh
+sudo pacman -S --needed base-devel go nodejs npm gtk3 webkit2gtk-4.1 xdg-utils
+```
+
+**Debian / Ubuntu 24.04+** (install Go from go.dev if your distro's is older than 1.26):
+
+```sh
+sudo apt install build-essential pkg-config nodejs npm libgtk-3-dev libwebkit2gtk-4.1-dev xdg-utils
+```
+
+**Fedora:**
+
+```sh
+sudo dnf install golang nodejs npm gtk3-devel webkit2gtk4.1-devel xdg-utils
+```
+
+Build. The `webkit2_41` tag selects WebKitGTK 4.1, which current distros ship:
+
+```sh
+wails build -trimpath -ldflags "-s -w" -tags webkit2_41
+# -> build/bin/SharkBiteTorrent
+```
+
+To register magnet links for your user, open Settings → *Open magnet links & .torrent files with Shark BiteTorrent*. That writes a `.desktop` entry and runs `xdg-mime`.
+
+**Make an Arch package** (what the release does):
+
+```sh
+v=0.2.0; name=SharkBiteTorrent-$v-linux-x86_64
+mkdir -p dist/$name
+cp build/bin/SharkBiteTorrent packaging/linux/sharkbitetorrent.desktop dist/$name/
+cp build/appicon.png dist/$name/sharkbitetorrent.png
+tar -C dist -czf packaging/arch/$name.tar.gz $name
+cd packaging/arch && makepkg -si
+```
+
+Saved VPN logins on Linux need a Secret Service keyring. KDE's KWallet and GNOME Keyring both provide one.
+
+### macOS
+
+Requirements: Xcode Command Line Tools, plus Go and Node (via Homebrew or the installers above):
+
+```sh
+xcode-select --install
+brew install go node
+```
+
+Build a universal app (Intel + Apple Silicon):
+
+```sh
+wails build -trimpath -ldflags "-s -w" -platform darwin/universal
+codesign --force --deep --sign - build/bin/*.app   # ad-hoc signature so it launches
+# -> build/bin/SharkBiteTorrent.app
+```
+
+Magnet links and `.torrent` files are declared in the app's `Info.plist` (generated from `wails.json`), and macOS registers them when the app is moved to Applications.
+
+### Development
+
+```sh
+wails dev                      # live-reloading app; frontend changes apply instantly
+go test ./...                  # unit tests (add -short to skip the tests that need the network)
+go run ./cmd/tunnelcheck       # bring up WARP and print the exit IP
+go run ./cmd/enginecheck -seconds 30 [-down KB/s] [-delete] <magnet|file.torrent>
+                               # headless download through the tunnel; ENGINE_STATUS=1 dumps client state
+```
+
+### Releases
+
+Pushing a version tag builds Windows, Linux and macOS on GitHub Actions and publishes a Release:
+
+```sh
+git tag v0.2.1 && git push origin v0.2.1
+```
+
+Running the **Release** workflow by hand from the Actions tab builds everything without publishing.
+
+## Project layout
+
+```
+main.go, app.go          Wails entry point; app state, VPN connect/reconnect, torrents
+accounts.go              VPN provider sign-in/out (encrypted storage)
+tray*.go                 Tray icon (per-OS files)
+internal/tunnel          In-process WireGuard + netstack, .conf parser, exit-IP check
+internal/engine          anacrolix/torrent wired to the tunnel; files, limits, removal
+internal/warp            Cloudflare WARP registration (via wgcf)
+internal/vpnprov         Mullvad, PIA, NordVPN, IVPN sign-in and server selection
+internal/secret          Encryption at rest (DPAPI / keyring + AES-GCM)
+internal/platform        Open folder, magnet/.torrent registration (Windows/Linux/macOS)
+internal/winassoc        Windows registry associations and Default Apps
+earlyinit/               Sets the torrent library's file I/O mode before it initializes
+frontend/                Svelte 5 + TypeScript UI
+packaging/               Linux .desktop file and Arch PKGBUILD
+build/                   Icons, Windows installer script, macOS Info.plist
+.github/workflows        Release builds for all three platforms
+```
+
+App data (settings, saved torrents, encrypted keys) lives in:
+
+| OS | Location |
+|---|---|
+| Windows | `%APPDATA%\SharkBiteTorrent` |
+| Linux | `~/.config/SharkBiteTorrent` |
+| macOS | `~/Library/Application Support/SharkBiteTorrent` |
+
+Downloads default to `Downloads/Torrents` in your home folder.
+
+## Credits
+
+Built on [wireguard-go](https://git.zx2c4.com/wireguard-go/) and [gVisor](https://gvisor.dev/) netstack, [anacrolix/torrent](https://github.com/anacrolix/torrent), [wgcf](https://github.com/ViRb3/wgcf), [Wails](https://wails.io/), [Svelte](https://svelte.dev/), [fyne.io/systray](https://github.com/fyne-io/systray) and [go-keyring](https://github.com/zalando/go-keyring). The PIA certificate and connection flow come from PIA's [manual-connections](https://github.com/pia-foss/manual-connections) scripts.
+
+Please use Shark BiteTorrent only for content you have the right to download and share.
