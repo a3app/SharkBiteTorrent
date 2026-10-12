@@ -92,6 +92,9 @@ Section
 
     !insertmacro wails.webview2runtime
 
+    # Close a running copy so its exe can be replaced (upgrade install).
+    nsExec::Exec 'taskkill /IM "${PRODUCT_EXECUTABLE}" /F'
+
     SetOutPath $INSTDIR
 
     !insertmacro wails.files
@@ -99,14 +102,26 @@ Section
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
 
-    !insertmacro wails.associateFiles
-    !insertmacro wails.associateCustomProtocols
+    # Register as the handler for magnet: links and .torrent files (HKCU).
+    # Uses the app's own code so it matches the button in Settings.
+    DetailPrint "Registering magnet links and .torrent files..."
+    ExecWait '"$INSTDIR\${PRODUCT_EXECUTABLE}" --register-associations'
 
     !insertmacro wails.writeUninstaller
 SectionEnd
 
+Function .onInstSuccess
+    # Offer to launch from the finish page is noisy; just start it.
+    Exec '"$INSTDIR\${PRODUCT_EXECUTABLE}"'
+FunctionEnd
+
 Section "uninstall"
     !insertmacro wails.setShellContext
+
+    nsExec::Exec 'taskkill /IM "${PRODUCT_EXECUTABLE}" /F'
+
+    # Remove magnet/.torrent registrations that still point at this app.
+    ExecWait '"$INSTDIR\${PRODUCT_EXECUTABLE}" --unregister-associations'
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
 
@@ -115,8 +130,7 @@ Section "uninstall"
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
 
-    !insertmacro wails.unassociateFiles
-    !insertmacro wails.unassociateCustomProtocols
+    # Settings, the WARP account (%APPDATA%\SharkBiteTorrent) and downloads are kept.
 
     !insertmacro wails.deleteUninstaller
 SectionEnd

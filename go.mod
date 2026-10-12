@@ -1,16 +1,20 @@
-module torrent-client
+module sharkbite
 
 go 1.26.0
 
 require (
+	fyne.io/systray v1.12.2
 	github.com/ViRb3/wgcf/v2 v2.3.1
 	github.com/anacrolix/dht/v2 v2.23.0
 	github.com/anacrolix/torrent v1.61.0
 	github.com/wailsapp/wails/v2 v2.16.0
+	golang.org/x/sys v0.49.0
+	golang.org/x/time v0.14.0
 	golang.zx2c4.com/wireguard v0.0.0-20261006164505-2631ce99a06f
 )
 
 require (
+	a.local/earlyinit v0.0.0
 	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3 // indirect
 	github.com/RoaringBitmap/roaring v1.2.3 // indirect
 	github.com/alecthomas/atomic v0.1.0-alpha2 // indirect
@@ -115,9 +119,7 @@ require (
 	golang.org/x/exp v0.0.0-20251113190631-e25ba8c21ef6 // indirect
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
-	golang.org/x/time v0.14.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	gvisor.dev/gvisor v0.0.0-20250503011706-39ed1f5ac29c // indirect
 	lukechampine.com/blake3 v1.1.6 // indirect
@@ -128,3 +130,5 @@ require (
 	zombiezen.com/go/sqlite v0.13.1 // indirect
 )
 
+
+replace a.local/earlyinit => ./earlyinit

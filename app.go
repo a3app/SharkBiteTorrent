@@ -14,65 +14,144 @@ import (
 	"time"
 
 	"github.com/anacrolix/torrent/metainfo"
+	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"torrent-client/internal/engine"
-	"torrent-client/internal/tunnel"
-	"torrent-client/internal/warp"
+	"sharkbite/internal/engine"
+	"sharkbite/internal/tunnel"
+	"sharkbite/internal/warp"
+	"sharkbite/internal/winassoc"
 )
 
 type App struct {
 	ctx       context.Context
 	configDir string
+	exe       string
 
-	mu       sync.Mutex
-	tun      *tunnel.Tunnel
-	eng      *engine.Engine
-	vpn      VpnStatus
-	saved    []savedTorrent
-	settings Settings
+	mu          sync.Mutex
+	tun         *tunnel.Tunnel
+	eng         *engine.Engine
+	stopMonitor context.CancelFunc
+	vpn         VpnStatus
+	saved       []savedTorrent
+	settings    Settings
+	pending     []string // magnets/.torrent paths received before the VPN was up
+	quitting    bool
 }
 
 type VpnStatus struct {
 	State    string `json:"state"` // connecting, connected, error
+	Provider string `json:"provider"`
 	ExitIP   string `json:"exitIP"`
 	Location string `json:"location"`
 	Colo     string `json:"colo"`
+	Port     int    `json:"port"` // forwarded port accepting inbound peers, 0 if none
 	Error    string `json:"error"`
 }
 
 type Settings struct {
-	DownloadDir string `json:"downloadDir"`
+	DownloadDir   string `json:"downloadDir"`
+	VpnProvider   string `json:"vpnProvider"` // "warp" or "custom"
+	ForwardedPort int    `json:"forwardedPort"`
+	DownLimitKB   int64  `json:"downLimitKB"` // 0 = unlimited
+	UpLimitKB     int64  `json:"upLimitKB"`
+	CloseToTray   bool   `json:"closeToTray"`
 }
 
 // savedTorrent is persisted so torrents survive restarts. Source is a magnet
 // link or a path to a .torrent copy inside the config dir.
 type savedTorrent struct {
-	Hash   string `json:"hash"`
-	Source string `json:"source"`
-	Paused bool   `json:"paused"`
+	Hash    string `json:"hash"`
+	Source  string `json:"source"`
+	Dir     string `json:"dir"`
+	Skipped []int  `json:"skipped,omitempty"`
+	Paused  bool   `json:"paused"`
 }
 
 func NewApp() *App {
 	dir, _ := os.UserConfigDir()
-	return &App{configDir: filepath.Join(dir, "torrent-client")}
+	exe, _ := os.Executable()
+	configDir := filepath.Join(dir, "SharkBiteTorrent")
+	// Carry over data from before the app was renamed.
+	if _, err := os.Stat(configDir); os.IsNotExist(err) {
+		os.Rename(filepath.Join(dir, "torrent-client"), configDir)
+	}
+	return &App{configDir: configDir, exe: exe}
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.loadSettings()
 	a.loadSaved()
+	a.handleArgs(os.Args[1:])
+	runtime.OnFileDrop(ctx, func(_, _ int, paths []string) { a.handleArgs(paths) })
+	go a.runTray()
 	go a.connect()
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	a.disconnect()
+	quitTray()
+}
+
+// beforeClose hides to the tray instead of quitting, if enabled.
+func (a *App) beforeClose(ctx context.Context) bool {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.eng != nil {
-		a.eng.Close()
+	hide := a.settings.CloseToTray && !a.quitting
+	a.mu.Unlock()
+	if hide {
+		runtime.WindowHide(ctx)
 	}
-	if a.tun != nil {
-		a.tun.Close()
+	return hide
+}
+
+func (a *App) quit() {
+	a.mu.Lock()
+	a.quitting = true
+	a.mu.Unlock()
+	runtime.Quit(a.ctx)
+}
+
+func (a *App) showWindow() {
+	runtime.WindowShow(a.ctx)
+	runtime.WindowUnminimise(a.ctx)
+	runtime.WindowSetAlwaysOnTop(a.ctx, true) // bring to front on Windows
+	runtime.WindowSetAlwaysOnTop(a.ctx, false)
+}
+
+// onSecondInstance receives the args of a second launch, e.g. when a magnet
+// link is clicked in the browser while the app is already running.
+func (a *App) onSecondInstance(data options.SecondInstanceData) {
+	a.handleArgs(data.Args)
+	if a.ctx != nil {
+		a.showWindow()
+	}
+}
+
+// handleArgs adds magnet links and .torrent files passed on the command line,
+// via the file association, or dropped on the window.
+func (a *App) handleArgs(args []string) {
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, "magnet:") && !strings.EqualFold(filepath.Ext(arg), ".torrent") {
+			continue
+		}
+		a.mu.Lock()
+		ready := a.eng != nil
+		if !ready {
+			a.pending = append(a.pending, arg)
+		}
+		a.mu.Unlock()
+		if ready {
+			if err := a.addSource(arg); err != nil {
+				a.notifyError(err)
+			}
+		}
+	}
+}
+
+func (a *App) notifyError(err error) {
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "error", err.Error())
 	}
 }
 
@@ -82,24 +161,57 @@ func (a *App) setVpn(s VpnStatus) {
 	a.mu.Unlock()
 }
 
-// connect registers WARP if needed, starts the tunnel, verifies it, then
-// starts the torrent engine. Nothing is downloaded until this succeeds.
+// connect starts the configured VPN, verifies it, then starts the torrent
+// engine. Nothing is downloaded until this succeeds.
 func (a *App) connect() {
-	a.setVpn(VpnStatus{State: "connecting"})
-	fail := func(err error) { a.setVpn(VpnStatus{State: "error", Error: err.Error()}) }
-
-	acc, err := warp.LoadOrRegister(filepath.Join(a.configDir, "warp.json"))
-	if err != nil {
-		fail(err)
+	a.mu.Lock()
+	if a.vpn.State == "connecting" || a.eng != nil {
+		a.mu.Unlock()
 		return
 	}
-	tun, err := tunnel.Start(tunnel.Config{
-		PrivateKey:    acc.PrivateKey,
-		PeerPublicKey: acc.PeerPublicKey,
-		Endpoint:      acc.Endpoint,
-		Addresses:     []string{acc.AddressV4, acc.AddressV6},
-		DNS:           []string{"1.1.1.1", "1.0.0.1"},
-	})
+	set := a.settings
+	a.vpn = VpnStatus{State: "connecting", Provider: set.VpnProvider}
+	a.mu.Unlock()
+	fail := func(err error) {
+		a.setVpn(VpnStatus{State: "error", Provider: set.VpnProvider, Error: err.Error()})
+	}
+
+	var cfg tunnel.Config
+	var realIP string
+	switch set.VpnProvider {
+	case "custom":
+		data, err := os.ReadFile(a.customConfPath())
+		if err != nil {
+			fail(errors.New("no WireGuard config imported; open Settings to import one"))
+			return
+		}
+		if cfg, err = tunnel.ParseWGQuick(string(data)); err != nil {
+			fail(err)
+			return
+		}
+		// Only WARP reports warp=on, so for other providers we confirm the
+		// tunnel by checking that the exit IP differs from the real one.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if tr, err := tunnel.DirectTrace(ctx); err == nil {
+			realIP = tr.IP
+		}
+		cancel()
+	default:
+		acc, err := warp.LoadOrRegister(filepath.Join(a.configDir, "warp.json"))
+		if err != nil {
+			fail(err)
+			return
+		}
+		cfg = tunnel.Config{
+			PrivateKey:    acc.PrivateKey,
+			PeerPublicKey: acc.PeerPublicKey,
+			Endpoint:      acc.Endpoint,
+			Addresses:     []string{acc.AddressV4, acc.AddressV6},
+			DNS:           []string{"1.1.1.1", "1.0.0.1"},
+		}
+	}
+
+	tun, err := tunnel.Start(cfg)
 	if err != nil {
 		fail(err)
 		return
@@ -107,54 +219,90 @@ func (a *App) connect() {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	tr, err := tun.CheckTrace(ctx)
 	cancel()
-	if err != nil {
-		tun.Close()
-		fail(fmt.Errorf("tunnel check failed: %w", err))
-		return
+	switch {
+	case err != nil:
+		err = fmt.Errorf("VPN not passing traffic: %w", err)
+	case set.VpnProvider != "custom" && tr.Warp != "on" && tr.Warp != "plus":
+		err = fmt.Errorf("tunnel is up but Cloudflare reports warp=%q", tr.Warp)
+	case realIP != "" && tr.IP == realIP:
+		err = errors.New("VPN exit IP is the same as your real IP")
 	}
-	if tr.Warp != "on" && tr.Warp != "plus" {
-		tun.Close()
-		fail(fmt.Errorf("tunnel is up but Cloudflare reports warp=%q", tr.Warp))
-		return
-	}
-
-	a.mu.Lock()
-	dataDir := a.settings.DownloadDir
-	a.mu.Unlock()
-	eng, err := engine.New(tun, dataDir)
 	if err != nil {
 		tun.Close()
 		fail(err)
 		return
 	}
 
+	port := 0
+	if set.VpnProvider == "custom" {
+		port = set.ForwardedPort
+	}
+	eng, err := engine.New(tun, engine.Options{
+		ForwardedPort: port,
+		DownLimit:     set.DownLimitKB * 1024,
+		UpLimit:       set.UpLimitKB * 1024,
+	})
+	if err != nil {
+		tun.Close()
+		fail(err)
+		return
+	}
+
+	mctx, stop := context.WithCancel(context.Background())
 	a.mu.Lock()
-	a.tun, a.eng = tun, eng
-	a.vpn = VpnStatus{State: "connected", ExitIP: tr.IP, Location: tr.Location, Colo: tr.Colo}
+	a.tun, a.eng, a.stopMonitor = tun, eng, stop
+	a.vpn = VpnStatus{State: "connected", Provider: set.VpnProvider, ExitIP: tr.IP, Location: tr.Location, Colo: tr.Colo, Port: port}
 	saved := append([]savedTorrent(nil), a.saved...)
+	pending := a.pending
+	a.pending = nil
 	a.mu.Unlock()
 
 	for _, s := range saved {
-		if _, err := eng.Add(s.Source); err != nil {
+		_, err := eng.Add(engine.AddOptions{Source: s.Source, Dir: s.Dir, Skipped: s.Skipped, Paused: s.Paused})
+		if err != nil {
 			runtime.LogWarningf(a.ctx, "restore %s: %v", s.Hash, err)
-			continue
-		}
-		if s.Paused {
-			eng.Pause(s.Hash)
 		}
 	}
-	go a.monitor()
+	for _, src := range pending {
+		if err := a.addSource(src); err != nil {
+			a.notifyError(err)
+		}
+	}
+	go a.monitor(mctx, tun)
+}
+
+func (a *App) disconnect() {
+	a.mu.Lock()
+	eng, tun, stop := a.eng, a.tun, a.stopMonitor
+	a.eng, a.tun, a.stopMonitor = nil, nil, nil
+	a.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+	if eng != nil {
+		eng.Close()
+	}
+	if tun != nil {
+		tun.Close()
+	}
 }
 
 // monitor re-checks the exit IP every minute so the UI reflects reality.
-func (a *App) monitor() {
-	for range time.Tick(60 * time.Second) {
-		a.mu.Lock()
-		tun := a.tun
-		a.mu.Unlock()
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		tr, err := tun.CheckTrace(ctx)
+func (a *App) monitor(ctx context.Context, tun *tunnel.Tunnel) {
+	tick := time.NewTicker(60 * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		tr, err := tun.CheckTrace(cctx)
 		cancel()
+		if ctx.Err() != nil {
+			return
+		}
 		a.mu.Lock()
 		if err != nil {
 			a.vpn.Error = "last check failed: " + err.Error()
@@ -174,7 +322,7 @@ func (a *App) engine() (*engine.Engine, error) {
 	return a.eng, nil
 }
 
-// --- Bound to the frontend ---
+// --- Torrents (bound to the frontend) ---
 
 func (a *App) GetVpnStatus() VpnStatus {
 	a.mu.Lock()
@@ -182,19 +330,13 @@ func (a *App) GetVpnStatus() VpnStatus {
 	return a.vpn
 }
 
-func (a *App) Retry() {
-	a.mu.Lock()
-	busy := a.eng != nil || a.vpn.State == "connecting"
-	a.mu.Unlock()
-	if !busy {
-		go a.connect()
-	}
-}
-
-func (a *App) GetSettings() Settings {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.settings
+// Reconnect tears down the VPN and engine and starts them again with the
+// current settings. Torrents resume where they left off.
+func (a *App) Reconnect() {
+	go func() {
+		a.disconnect()
+		a.connect()
+	}()
 }
 
 func (a *App) ListTorrents() []engine.Status {
@@ -210,7 +352,7 @@ func (a *App) AddMagnet(link string) error {
 	if !strings.HasPrefix(link, "magnet:") {
 		return errors.New("not a magnet link")
 	}
-	return a.add(link)
+	return a.addSource(link)
 }
 
 // PickTorrentFile opens a file dialog and adds the chosen .torrent files.
@@ -223,28 +365,40 @@ func (a *App) PickTorrentFile() error {
 		return err
 	}
 	for _, p := range paths {
-		mi, err := metainfo.LoadFromFile(p)
-		if err != nil {
-			return fmt.Errorf("%s: %w", filepath.Base(p), err)
-		}
-		// Keep our own copy so the torrent survives the original being deleted.
-		dst := filepath.Join(a.configDir, "torrents", mi.HashInfoBytes().HexString()+".torrent")
-		if err := copyFile(p, dst); err != nil {
-			return err
-		}
-		if err := a.add(dst); err != nil {
+		if err := a.addSource(p); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (a *App) add(src string) error {
+// addSource adds a magnet link or .torrent path into the current download folder.
+func (a *App) addSource(src string) error {
 	eng, err := a.engine()
 	if err != nil {
 		return err
 	}
-	hash, err := eng.Add(src)
+	if !strings.HasPrefix(src, "magnet:") {
+		mi, err := metainfo.LoadFromFile(src)
+		if err != nil {
+			return fmt.Errorf("%s: %w", filepath.Base(src), err)
+		}
+		// Keep our own copy so the torrent survives the original being deleted.
+		dst := filepath.Join(a.configDir, "torrents", mi.HashInfoBytes().HexString()+".torrent")
+		if !strings.EqualFold(src, dst) {
+			if err := copyFile(src, dst); err != nil {
+				return err
+			}
+		}
+		src = dst
+	}
+	a.mu.Lock()
+	dir := a.settings.DownloadDir
+	a.mu.Unlock()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	hash, err := eng.Add(engine.AddOptions{Source: src, Dir: dir})
 	if err != nil {
 		return err
 	}
@@ -255,7 +409,7 @@ func (a *App) add(src string) error {
 			return nil
 		}
 	}
-	a.saved = append(a.saved, savedTorrent{Hash: hash, Source: src})
+	a.saved = append(a.saved, savedTorrent{Hash: hash, Source: src, Dir: dir})
 	return a.writeSaved()
 }
 
@@ -275,25 +429,33 @@ func (a *App) setPaused(hash string, paused bool) error {
 	if err != nil {
 		return err
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for i := range a.saved {
-		if a.saved[i].Hash == hash {
-			a.saved[i].Paused = paused
-		}
-	}
-	return a.writeSaved()
+	a.updateSaved(hash, func(s *savedTorrent) { s.Paused = paused })
+	return nil
 }
 
-// Remove drops a torrent from the list. Downloaded files are kept.
-func (a *App) Remove(hash string) error {
+func (a *App) PauseAll() {
+	for _, t := range a.ListTorrents() {
+		if t.State != "paused" {
+			a.Pause(t.Hash)
+		}
+	}
+}
+
+func (a *App) ResumeAll() {
+	for _, t := range a.ListTorrents() {
+		if t.State == "paused" {
+			a.Resume(t.Hash)
+		}
+	}
+}
+
+// Remove drops a torrent from the list, optionally deleting its data.
+func (a *App) Remove(hash string, deleteFiles bool) error {
 	eng, err := a.engine()
 	if err != nil {
 		return err
 	}
-	if err := eng.Remove(hash); err != nil {
-		return err
-	}
+	rmErr := eng.Remove(hash, deleteFiles)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	kept := a.saved[:0]
@@ -307,12 +469,46 @@ func (a *App) Remove(hash string) error {
 		kept = append(kept, s)
 	}
 	a.saved = kept
-	return a.writeSaved()
+	if err := a.writeSaved(); err != nil {
+		return err
+	}
+	if rmErr != nil {
+		return fmt.Errorf("removed, but some files couldn't be deleted: %w", rmErr)
+	}
+	return nil
 }
 
-func (a *App) OpenDownloadDir() error {
+func (a *App) GetFiles(hash string) ([]engine.FileStatus, error) {
+	eng, err := a.engine()
+	if err != nil {
+		return nil, err
+	}
+	return eng.Files(hash)
+}
+
+func (a *App) SetFilesWanted(hash string, indexes []int, wanted bool) error {
+	eng, err := a.engine()
+	if err != nil {
+		return err
+	}
+	skipped, err := eng.SetFilesWanted(hash, indexes, wanted)
+	if err != nil {
+		return err
+	}
+	a.updateSaved(hash, func(s *savedTorrent) { s.Skipped = skipped })
+	return nil
+}
+
+// OpenFolder opens a torrent's folder in Explorer, or the default download
+// folder if hash is empty.
+func (a *App) OpenFolder(hash string) error {
 	a.mu.Lock()
 	dir := a.settings.DownloadDir
+	for _, s := range a.saved {
+		if s.Hash == hash {
+			dir = s.Dir
+		}
+	}
 	a.mu.Unlock()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -320,30 +516,139 @@ func (a *App) OpenDownloadDir() error {
 	return exec.Command("explorer", dir).Start()
 }
 
-// ChooseDownloadDir changes where new data is saved. Takes effect on restart,
-// since the engine's storage is fixed when it starts.
+// --- Settings (bound to the frontend) ---
+
+type SettingsView struct {
+	Settings       Settings             `json:"settings"`
+	CustomEndpoint string               `json:"customEndpoint"` // "" if no config imported
+	Assoc          winassoc.AssocStatus `json:"assoc"`
+}
+
+func (a *App) GetSettings() SettingsView {
+	a.mu.Lock()
+	v := SettingsView{Settings: a.settings}
+	a.mu.Unlock()
+	if data, err := os.ReadFile(a.customConfPath()); err == nil {
+		if cfg, err := tunnel.ParseWGQuick(string(data)); err == nil {
+			v.CustomEndpoint = cfg.Endpoint
+		}
+	}
+	v.Assoc = winassoc.Status(a.exe)
+	return v
+}
+
+// SaveSettings persists and applies settings. Speed limits and the download
+// folder apply immediately; VPN changes trigger a reconnect.
+func (a *App) SaveSettings(s Settings) error {
+	if s.DownloadDir == "" {
+		return errors.New("download folder can't be empty")
+	}
+	if s.VpnProvider != "custom" {
+		s.VpnProvider = "warp"
+	}
+	if s.ForwardedPort < 0 || s.ForwardedPort > 65535 {
+		return errors.New("forwarded port must be between 0 and 65535")
+	}
+	if s.DownLimitKB < 0 || s.UpLimitKB < 0 {
+		return errors.New("speed limits can't be negative")
+	}
+	if s.VpnProvider == "custom" {
+		if _, err := os.Stat(a.customConfPath()); err != nil {
+			return errors.New("import a WireGuard config before switching to it")
+		}
+	}
+
+	a.mu.Lock()
+	old := a.settings
+	a.settings = s
+	eng := a.eng
+	a.mu.Unlock()
+	if err := a.writeSettings(); err != nil {
+		return err
+	}
+	if eng != nil {
+		eng.SetLimits(s.DownLimitKB*1024, s.UpLimitKB*1024)
+	}
+	if old.VpnProvider != s.VpnProvider || (s.VpnProvider == "custom" && old.ForwardedPort != s.ForwardedPort) {
+		a.Reconnect()
+	}
+	return nil
+}
+
+// ChooseDirectory shows a folder picker and returns the choice ("" if cancelled).
+func (a *App) ChooseDirectory(current string) (string, error) {
+	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:            "Download folder",
+		DefaultDirectory: current,
+	})
+}
+
+// ChooseDownloadDir picks and immediately saves a new default download folder.
 func (a *App) ChooseDownloadDir() (string, error) {
 	a.mu.Lock()
-	cur := a.settings.DownloadDir
+	s := a.settings
 	a.mu.Unlock()
-	dir, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
-		Title:            "Download folder",
-		DefaultDirectory: cur,
-	})
+	dir, err := a.ChooseDirectory(s.DownloadDir)
 	if err != nil || dir == "" {
-		return cur, err
+		return s.DownloadDir, err
+	}
+	s.DownloadDir = dir
+	return dir, a.SaveSettings(s)
+}
+
+// ImportWireGuardConfig lets the user pick a .conf file, validates it and
+// stores it. Returns the endpoint for display. If the custom provider is
+// already active, it reconnects with the new config.
+func (a *App) ImportWireGuardConfig() (string, error) {
+	path, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:   "Import WireGuard config",
+		Filters: []runtime.FileFilter{{DisplayName: "WireGuard config (*.conf)", Pattern: "*.conf"}},
+	})
+	if err != nil || path == "" {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	cfg, err := tunnel.ParseWGQuick(string(data))
+	if err != nil {
+		return "", err
+	}
+	if err := writeFile(a.customConfPath(), data); err != nil {
+		return "", err
 	}
 	a.mu.Lock()
-	a.settings.DownloadDir = dir
+	active := a.settings.VpnProvider == "custom"
 	a.mu.Unlock()
-	return dir, a.writeSettings()
+	if active {
+		a.Reconnect()
+	}
+	return cfg.Endpoint, nil
+}
+
+func (a *App) RegisterAssociations() (winassoc.AssocStatus, error) {
+	if err := winassoc.Register(a.exe); err != nil {
+		return winassoc.AssocStatus{}, err
+	}
+	return winassoc.Status(a.exe), nil
+}
+
+func (a *App) OpenDefaultAppsSettings() error {
+	return winassoc.OpenDefaultAppsSettings()
 }
 
 // --- Persistence ---
 
+func (a *App) customConfPath() string { return filepath.Join(a.configDir, "wireguard.conf") }
+
 func (a *App) loadSettings() {
 	home, _ := os.UserHomeDir()
-	a.settings = Settings{DownloadDir: filepath.Join(home, "Downloads", "Torrents")}
+	a.settings = Settings{
+		DownloadDir: filepath.Join(home, "Downloads", "Torrents"),
+		VpnProvider: "warp",
+		CloseToTray: true,
+	}
 	if data, err := os.ReadFile(filepath.Join(a.configDir, "settings.json")); err == nil {
 		json.Unmarshal(data, &a.settings)
 	}
@@ -360,6 +665,24 @@ func (a *App) loadSaved() {
 	if data, err := os.ReadFile(filepath.Join(a.configDir, "torrents.json")); err == nil {
 		json.Unmarshal(data, &a.saved)
 	}
+	for i := range a.saved {
+		if a.saved[i].Dir == "" { // saved by an older version
+			a.saved[i].Dir = a.settings.DownloadDir
+		}
+	}
+}
+
+func (a *App) updateSaved(hash string, f func(*savedTorrent)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i := range a.saved {
+		if a.saved[i].Hash == hash {
+			f(&a.saved[i])
+		}
+	}
+	if err := a.writeSaved(); err != nil {
+		runtime.LogErrorf(a.ctx, "save torrents: %v", err)
+	}
 }
 
 // writeSaved must be called with a.mu held.
@@ -368,11 +691,16 @@ func (a *App) writeSaved() error {
 	return writeFile(filepath.Join(a.configDir, "torrents.json"), data)
 }
 
+// writeFile writes atomically so a crash can't leave a half-written file.
 func writeFile(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func copyFile(src, dst string) error {

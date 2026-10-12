@@ -9,13 +9,13 @@ import (
 	"path/filepath"
 	"time"
 
-	"torrent-client/internal/tunnel"
-	"torrent-client/internal/warp"
+	"sharkbite/internal/tunnel"
+	"sharkbite/internal/warp"
 )
 
 func main() {
 	dir, _ := os.UserConfigDir()
-	acc, err := warp.LoadOrRegister(filepath.Join(dir, "torrent-client", "warp.json"))
+	acc, err := warp.LoadOrRegister(filepath.Join(dir, "SharkBiteTorrent", "warp.json"))
 	if err != nil {
 		fmt.Println("register:", err)
 		os.Exit(1)

@@ -1,18 +1,24 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import {
-    GetVpnStatus, ListTorrents, AddMagnet, PickTorrentFile,
-    Pause, Resume, Remove, Retry, OpenDownloadDir, GetSettings, ChooseDownloadDir,
+    GetVpnStatus, ListTorrents, AddMagnet, PickTorrentFile, GetSettings,
+    Pause, Resume, Remove, Reconnect, OpenFolder, ChooseDownloadDir,
   } from '../wailsjs/go/main/App.js'
+  import { EventsOn } from '../wailsjs/runtime/runtime.js'
   import type { engine, main } from '../wailsjs/go/models'
+  import FilesPanel from './FilesPanel.svelte'
+  import Settings from './Settings.svelte'
+  import { bytes, rate, duration } from './format'
 
-  let vpn = $state<main.VpnStatus>({ state: 'connecting', exitIP: '', location: '', colo: '', error: '' } as main.VpnStatus)
+  let vpn = $state<main.VpnStatus>({ state: 'connecting' } as main.VpnStatus)
   let torrents = $state<engine.Status[]>([])
   let selected = $state<string | null>(null)
   let magnet = $state('')
   let error = $state('')
-  let downloadDir = $state('')
-  let dirChanged = $state(false)
+  let settings = $state<main.Settings | null>(null)
+  let showSettings = $state(false)
+  let removing = $state<engine.Status | null>(null)
+  let deleteFiles = $state(false)
 
   const connected = $derived(vpn.state === 'connected')
   const sel = $derived(torrents.find(t => t.hash === selected))
@@ -29,11 +35,17 @@
     }
   }
 
+  const loadSettings = async () => (settings = (await GetSettings()).settings)
+
   onMount(() => {
-    GetSettings().then(s => (downloadDir = s.downloadDir))
+    loadSettings()
     refresh()
     const id = setInterval(refresh, 1000)
-    return () => clearInterval(id)
+    const off = EventsOn('error', (msg: string) => (error = msg))
+    return () => {
+      clearInterval(id)
+      off()
+    }
   })
 
   async function run(fn: () => Promise<unknown>) {
@@ -55,49 +67,86 @@
     })
   }
 
-  async function chooseDir() {
-    const before = downloadDir
-    await run(async () => (downloadDir = await ChooseDownloadDir()))
-    if (downloadDir !== before) dirChanged = true
+  // Right-click menu on a torrent row.
+  let menu = $state<{ x: number; y: number; t: engine.Status } | null>(null)
+
+  function openMenu(e: MouseEvent, t: engine.Status) {
+    e.preventDefault()
+    selected = t.hash
+    // Keep the menu inside the window.
+    const w = 170, h = 120
+    menu = {
+      x: Math.min(e.clientX, window.innerWidth - w - 4),
+      y: Math.min(e.clientY, window.innerHeight - h - 4),
+      t,
+    }
   }
 
-  function bytes(n: number): string {
-    if (n < 1024) return `${n} B`
-    const u = ['KB', 'MB', 'GB', 'TB']
-    let i = -1
-    do { n /= 1024; i++ } while (n >= 1024 && i < u.length - 1)
-    return `${n.toFixed(n < 10 ? 2 : n < 100 ? 1 : 0)} ${u[i]}`
+  function menuAction(fn: (t: engine.Status) => Promise<unknown>) {
+    const t = menu!.t
+    menu = null
+    run(() => fn(t))
   }
-  const rate = (n: number) => (n > 0 ? `${bytes(n)}/s` : '–')
+
+  function onKey(e: KeyboardEvent) {
+    if (e.key === 'Escape') menu = null
+  }
+
+  function confirmRemove() {
+    const t = removing!
+    removing = null
+    run(() => Remove(t.hash, deleteFiles))
+  }
 
   function eta(t: engine.Status): string {
     if (t.state !== 'downloading' || t.downRate <= 0) return '–'
-    const s = Math.round((t.size - t.done) / t.downRate)
-    if (s < 60) return `${s}s`
-    if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`
-    return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
+    return duration(Math.round((t.size - t.done) / t.downRate))
   }
 
   const stateLabel: Record<string, string> = {
     metadata: 'Fetching metadata', downloading: 'Downloading', seeding: 'Seeding', paused: 'Paused',
   }
+
+  const limitText = $derived.by(() => {
+    if (!settings) return ''
+    const parts = []
+    if (settings.downLimitKB > 0) parts.push(`↓ ≤ ${settings.downLimitKB} KB/s`)
+    if (settings.upLimitKB > 0) parts.push(`↑ ≤ ${settings.upLimitKB} KB/s`)
+    return parts.join('  ')
+  })
 </script>
 
-<div class="shell">
+<div class="shell" style="--wails-drop-target: drop">
   <header>
+    <div class="brand">
+      <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true">
+        <rect x="1" y="1" width="30" height="30" rx="7" fill="#2370c4" />
+        <path d="M6 25.6 Q10.9 8.3 22.4 5.4 Q17.9 16.6 25 25.6 Z" fill="#f2f6fa" />
+        <path d="M1 22.5 Q8 19.5 13 22 T25 22 T31 21.5 V31 H1 Z" fill="#0b2e5e" />
+        <path d="M1 22.5 Q8 19.5 13 22 T25 22 T31 21.5" fill="none" stroke="#a9d8ff" stroke-width="1.6" />
+      </svg>
+      <span>Shark Bite<b>Torrent</b></span>
+    </div>
     <div class="vpn {vpn.state}">
       <span class="dot"></span>
       {#if vpn.state === 'connected'}
-        <span><b>VPN on</b> · WARP exit {vpn.exitIP} · {vpn.location} ({vpn.colo})</span>
+        <span class="text">
+          <b>VPN on</b> · {vpn.provider === 'custom' ? 'WireGuard' : 'WARP'} exit {vpn.exitIP} · {vpn.location}{vpn.colo ? ` (${vpn.colo})` : ''}
+          {#if vpn.port}· port {vpn.port} open{/if}
+        </span>
         {#if vpn.error}<span class="warn" title={vpn.error}>⚠ check failed</span>{/if}
       {:else if vpn.state === 'connecting'}
-        <span><b>Connecting to WARP…</b> Torrents start once the tunnel is verified.</span>
+        <span class="text"><b>Connecting VPN…</b> Torrents start once the tunnel is verified.</span>
       {:else}
-        <span><b>VPN error</b> · {vpn.error}</span>
-        <button onclick={() => run(Retry)}>Retry</button>
+        <span class="text" title={vpn.error}><b>VPN error</b> · {vpn.error}</span>
+        <button onclick={() => run(Reconnect)}>Retry</button>
       {/if}
     </div>
-    <div class="totals">↓ {rate(totalDown)} &nbsp; ↑ {rate(totalUp)}</div>
+    <div class="totals" title={limitText ? `Speed limits: ${limitText}` : 'No speed limits'}>
+      ↓ {rate(totalDown)} &nbsp; ↑ {rate(totalUp)}
+      {#if limitText}<span class="limit">limited</span>{/if}
+    </div>
+    <button class="icon" onclick={() => (showSettings = true)} title="Settings" aria-label="Settings">⚙</button>
   </header>
 
   <div class="toolbar">
@@ -109,72 +158,131 @@
     <span class="sep"></span>
     <button onclick={() => sel && run(() => Resume(sel.hash))} disabled={!sel || sel.state !== 'paused'}>Resume</button>
     <button onclick={() => sel && run(() => Pause(sel.hash))} disabled={!sel || sel.state === 'paused'}>Pause</button>
-    <button onclick={() => sel && run(() => Remove(sel.hash))} disabled={!sel} title="Removes from the list; downloaded files are kept">Remove</button>
+    <button onclick={() => { removing = sel ?? null; deleteFiles = false }} disabled={!sel}>Remove…</button>
   </div>
 
-  {#if error}<div class="error" role="alert">{error} <button onclick={() => (error = '')}>✕</button></div>{/if}
+  {#if error}<div class="error" role="alert"><span>{error}</span> <button onclick={() => (error = '')} aria-label="Dismiss">✕</button></div>{/if}
 
-  <main>
-    {#if torrents.length === 0}
-      <div class="empty">
-        {#if connected}
-          No torrents yet. Paste a magnet link or open a .torrent file.
-        {:else}
-          Waiting for the VPN. Nothing will download until the tunnel is up.
-        {/if}
-      </div>
-    {:else}
-      <table>
-        <thead>
-          <tr>
-            <th class="name">Name</th><th>Size</th><th class="prog">Progress</th><th>Status</th>
-            <th>Down</th><th>Up</th><th>ETA</th><th>Peers</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each torrents as t (t.hash)}
-            <tr class:selected={t.hash === selected} onclick={() => (selected = t.hash)}>
-              <td class="name" title={t.name}>{t.name || t.hash}</td>
-              <td>{t.size ? bytes(t.size) : '–'}</td>
-              <td class="prog">
-                <div class="bar {t.state}"><div style="width:{(t.progress * 100).toFixed(1)}%"></div></div>
-                <span>{(t.progress * 100).toFixed(1)}%</span>
-              </td>
-              <td>{stateLabel[t.state] ?? t.state}</td>
-              <td>{rate(t.downRate)}</td>
-              <td>{rate(t.upRate)}</td>
-              <td>{eta(t)}</td>
-              <td>{t.seeds}/{t.peers}</td>
+  <main class:split={!!sel}>
+    <div class="list">
+      {#if torrents.length === 0}
+        <div class="empty">
+          {#if connected}
+            No torrents yet. Paste a magnet link, open a .torrent file, or drop one on this window.
+          {:else}
+            Waiting for the VPN. Nothing will download until the tunnel is up.
+          {/if}
+        </div>
+      {:else}
+        <table>
+          <thead>
+            <tr>
+              <th class="name">Name</th><th>Size</th><th class="prog">Progress</th><th>Status</th>
+              <th>Down</th><th>Up</th><th>ETA</th><th>Seeds/Peers</th>
             </tr>
-          {/each}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {#each torrents as t (t.hash)}
+              <tr
+                class:selected={t.hash === selected}
+                onclick={() => (selected = t.hash)}
+                oncontextmenu={e => openMenu(e, t)}
+              >
+                <td class="name" title={t.name}>{t.name || t.hash}</td>
+                <td>{t.size ? bytes(t.size) : '–'}</td>
+                <td class="prog">
+                  <div class="bar {t.state}"><div style="width:{(t.progress * 100).toFixed(1)}%"></div></div>
+                  <span>{(t.progress * 100).toFixed(1)}%</span>
+                </td>
+                <td>{stateLabel[t.state] ?? t.state}</td>
+                <td>{rate(t.downRate)}</td>
+                <td>{rate(t.upRate)}</td>
+                <td>{eta(t)}</td>
+                <td>{t.seeds}/{t.peers}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
+    </div>
+    {#if sel}
+      <div class="details">
+        <FilesPanel torrent={sel} onError={e => (error = e)} />
+      </div>
     {/if}
   </main>
 
   <footer>
-    <span class="path" title={downloadDir}>Saving to {downloadDir}</span>
-    {#if dirChanged}<span class="warn">Restart to apply new folder</span>{/if}
-    <button onclick={chooseDir}>Change…</button>
-    <button onclick={() => run(OpenDownloadDir)}>Open folder</button>
+    <span class="path" title={settings?.downloadDir}>Downloads go to {settings?.downloadDir}</span>
+    <button onclick={() => run(async () => { await ChooseDownloadDir(); await loadSettings() })}>Change download folder…</button>
   </footer>
 </div>
+
+{#if menu}
+  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+  <div class="menu-catcher" onclick={() => (menu = null)} oncontextmenu={e => { e.preventDefault(); menu = null }}></div>
+  <div class="menu" role="menu" style="left:{menu.x}px; top:{menu.y}px">
+    <button role="menuitem" onclick={() => menuAction(t => OpenFolder(t.hash))}>Show files</button>
+    {#if menu.t.state === 'paused'}
+      <button role="menuitem" onclick={() => menuAction(t => Resume(t.hash))}>Resume</button>
+    {:else}
+      <button role="menuitem" onclick={() => menuAction(t => Pause(t.hash))}>Pause</button>
+    {/if}
+    <div class="menu-sep"></div>
+    <button role="menuitem" onclick={() => { removing = menu!.t; deleteFiles = false; menu = null }}>Remove…</button>
+  </div>
+{/if}
+
+<svelte:window onkeydown={onKey} />
+
+{#if showSettings}
+  <Settings onClose={() => { showSettings = false; loadSettings(); refresh() }} />
+{/if}
+
+{#if removing}
+  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+  <div class="backdrop" onclick={() => (removing = null)}>
+    <div class="confirm" role="dialog" aria-modal="true" tabindex="-1" onclick={e => e.stopPropagation()}>
+      <h3>Remove torrent?</h3>
+      <p class="tname">{removing.name || removing.hash}</p>
+      <label class="check">
+        <input type="checkbox" bind:checked={deleteFiles} />
+        <span>Also delete downloaded files</span>
+      </label>
+      {#if deleteFiles}<p class="danger">Files are deleted permanently, not moved to the Recycle Bin.</p>{/if}
+      <div class="actions">
+        <button onclick={() => (removing = null)}>Cancel</button>
+        <button class:danger-btn={deleteFiles} class:primary={!deleteFiles} onclick={confirmRemove}>
+          {deleteFiles ? 'Remove and delete' : 'Remove'}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   .shell { display: flex; flex-direction: column; height: 100vh; }
 
   header {
-    display: flex; align-items: center; justify-content: space-between; gap: 12px;
-    padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--panel);
+    display: flex; align-items: center; gap: 16px;
+    padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--panel);
   }
-  .vpn { display: flex; align-items: center; gap: 10px; min-width: 0; }
-  .vpn span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .brand { display: flex; align-items: center; gap: 8px; font-size: 15px; white-space: nowrap; }
+  .brand b { color: #6cb8ff; font-weight: 600; }
+  .vpn { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
+  .vpn .text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .vpn button { padding: 3px 10px; }
   .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--warn); }
   .vpn.connected .dot { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
   .vpn.error .dot { background: var(--err); }
   .vpn.connecting .dot { animation: pulse 1s infinite alternate; }
   @keyframes pulse { to { opacity: 0.3; } }
   .totals { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .limit {
+    margin-left: 6px; padding: 1px 6px; border-radius: 4px; font-size: 11px;
+    background: rgba(210, 153, 34, 0.15); color: var(--warn);
+  }
+  .icon { padding: 2px 9px; font-size: 16px; }
   .warn { color: var(--warn); }
 
   .toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 14px; }
@@ -189,8 +297,11 @@
   }
   .error button { padding: 2px 8px; background: none; border: none; }
 
-  main { flex: 1; overflow: auto; border-top: 1px solid var(--border); }
-  .empty { display: grid; place-items: center; height: 100%; color: var(--muted); }
+  main { flex: 1; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--border); }
+  .list { flex: 1; min-height: 0; overflow: auto; }
+  main.split .list { flex: 1.4; }
+  .details { flex: 1; min-height: 120px; border-top: 1px solid var(--border); }
+  .empty { display: grid; place-items: center; height: 100%; color: var(--muted); padding: 0 16px; text-align: center; }
 
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
   th {
@@ -217,4 +328,28 @@
   }
   footer .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   footer button { padding: 4px 10px; }
+
+  .menu-catcher { position: fixed; inset: 0; z-index: 20; }
+  .menu {
+    position: fixed; z-index: 21; min-width: 170px; padding: 4px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    display: flex; flex-direction: column;
+  }
+  .menu button { border: none; background: none; text-align: left; padding: 6px 10px; border-radius: 5px; }
+  .menu button:hover { background: var(--row-hover); }
+  .menu-sep { height: 1px; background: var(--border); margin: 4px 2px; }
+
+  .backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); display: grid; place-items: center; z-index: 10; }
+  .confirm {
+    width: min(440px, calc(100vw - 32px)); padding: 18px 20px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+  }
+  .confirm h3 { margin: 0 0 6px; font-size: 16px; font-weight: 600; }
+  .tname { margin: 0 0 14px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .danger { color: var(--err); font-size: 13px; margin: 8px 0 0; }
+  .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  .danger-btn { background: var(--err); border-color: var(--err); color: #fff; }
 </style>

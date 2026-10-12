@@ -25,6 +25,7 @@ import (
 type Config struct {
 	PrivateKey    string   // base64
 	PeerPublicKey string   // base64
+	PresharedKey  string   // base64, optional
 	Endpoint      string   // host:port
 	Addresses     []string // interface addresses, with or without /prefix
 	DNS           []string
@@ -34,6 +35,7 @@ type Config struct {
 type Tunnel struct {
 	dev  *device.Device
 	tnet *netstack.Net
+	dns  string // host:port of the DNS server reached through the tunnel
 }
 
 func Start(cfg Config) (*Tunnel, error) {
@@ -70,15 +72,31 @@ func Start(cfg Config) (*Tunnel, error) {
 
 	privHex, err := b64ToHex(cfg.PrivateKey)
 	if err != nil {
+		dev.Close()
 		return nil, fmt.Errorf("private key: %w", err)
 	}
 	peerHex, err := b64ToHex(cfg.PeerPublicKey)
 	if err != nil {
+		dev.Close()
 		return nil, fmt.Errorf("peer key: %w", err)
 	}
-	ipc := fmt.Sprintf("private_key=%s\npublic_key=%s\nendpoint=%s\npersistent_keepalive_interval=25\nallowed_ip=0.0.0.0/0\nallowed_ip=::/0\n",
-		privHex, peerHex, cfg.Endpoint)
-	if err := dev.IpcSet(ipc); err != nil {
+	endpoint, err := resolveEndpoint(cfg.Endpoint)
+	if err != nil {
+		dev.Close()
+		return nil, err
+	}
+	var ipc strings.Builder
+	fmt.Fprintf(&ipc, "private_key=%s\npublic_key=%s\n", privHex, peerHex)
+	if cfg.PresharedKey != "" {
+		pskHex, err := b64ToHex(cfg.PresharedKey)
+		if err != nil {
+			dev.Close()
+			return nil, fmt.Errorf("preshared key: %w", err)
+		}
+		fmt.Fprintf(&ipc, "preshared_key=%s\n", pskHex)
+	}
+	fmt.Fprintf(&ipc, "endpoint=%s\npersistent_keepalive_interval=25\nallowed_ip=0.0.0.0/0\nallowed_ip=::/0\n", endpoint)
+	if err := dev.IpcSet(ipc.String()); err != nil {
 		dev.Close()
 		return nil, fmt.Errorf("configure wireguard: %w", err)
 	}
@@ -86,11 +104,51 @@ func Start(cfg Config) (*Tunnel, error) {
 		dev.Close()
 		return nil, fmt.Errorf("bring up wireguard: %w", err)
 	}
-	return &Tunnel{dev: dev, tnet: tnet}, nil
+	t := &Tunnel{dev: dev, tnet: tnet, dns: "1.1.1.1:53"}
+	if len(dns) > 0 {
+		t.dns = netip.AddrPortFrom(dns[0], 53).String()
+	}
+	return t, nil
+}
+
+// resolveEndpoint turns host:port into ip:port. It deliberately uses a fresh
+// resolver (the OS one) rather than net.DefaultResolver, which the engine
+// points at a previous tunnel.
+func resolveEndpoint(endpoint string) (string, error) {
+	host, port, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("endpoint %q: %w", endpoint, err)
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return endpoint, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ips, err := (&net.Resolver{}).LookupNetIP(ctx, "ip", host)
+	if err != nil || len(ips) == 0 {
+		return "", fmt.Errorf("resolve VPN endpoint %s: %v", host, err)
+	}
+	ip := ips[0]
+	for _, a := range ips { // prefer IPv4, which works on more networks
+		if a.Is4() {
+			ip = a
+			break
+		}
+	}
+	return net.JoinHostPort(ip.Unmap().String(), port), nil
 }
 
 func (t *Tunnel) Close() {
 	t.dev.Close()
+}
+
+// DNSServer is the ip:port of the DNS server used inside the tunnel.
+func (t *Tunnel) DNSServer() string { return t.dns }
+
+// ListenTCP4 listens for inbound connections on port inside the tunnel. Only
+// useful with providers that forward a port to you.
+func (t *Tunnel) ListenTCP4(port int) (net.Listener, error) {
+	return t.tnet.ListenTCPAddrPort(netip.AddrPortFrom(netip.IPv4Unspecified(), uint16(port)))
 }
 
 // Net exposes the userspace stack for dialing/listening (TCP and UDP).
@@ -125,11 +183,25 @@ type Trace struct {
 // CheckTrace fetches Cloudflare's trace page through the tunnel, which
 // reports the exit IP and whether WARP is active.
 func (t *Tunnel) CheckTrace(ctx context.Context) (*Trace, error) {
+	return fetchTrace(ctx, t.HTTPClient())
+}
+
+// DirectTrace fetches the trace over the normal (non-VPN) connection, so the
+// caller can confirm the tunnel's exit IP differs from the real one.
+func DirectTrace(ctx context.Context) (*Trace, error) {
+	d := &net.Dialer{Timeout: 10 * time.Second, Resolver: &net.Resolver{}}
+	return fetchTrace(ctx, &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: &http.Transport{DialContext: d.DialContext},
+	})
+}
+
+func fetchTrace(ctx context.Context, hc *http.Client) (*Trace, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.cloudflare.com/cdn-cgi/trace", nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := t.HTTPClient().Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, err
 	}

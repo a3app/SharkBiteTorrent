@@ -6,8 +6,16 @@ export function AddMagnet(arg1) {
   return window['go']['main']['App']['AddMagnet'](arg1);
 }
 
+export function ChooseDirectory(arg1) {
+  return window['go']['main']['App']['ChooseDirectory'](arg1);
+}
+
 export function ChooseDownloadDir() {
   return window['go']['main']['App']['ChooseDownloadDir']();
+}
+
+export function GetFiles(arg1) {
+  return window['go']['main']['App']['GetFiles'](arg1);
 }
 
 export function GetSettings() {
@@ -18,30 +26,58 @@ export function GetVpnStatus() {
   return window['go']['main']['App']['GetVpnStatus']();
 }
 
+export function ImportWireGuardConfig() {
+  return window['go']['main']['App']['ImportWireGuardConfig']();
+}
+
 export function ListTorrents() {
   return window['go']['main']['App']['ListTorrents']();
 }
 
-export function OpenDownloadDir() {
-  return window['go']['main']['App']['OpenDownloadDir']();
+export function OpenDefaultAppsSettings() {
+  return window['go']['main']['App']['OpenDefaultAppsSettings']();
+}
+
+export function OpenFolder(arg1) {
+  return window['go']['main']['App']['OpenFolder'](arg1);
 }
 
 export function Pause(arg1) {
   return window['go']['main']['App']['Pause'](arg1);
 }
 
+export function PauseAll() {
+  return window['go']['main']['App']['PauseAll']();
+}
+
 export function PickTorrentFile() {
   return window['go']['main']['App']['PickTorrentFile']();
 }
 
-export function Remove(arg1) {
-  return window['go']['main']['App']['Remove'](arg1);
+export function Reconnect() {
+  return window['go']['main']['App']['Reconnect']();
+}
+
+export function RegisterAssociations() {
+  return window['go']['main']['App']['RegisterAssociations']();
+}
+
+export function Remove(arg1, arg2) {
+  return window['go']['main']['App']['Remove'](arg1, arg2);
 }
 
 export function Resume(arg1) {
   return window['go']['main']['App']['Resume'](arg1);
 }
 
-export function Retry() {
-  return window['go']['main']['App']['Retry']();
+export function ResumeAll() {
+  return window['go']['main']['App']['ResumeAll']();
+}
+
+export function SaveSettings(arg1) {
+  return window['go']['main']['App']['SaveSettings'](arg1);
+}
+
+export function SetFilesWanted(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetFilesWanted'](arg1, arg2, arg3);
 }

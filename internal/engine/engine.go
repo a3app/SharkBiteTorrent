@@ -5,8 +5,13 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"math"
 	"net"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -16,8 +21,10 @@ import (
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/dialer"
 	"github.com/anacrolix/torrent/metainfo"
+	"github.com/anacrolix/torrent/storage"
+	"golang.org/x/time/rate"
 
-	"torrent-client/internal/tunnel"
+	"sharkbite/internal/tunnel"
 )
 
 var defaultBootstrap = []string{
@@ -27,27 +34,41 @@ var defaultBootstrap = []string{
 	"dht.libtorrent.org:25401",
 }
 
+type Options struct {
+	// ForwardedPort, if non-zero, is a port the VPN provider forwards to us.
+	// The engine accepts inbound peers on it and announces it to trackers/DHT.
+	ForwardedPort int
+	// Speed limits in bytes/second; 0 means unlimited.
+	DownLimit int64
+	UpLimit   int64
+}
+
 type Engine struct {
-	cl  *torrent.Client
-	dht *dht.Server
-	tun *tunnel.Tunnel
+	cl       *torrent.Client
+	dht      *dht.Server
+	listener net.Listener
+	tun      *tunnel.Tunnel
+	down, up *rate.Limiter
 
 	mu      sync.Mutex
-	paused  map[metainfo.Hash]bool
-	lastTot map[metainfo.Hash]rateSample
+	entries map[metainfo.Hash]*entry
 }
 
-type rateSample struct {
-	at        time.Time
-	read      int64
-	written   int64
-	downRate  int64
-	upRate    int64
+// entry is our per-torrent state on top of anacrolix's.
+type entry struct {
+	t       *torrent.Torrent
+	dir     string
+	storage storage.ClientImplCloser
+	paused  bool
+	skipped map[int]bool // file indexes the user doesn't want
+
+	last               time.Time
+	lastRead, lastWrit int64
+	downRate, upRate   int64
 }
 
-// New starts a torrent client bound entirely to tun. dataDir is where
-// downloads are saved.
-func New(tun *tunnel.Tunnel, dataDir string) (*Engine, error) {
+// New starts a torrent client bound entirely to tun.
+func New(tun *tunnel.Tunnel, opts Options) (*Engine, error) {
 	tnet := tun.Net()
 
 	// Force every DNS lookup in this process through the tunnel, regardless
@@ -56,21 +77,33 @@ func New(tun *tunnel.Tunnel, dataDir string) (*Engine, error) {
 	net.DefaultResolver = &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return tun.DialContext(ctx, network, "1.1.1.1:53")
+			return tun.DialContext(ctx, network, tun.DNSServer())
 		},
 	}
 
-	cfg := torrent.NewDefaultClientConfig()
-	cfg.DataDir = dataDir
-	cfg.Seed = true
+	e := &Engine{
+		tun:     tun,
+		down:    rate.NewLimiter(unlimited, 0),
+		up:      rate.NewLimiter(unlimited, 0),
+		entries: map[metainfo.Hash]*entry{},
+	}
+	e.SetLimits(opts.DownLimit, opts.UpLimit)
 
-	// No OS sockets: we add tunnel-backed dialers/DHT below instead.
+	cfg := torrent.NewDefaultClientConfig()
+	cfg.Seed = true
+	// Torrents get their own storage (see Add); this only catches anything
+	// added without one, and is never written to in practice.
+	cfg.DataDir = os.TempDir()
+	cfg.DownloadRateLimiter = e.down
+	cfg.UploadRateLimiter = e.up
+
+	// No OS sockets: we add tunnel-backed dialers/listeners/DHT below instead.
 	cfg.DisableTCP = true
 	cfg.DisableUTP = true
 	cfg.NoDHT = true
 	cfg.NoDefaultPortForwarding = true // UPnP would map a port on the real LAN
 	cfg.DisableWebtorrent = true       // WebRTC uses OS sockets
-	cfg.AcceptPeerConnections = false  // free WARP has no inbound ports
+	cfg.AcceptPeerConnections = opts.ForwardedPort > 0
 
 	cfg.TrackerDialContext = tun.DialContext
 	cfg.HTTPDialContext = tun.DialContext
@@ -85,28 +118,33 @@ func New(tun *tunnel.Tunnel, dataDir string) (*Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("torrent client: %w", err)
 	}
+	e.cl = cl
 	cl.AddDialer(dialer.WithNetwork{Network: "tcp", Dialer: tun})
+
+	if opts.ForwardedPort > 0 {
+		l, err := tun.ListenTCP4(opts.ForwardedPort)
+		if err != nil {
+			cl.Close()
+			return nil, fmt.Errorf("listen on forwarded port %d: %w", opts.ForwardedPort, err)
+		}
+		e.listener = l
+		cl.AddListener(l) // also makes the client announce this port
+	}
 
 	pc, err := tun.ListenUDP4()
 	if err != nil {
-		cl.Close()
+		e.closeClient()
 		return nil, fmt.Errorf("dht socket: %w", err)
 	}
 	ds, err := cl.NewAnacrolixDhtServer(pc)
 	if err != nil {
 		pc.Close()
-		cl.Close()
+		e.closeClient()
 		return nil, fmt.Errorf("dht server: %w", err)
 	}
+	e.dht = ds
 	cl.AddDhtServer(torrent.AnacrolixDhtServerWrapper{Server: ds})
-
-	return &Engine{
-		cl:      cl,
-		dht:     ds,
-		tun:     tun,
-		paused:  map[metainfo.Hash]bool{},
-		lastTot: map[metainfo.Hash]rateSample{},
-	}, nil
+	return e, nil
 }
 
 func resolveBootstrap(lookup func(string) ([]string, error)) ([]dht.Addr, error) {
@@ -130,108 +168,278 @@ func resolveBootstrap(lookup func(string) ([]string, error)) ([]dht.Addr, error)
 	return addrs, nil
 }
 
-// Close stops the client. Call before closing the tunnel.
-func (e *Engine) Close() {
+func (e *Engine) closeClient() {
 	e.cl.Close()
-	// Servers added via AddDhtServer aren't closed by the client, and the DHT
-	// read loop panics if its socket dies while it's still open.
-	e.dht.Close()
+	if e.listener != nil {
+		e.listener.Close()
+	}
+	e.mu.Lock()
+	for _, en := range e.entries {
+		en.storage.Close()
+	}
+	e.mu.Unlock()
 }
 
-// Add accepts a magnet link or a path to a .torrent file.
-func (e *Engine) Add(src string) (string, error) {
-	var t *torrent.Torrent
+// Close stops the client. Call before closing the tunnel.
+func (e *Engine) Close() {
+	e.closeClient()
+	// Servers added via AddDhtServer aren't closed by the client, and the DHT
+	// read loop panics if its socket dies while it's still open.
+	if e.dht != nil {
+		e.dht.Close()
+	}
+	// Stop routing this process's DNS into a tunnel that's going away.
+	net.DefaultResolver = &net.Resolver{}
+}
+
+// SetLimits changes the global speed limits (bytes/s, 0 = unlimited) live.
+func (e *Engine) SetLimits(down, up int64) {
+	e.down.SetLimit(limitOf(down))
+	e.up.SetLimit(limitOf(up))
+}
+
+// unlimited is used instead of rate.Inf: anacrolix stops opening peer
+// connections when the download limiter reports no tokens, and an Inf limiter
+// never refills its token count from zero. A huge finite rate refills instantly.
+const unlimited = rate.Limit(1 << 40)
+
+func limitOf(n int64) rate.Limit {
+	if n <= 0 {
+		return unlimited
+	}
+	return rate.Limit(n)
+}
+
+type AddOptions struct {
+	Source  string // magnet link or path to a .torrent file
+	Dir     string // folder to save data in
+	Skipped []int  // file indexes not to download
+	Paused  bool
+}
+
+// Add starts a torrent and returns its info hash.
+func (e *Engine) Add(o AddOptions) (string, error) {
+	var spec *torrent.TorrentSpec
 	var err error
-	if strings.HasPrefix(src, "magnet:") {
-		t, err = e.cl.AddMagnet(src)
+	if strings.HasPrefix(o.Source, "magnet:") {
+		spec, err = torrent.TorrentSpecFromMagnetUri(o.Source)
 	} else {
 		var mi *metainfo.MetaInfo
-		mi, err = metainfo.LoadFromFile(src)
-		if err == nil {
-			t, err = e.cl.AddTorrent(mi)
+		if mi, err = metainfo.LoadFromFile(o.Source); err == nil {
+			spec, err = torrent.TorrentSpecFromMetaInfoErr(mi)
 		}
 	}
 	if err != nil {
 		return "", err
 	}
-	go func() {
-		<-t.GotInfo()
-		e.mu.Lock()
-		paused := e.paused[t.InfoHash()]
+
+	e.mu.Lock()
+	if _, ok := e.entries[spec.InfoHash]; ok {
 		e.mu.Unlock()
-		if !paused {
-			t.DownloadAll()
+		return spec.InfoHash.HexString(), nil
+	}
+	// Part files: incomplete files end in .part, and completion is inferred
+	// from the files on disk, so no database is needed per folder.
+	st := storage.NewFileOpts(storage.NewFileClientOpts{ClientBaseDir: o.Dir})
+	spec.Storage = st
+	en := &entry{dir: o.Dir, storage: st, paused: o.Paused, skipped: map[int]bool{}}
+	for _, i := range o.Skipped {
+		en.skipped[i] = true
+	}
+	e.entries[spec.InfoHash] = en
+	e.mu.Unlock()
+
+	t, _, err := e.cl.AddTorrentSpec(spec)
+	if err != nil {
+		e.mu.Lock()
+		delete(e.entries, spec.InfoHash)
+		e.mu.Unlock()
+		st.Close()
+		return "", err
+	}
+	en.t = t
+	if o.Paused {
+		t.DisallowDataDownload()
+		t.DisallowDataUpload()
+	}
+	go func() {
+		select {
+		case <-t.GotInfo():
+			e.applyPriorities(en)
+		case <-t.Closed():
 		}
 	}()
 	return t.InfoHash().HexString(), nil
 }
 
-func (e *Engine) find(hash string) (*torrent.Torrent, error) {
+// applyPriorities marks wanted files Normal and skipped ones None.
+func (e *Engine) applyPriorities(en *entry) {
+	e.mu.Lock()
+	skipped := make(map[int]bool, len(en.skipped))
+	for k, v := range en.skipped {
+		skipped[k] = v
+	}
+	e.mu.Unlock()
+	for i, f := range en.t.Files() {
+		if skipped[i] {
+			f.SetPriority(torrent.PiecePriorityNone)
+		} else {
+			f.SetPriority(torrent.PiecePriorityNormal)
+		}
+	}
+}
+
+func (e *Engine) find(hash string) (*entry, error) {
 	var h metainfo.Hash
 	if err := h.FromHexString(hash); err != nil {
 		return nil, err
 	}
-	t, ok := e.cl.Torrent(h)
-	if !ok {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	en, ok := e.entries[h]
+	if !ok || en.t == nil {
 		return nil, fmt.Errorf("torrent %s not found", hash)
 	}
-	return t, nil
+	return en, nil
 }
 
 func (e *Engine) Pause(hash string) error {
-	t, err := e.find(hash)
+	en, err := e.find(hash)
 	if err != nil {
 		return err
 	}
 	e.mu.Lock()
-	e.paused[t.InfoHash()] = true
+	en.paused = true
 	e.mu.Unlock()
-	t.DisallowDataDownload()
-	t.DisallowDataUpload()
+	en.t.DisallowDataDownload()
+	en.t.DisallowDataUpload()
 	return nil
 }
 
 func (e *Engine) Resume(hash string) error {
-	t, err := e.find(hash)
+	en, err := e.find(hash)
 	if err != nil {
 		return err
 	}
 	e.mu.Lock()
-	delete(e.paused, t.InfoHash())
+	en.paused = false
 	e.mu.Unlock()
-	t.AllowDataDownload()
-	t.AllowDataUpload()
-	if t.Info() != nil {
-		t.DownloadAll()
-	}
+	en.t.AllowDataDownload()
+	en.t.AllowDataUpload()
 	return nil
 }
 
-// Remove drops the torrent from the client. Downloaded files are kept.
-func (e *Engine) Remove(hash string) error {
-	t, err := e.find(hash)
+// Remove drops the torrent. If deleteFiles is set, its downloaded data
+// (including .part files) is deleted too.
+func (e *Engine) Remove(hash string, deleteFiles bool) error {
+	en, err := e.find(hash)
 	if err != nil {
 		return err
 	}
+	var paths []string
+	if info := en.t.Info(); info != nil && deleteFiles {
+		name := info.BestName()
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+			return fmt.Errorf("refusing to delete files for torrent with unsafe name %q", name)
+		}
+		p := filepath.Join(en.dir, name)
+		paths = []string{p, p + ".part"}
+	}
 	e.mu.Lock()
-	delete(e.paused, t.InfoHash())
-	delete(e.lastTot, t.InfoHash())
+	delete(e.entries, en.t.InfoHash())
 	e.mu.Unlock()
-	t.Drop()
-	return nil
+	en.t.Drop()
+	en.storage.Close()
+
+	var errs []error
+	for _, p := range paths {
+		// Windows can hold file handles briefly after Drop; retry a little.
+		var err error
+		for range 10 {
+			if err = os.RemoveAll(p); err == nil {
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+type FileStatus struct {
+	Index  int    `json:"index"`
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	Done   int64  `json:"done"`
+	Wanted bool   `json:"wanted"`
+}
+
+// Files lists a torrent's files; empty until metadata is available.
+func (e *Engine) Files(hash string) ([]FileStatus, error) {
+	en, err := e.find(hash)
+	if err != nil {
+		return nil, err
+	}
+	if en.t.Info() == nil {
+		return []FileStatus{}, nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	files := en.t.Files()
+	out := make([]FileStatus, len(files))
+	for i, f := range files {
+		out[i] = FileStatus{
+			Index:  i,
+			Path:   f.DisplayPath(),
+			Size:   f.Length(),
+			Done:   f.BytesCompleted(),
+			Wanted: !en.skipped[i],
+		}
+	}
+	return out, nil
+}
+
+// SetFilesWanted changes which files are downloaded and returns the full
+// list of skipped indexes (for persisting).
+func (e *Engine) SetFilesWanted(hash string, indexes []int, wanted bool) ([]int, error) {
+	en, err := e.find(hash)
+	if err != nil {
+		return nil, err
+	}
+	e.mu.Lock()
+	for _, i := range indexes {
+		if wanted {
+			delete(en.skipped, i)
+		} else {
+			en.skipped[i] = true
+		}
+	}
+	skipped := make([]int, 0, len(en.skipped))
+	for i := range en.skipped {
+		skipped = append(skipped, i)
+	}
+	e.mu.Unlock()
+	sort.Ints(skipped)
+	if en.t.Info() != nil {
+		e.applyPriorities(en)
+	}
+	return skipped, nil
 }
 
 type Status struct {
-	Hash      string  `json:"hash"`
-	Name      string  `json:"name"`
-	State     string  `json:"state"` // metadata, downloading, seeding, paused
-	Size      int64   `json:"size"`
-	Done      int64   `json:"done"`
-	Progress  float64 `json:"progress"`
-	DownRate  int64   `json:"downRate"`
-	UpRate    int64   `json:"upRate"`
-	Peers     int     `json:"peers"`
-	Seeds     int     `json:"seeds"`
+	Hash     string  `json:"hash"`
+	Name     string  `json:"name"`
+	Dir      string  `json:"dir"`
+	State    string  `json:"state"` // metadata, downloading, seeding, paused
+	Size     int64   `json:"size"`  // bytes of wanted files
+	Done     int64   `json:"done"`  // completed bytes of wanted files
+	Progress float64 `json:"progress"`
+	DownRate int64   `json:"downRate"`
+	UpRate   int64   `json:"upRate"`
+	Peers    int     `json:"peers"`
+	Seeds    int     `json:"seeds"`
 }
 
 // List returns a snapshot of all torrents. Rates are computed from the
@@ -241,51 +449,61 @@ func (e *Engine) List() []Status {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	var out []Status
-	for _, t := range e.cl.Torrents() {
-		h := t.InfoHash()
+	out := []Status{}
+	for h, en := range e.entries {
+		t := en.t
+		if t == nil {
+			continue
+		}
 		st := t.Stats()
 		read := st.BytesReadUsefulData.Int64()
 		written := st.BytesWrittenData.Int64()
-
-		s := rateSample{at: now, read: read, written: written}
-		if prev, ok := e.lastTot[h]; ok {
-			if dt := now.Sub(prev.at).Seconds(); dt >= 0.5 {
-				s.downRate = int64(float64(read-prev.read) / dt)
-				s.upRate = int64(float64(written-prev.written) / dt)
-			} else {
-				s = prev // too soon; keep the previous sample and rates
+		if dt := now.Sub(en.last).Seconds(); dt >= 0.5 {
+			if !en.last.IsZero() {
+				en.downRate = int64(math.Max(0, float64(read-en.lastRead)/dt))
+				en.upRate = int64(math.Max(0, float64(written-en.lastWrit)/dt))
 			}
+			en.last, en.lastRead, en.lastWrit = now, read, written
 		}
-		e.lastTot[h] = s
 
 		row := Status{
 			Hash:     h.HexString(),
 			Name:     t.Name(),
-			DownRate: s.downRate,
-			UpRate:   s.upRate,
+			Dir:      en.dir,
+			DownRate: en.downRate,
+			UpRate:   en.upRate,
 			Peers:    st.ActivePeers,
 			Seeds:    st.ConnectedSeeders,
 		}
+		if t.Info() != nil {
+			for i, f := range t.Files() {
+				if en.skipped[i] {
+					continue
+				}
+				row.Size += f.Length()
+				row.Done += f.BytesCompleted()
+			}
+			if row.Size > 0 {
+				row.Progress = float64(row.Done) / float64(row.Size)
+			} else {
+				row.Progress = 1
+			}
+		}
 		switch {
-		case e.paused[h]:
+		case en.paused:
 			row.State = "paused"
 		case t.Info() == nil:
 			row.State = "metadata"
-		case t.Complete().Bool():
+		case row.Done >= row.Size:
 			row.State = "seeding"
 		default:
 			row.State = "downloading"
-		}
-		if t.Info() != nil {
-			row.Size = t.Length()
-			row.Done = t.BytesCompleted()
-			if row.Size > 0 {
-				row.Progress = float64(row.Done) / float64(row.Size)
-			}
 		}
 		out = append(out, row)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
+
+// WriteStatus dumps the client's internal state (trackers, DHT, peers) for debugging.
+func (e *Engine) WriteStatus(w io.Writer) { e.cl.WriteStatus(w) }
