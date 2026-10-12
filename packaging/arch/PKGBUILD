@@ -14,6 +14,8 @@ optdepends=(
 )
 source=("SharkBiteTorrent-${pkgver}-linux-x86_64.tar.gz")
 sha256sums=('SKIP')
+# The binary is already stripped, so skip makepkg's empty -debug split package.
+options=('!debug')
 
 package() {
   cd "SharkBiteTorrent-${pkgver}-linux-x86_64"
