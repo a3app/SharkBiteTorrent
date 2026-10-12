@@ -92,6 +92,18 @@ func New(tun *tunnel.Tunnel, opts Options) (*Engine, error) {
 
 	cfg := torrent.NewDefaultClientConfig()
 	cfg.Seed = true
+
+	// Connect to more peers, faster. The library's defaults assume OS sockets
+	// (where Windows limits half-open connections) and wait 20s per dial. Our
+	// dials go through the userspace tunnel, which has no such limits, and
+	// behind a VPN without inbound connections many swarm members are
+	// firewalled and never answer, so short timeouts and more parallel
+	// attempts reach the connectable peers much sooner.
+	cfg.NominalDialTimeout = 8 * time.Second
+	cfg.EstablishedConnsPerTorrent = 80
+	cfg.HalfOpenConnsPerTorrent = 60
+	cfg.TotalHalfOpenConns = 250
+	cfg.DialRateLimiter = rate.NewLimiter(40, 40)
 	// Torrents get their own storage (see Add); this only catches anything
 	// added without one, and is never written to in practice.
 	cfg.DataDir = os.TempDir()
