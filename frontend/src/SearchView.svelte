@@ -152,8 +152,8 @@
             <tr>
               <th class="name"><button class="th" onclick={() => sortBy('title')}>Name{arrow('title')}</button></th>
               <th class="num"><button class="th" onclick={() => sortBy('size')}>Size{arrow('size')}</button></th>
-              <th class="num"><button class="th" onclick={() => sortBy('seeders')}>Seeders{arrow('seeders')}</button></th>
-              <th class="num"><button class="th" onclick={() => sortBy('leechers')}>Leechers{arrow('leechers')}</button></th>
+              <th class="num"><button class="th" onclick={() => sortBy('seeders')}>Seeds{arrow('seeders')}</button></th>
+              <th class="num"><button class="th" onclick={() => sortBy('leechers')}>Peers{arrow('leechers')}</button></th>
               <th class="num"><button class="th" onclick={() => sortBy('published')}>Age{arrow('published')}</button></th>
               <th><button class="th" onclick={() => sortBy('indexer')}>Source{arrow('indexer')}</button></th>
               <th></th>

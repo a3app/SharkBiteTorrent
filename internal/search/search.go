@@ -141,7 +141,7 @@ func getJSON(ctx context.Context, u string, header map[string]string, v any) err
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return err
+		return hideURL(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -230,10 +230,15 @@ func deref(p *int) int {
 // links go through the user's server, which may answer with a .torrent or
 // redirect to a magnet link.
 func Fetch(ctx context.Context, r Result) (source string, tempFile string, err error) {
-	if r.Magnet != "" {
+	if strings.HasPrefix(r.Magnet, "magnet:") {
 		return r.Magnet, "", nil
 	}
-	if r.Download == "" {
+	// Prowlarr's magnetUrl is often its own http download link that redirects to the magnet.
+	link := r.Download
+	if link == "" {
+		link = r.Magnet
+	}
+	if !strings.HasPrefix(link, "http://") && !strings.HasPrefix(link, "https://") {
 		return "", "", errors.New("this result has no download link")
 	}
 	var magnet string
@@ -251,13 +256,13 @@ func Fetch(ctx context.Context, r Result) (source string, tempFile string, err e
 			return nil
 		},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.Download, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, link, nil)
 	if err != nil {
-		return "", "", err
+		return "", "", errors.New("this result has a bad download link")
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", "", fmt.Errorf("download failed: %w", err)
+		return "", "", fmt.Errorf("download failed: %w", hideURL(err))
 	}
 	defer resp.Body.Close()
 	if magnet != "" {
@@ -354,4 +359,13 @@ func dedupe(rs []Result) []Result {
 		out = append(out, r)
 	}
 	return out
+}
+
+// hideURL drops the request URL from an HTTP error, since it can carry the API key.
+func hideURL(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	return err
 }
