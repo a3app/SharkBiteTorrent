@@ -46,6 +46,10 @@ export function GetPieceMap(arg1) {
   return window['go']['main']['App']['GetPieceMap'](arg1);
 }
 
+export function GetProxyStatus() {
+  return window['go']['main']['App']['GetProxyStatus']();
+}
+
 export function GetSearchStatus() {
   return window['go']['main']['App']['GetSearchStatus']();
 }
@@ -140,6 +144,10 @@ export function SearchTorrents(arg1, arg2) {
 
 export function SetFilesWanted(arg1, arg2, arg3) {
   return window['go']['main']['App']['SetFilesWanted'](arg1, arg2, arg3);
+}
+
+export function SetSearchProxy(arg1) {
+  return window['go']['main']['App']['SetSearchProxy'](arg1);
 }
 
 export function SkipUpdate(arg1) {

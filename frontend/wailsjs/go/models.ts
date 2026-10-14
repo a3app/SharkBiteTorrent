@@ -219,6 +219,34 @@ export namespace main {
 		}
 	}
 	
+	export class ProxyStatus {
+	    enabled: boolean;
+	    running: boolean;
+	    applied: boolean;
+	    manual: boolean;
+	    host: string;
+	    port: number;
+	    username: string;
+	    password: string;
+	    error: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProxyStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.running = source["running"];
+	        this.applied = source["applied"];
+	        this.manual = source["manual"];
+	        this.host = source["host"];
+	        this.port = source["port"];
+	        this.username = source["username"];
+	        this.password = source["password"];
+	        this.error = source["error"];
+	    }
+	}
 	export class SearchStatus {
 	    configured: boolean;
 	    kind: string;

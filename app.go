@@ -20,6 +20,7 @@ import (
 	"sharkbite/internal/platform"
 	"sharkbite/internal/scan"
 	"sharkbite/internal/secret"
+	"sharkbite/internal/socks"
 	"sharkbite/internal/tunnel"
 	"sharkbite/internal/vpnprov"
 	"sharkbite/internal/warp"
@@ -40,6 +41,8 @@ type App struct {
 	pending     []string // magnets/.torrent paths received before the VPN was up
 	quitting    bool
 	scanning    map[string]bool // torrents being scanned right now
+	proxy       *socks.Server   // local SOCKS5 proxy into the tunnel, for Prowlarr/Jackett
+	proxyErr    string
 }
 
 type VpnStatus struct {
@@ -105,9 +108,11 @@ func (a *App) startup(ctx context.Context) {
 	runtime.OnFileDrop(ctx, func(_, _ int, paths []string) { a.handleArgs(paths) })
 	go a.runTray()
 	go a.connect()
+	a.startProxy()
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	a.stopProxy()
 	a.disconnect()
 	quitTray()
 }

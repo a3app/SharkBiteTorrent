@@ -82,6 +82,7 @@ func (a *App) AutoDetectSearch() (SearchStatus, error) {
 }
 
 func (a *App) DisconnectSearch() error {
+	a.disableSearchProxy() // turn the server's proxy off while we can still reach it
 	err := os.Remove(a.searchPath())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil

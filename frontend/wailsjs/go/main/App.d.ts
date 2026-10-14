@@ -28,6 +28,8 @@ export function GetFiles(arg1:string):Promise<Array<engine.FileStatus>>;
 
 export function GetPieceMap(arg1:string):Promise<Array<engine.PieceRun>>;
 
+export function GetProxyStatus():Promise<main.ProxyStatus>;
+
 export function GetSearchStatus():Promise<main.SearchStatus>;
 
 export function GetSettings():Promise<main.SettingsView>;
@@ -75,5 +77,7 @@ export function SaveSettings(arg1:main.Settings):Promise<void>;
 export function SearchTorrents(arg1:string,arg2:string):Promise<Array<search.Result>>;
 
 export function SetFilesWanted(arg1:string,arg2:Array<number>,arg3:boolean):Promise<void>;
+
+export function SetSearchProxy(arg1:boolean):Promise<main.ProxyStatus>;
 
 export function SkipUpdate(arg1:string):Promise<void>;
