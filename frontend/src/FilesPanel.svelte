@@ -12,11 +12,17 @@
   const warnings = $derived(torrent.warnings ?? [])
   const flagged = $derived(new Set(warnings.map(w => w.file)))
 
+  // Set when the panel closes or switches torrent, so a request still in
+  // flight (e.g. for a torrent just removed) doesn't report an error.
+  let stale = false
+
   async function load() {
+    const h = hash
     try {
-      files = (await GetFiles(hash)) ?? []
+      const f = (await GetFiles(h)) ?? []
+      if (!stale && h === hash) files = f
     } catch (e) {
-      onError(String(e))
+      if (!stale && h === hash) onError(String(e))
     }
   }
 
@@ -26,9 +32,13 @@
 
   $effect(() => {
     void hash
+    stale = false
     load()
     const id = setInterval(load, 1500)
-    return () => clearInterval(id)
+    return () => {
+      stale = true
+      clearInterval(id)
+    }
   })
 
   async function setWanted(indexes: number[], wanted: boolean) {

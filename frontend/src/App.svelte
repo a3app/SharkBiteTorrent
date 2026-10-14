@@ -156,6 +156,7 @@
   function confirmRemove() {
     const t = removing!
     removing = null
+    if (selected === t.hash) selected = null // close its files panel before it's gone
     run(() => Remove(t.hash, deleteFiles))
   }
 
