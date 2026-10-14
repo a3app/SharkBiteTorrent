@@ -13,10 +13,15 @@
   let proxy = $state<main.ProxyStatus | null>(null)
   let proxyBusy = $state(false)
   let showPass = $state(false)
+  let detailsOpen = $state(false)
 
   GetSearchStatus().then(s => (status = s))
   $effect(() => {
-    if (status?.configured) GetProxyStatus().then(p => (proxy = p))
+    if (status?.configured)
+      GetProxyStatus().then(p => {
+        proxy = p
+        detailsOpen = p.manual // Jackett: the values are needed right away
+      })
     else proxy = null
   })
 
@@ -25,6 +30,7 @@
     onError('')
     try {
       proxy = await SetSearchProxy(on)
+      detailsOpen = proxy.manual
     } catch (e) {
       onError(String(e))
       proxy = await GetProxyStatus()
@@ -75,10 +81,10 @@
       {:else}
         <p class="warn small">
           {name(status.kind)} isn't set to use it anymore.
-          <button class="link" onclick={() => setProxy(true)} disabled={proxyBusy}>Set it again</button>
+          <button type="button" class="link" onclick={() => setProxy(true)} disabled={proxyBusy}>Set it again</button>
         </p>
       {/if}
-      <details class="small" open={proxy.manual}>
+      <details class="small" bind:open={detailsOpen}>
         <summary class="muted">Proxy details</summary>
         <div class="grid">
           <span class="muted">Type</span><span>SOCKS5</span>
@@ -88,8 +94,8 @@
           <span class="muted">Password</span>
           <span>
             <code>{showPass ? proxy.password : '••••••••••'}</code>
-            <button class="link" onclick={() => (showPass = !showPass)}>{showPass ? 'Hide' : 'Show'}</button>
-            <button class="link" onclick={() => ClipboardSetText(proxy!.password)}>Copy</button>
+            <button type="button" class="link" onclick={() => (showPass = !showPass)}>{showPass ? 'Hide' : 'Show'}</button>
+            <button type="button" class="link" onclick={() => ClipboardSetText(proxy!.password)}>Copy</button>
           </span>
         </div>
       </details>
