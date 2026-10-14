@@ -17,7 +17,7 @@
   let busy = $state(false)
   let detecting = $state(false)
   let adding = $state<Record<string, 'adding' | 'added'>>({})
-  let sortKey = $state<'seeders' | 'size' | 'published' | 'title'>('seeders')
+  let sortKey = $state<'seeders' | 'leechers' | 'size' | 'published' | 'title' | 'indexer'>('seeders')
   let sortDesc = $state(true)
   let input = $state<HTMLInputElement | null>(null)
 
@@ -72,7 +72,7 @@
     if (sortKey === k) sortDesc = !sortDesc
     else {
       sortKey = k
-      sortDesc = k !== 'title'
+      sortDesc = k !== 'title' && k !== 'indexer'
     }
   }
 
@@ -84,9 +84,11 @@
         case 'size': x = a.size; y = b.size; break
         case 'published': x = Date.parse(a.published) || 0; y = Date.parse(b.published) || 0; break
         case 'title': x = a.title.toLowerCase(); y = b.title.toLowerCase(); break
+        case 'indexer': x = a.indexer.toLowerCase(); y = b.indexer.toLowerCase(); break
+        case 'leechers': x = a.leechers; y = b.leechers; break
         default: x = a.seeders; y = b.seeders
       }
-      return x < y ? -dir : x > y ? dir : 0
+      return x < y ? -dir : x > y ? dir : b.seeders - a.seeders
     })
   })
 
@@ -150,10 +152,10 @@
             <tr>
               <th class="name"><button class="th" onclick={() => sortBy('title')}>Name{arrow('title')}</button></th>
               <th class="num"><button class="th" onclick={() => sortBy('size')}>Size{arrow('size')}</button></th>
-              <th class="num"><button class="th" onclick={() => sortBy('seeders')}>Seeds{arrow('seeders')}</button></th>
-              <th class="num">Peers</th>
+              <th class="num"><button class="th" onclick={() => sortBy('seeders')}>Seeders{arrow('seeders')}</button></th>
+              <th class="num"><button class="th" onclick={() => sortBy('leechers')}>Leechers{arrow('leechers')}</button></th>
               <th class="num"><button class="th" onclick={() => sortBy('published')}>Age{arrow('published')}</button></th>
-              <th>Source</th>
+              <th><button class="th" onclick={() => sortBy('indexer')}>Source{arrow('indexer')}</button></th>
               <th></th>
             </tr>
           </thead>
