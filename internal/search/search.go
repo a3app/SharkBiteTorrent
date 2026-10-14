@@ -126,6 +126,7 @@ func Search(ctx context.Context, c Config, query, category string) ([]Result, er
 	if err != nil {
 		return nil, err
 	}
+	out = dedupe(out)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Seeders > out[j].Seeders })
 	return out, nil
 }
@@ -335,6 +336,22 @@ func LocalServers() []Config {
 				out = append(out, Config{Kind: Jackett, URL: fmt.Sprintf("http://localhost:%d%s", port, strings.TrimRight(j.BasePath, "/")), APIKey: j.APIKey})
 			}
 		}
+	}
+	return out
+}
+
+// dedupe drops exact repeats: indexers sometimes list the same release more
+// than once (same title and size), which only clutters the results.
+func dedupe(rs []Result) []Result {
+	seen := make(map[string]bool, len(rs))
+	out := rs[:0]
+	for _, r := range rs {
+		k := r.Indexer + "\x00" + r.Title + "\x00" + strconv.FormatInt(r.Size, 10)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, r)
 	}
 	return out
 }

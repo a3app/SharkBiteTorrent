@@ -158,7 +158,7 @@
             </tr>
           </thead>
           <tbody>
-            {#each sorted as r (key(r))}
+            {#each sorted as r, i (i)}
               {@const st = adding[key(r)]}
               <tr ondblclick={() => add(r)} class:added={st === 'added'}>
                 <td class="name" title={r.title}>{r.title}</td>
