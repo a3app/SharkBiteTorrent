@@ -148,6 +148,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # PKGBUILD only travels along for the arch job; it isn't a download.
+          rm -f artifacts/PKGBUILD
           # Checksums let the in-app updater verify what it downloads.
           (cd artifacts && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt)
           ls -la artifacts
