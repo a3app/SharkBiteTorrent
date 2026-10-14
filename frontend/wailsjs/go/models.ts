@@ -219,6 +219,22 @@ export namespace main {
 		}
 	}
 	
+	export class SearchStatus {
+	    configured: boolean;
+	    kind: string;
+	    url: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SearchStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.configured = source["configured"];
+	        this.kind = source["kind"];
+	        this.url = source["url"];
+	    }
+	}
 	export class Settings {
 	    downloadDir: string;
 	    vpnProvider: string;
@@ -385,6 +401,39 @@ export namespace scan {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.file = source["file"];
 	        this.reason = source["reason"];
+	    }
+	}
+
+}
+
+export namespace search {
+	
+	export class Result {
+	    title: string;
+	    size: number;
+	    seeders: number;
+	    leechers: number;
+	    indexer: string;
+	    published: string;
+	    magnet?: string;
+	    download?: string;
+	    infoUrl?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Result(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.title = source["title"];
+	        this.size = source["size"];
+	        this.seeders = source["seeders"];
+	        this.leechers = source["leechers"];
+	        this.indexer = source["indexer"];
+	        this.published = source["published"];
+	        this.magnet = source["magnet"];
+	        this.download = source["download"];
+	        this.infoUrl = source["infoUrl"];
 	    }
 	}
 

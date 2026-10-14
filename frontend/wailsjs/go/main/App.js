@@ -6,6 +6,14 @@ export function AddMagnet(arg1) {
   return window['go']['main']['App']['AddMagnet'](arg1);
 }
 
+export function AddSearchResult(arg1) {
+  return window['go']['main']['App']['AddSearchResult'](arg1);
+}
+
+export function AutoDetectSearch() {
+  return window['go']['main']['App']['AutoDetectSearch']();
+}
+
 export function CheckForUpdates() {
   return window['go']['main']['App']['CheckForUpdates']();
 }
@@ -18,6 +26,14 @@ export function ChooseDownloadDir() {
   return window['go']['main']['App']['ChooseDownloadDir']();
 }
 
+export function ConnectSearch(arg1, arg2) {
+  return window['go']['main']['App']['ConnectSearch'](arg1, arg2);
+}
+
+export function DisconnectSearch() {
+  return window['go']['main']['App']['DisconnectSearch']();
+}
+
 export function GetAbout() {
   return window['go']['main']['App']['GetAbout']();
 }
@@ -28,6 +44,10 @@ export function GetFiles(arg1) {
 
 export function GetPieceMap(arg1) {
   return window['go']['main']['App']['GetPieceMap'](arg1);
+}
+
+export function GetSearchStatus() {
+  return window['go']['main']['App']['GetSearchStatus']();
 }
 
 export function GetSettings() {
@@ -112,6 +132,10 @@ export function ResumeAll() {
 
 export function SaveSettings(arg1) {
   return window['go']['main']['App']['SaveSettings'](arg1);
+}
+
+export function SearchTorrents(arg1, arg2) {
+  return window['go']['main']['App']['SearchTorrents'](arg1, arg2);
 }
 
 export function SetFilesWanted(arg1, arg2, arg3) {

@@ -6,6 +6,7 @@
   } from '../wailsjs/go/main/App.js'
   import { main, type platform } from '../wailsjs/go/models'
   import VpnSettings from './VpnSettings.svelte'
+  import SearchSettings from './SearchSettings.svelte'
 
   let { onClose }: { onClose: () => void } = $props()
 
@@ -138,6 +139,11 @@
             <button onclick={pickDir}>Change…</button>
           </div>
           <p class="muted small">Used for torrents you add from now on. Existing torrents stay where they are.</p>
+        </fieldset>
+
+        <fieldset>
+          <legend>Search</legend>
+          <SearchSettings onError={e => (error = e)} />
         </fieldset>
 
         <fieldset>

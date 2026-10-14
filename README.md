@@ -46,6 +46,7 @@ It works out of the box with **free Cloudflare WARP**, so there's protection fro
 - **Choose which files to download** in a torrent.
 - **Piece map**: a qBittorrent-style bar showing which pieces are done, downloading, being checked, missing or skipped.
 - **Malware checks**: every torrent is checked for disguised programs as soon as its file list arrives (e.g. `movie.mp4.exe`, or a program inside a video torrent). Finished files are marked as downloaded from the internet (Windows SmartScreen and Defender, macOS Gatekeeper and XProtect check them when opened) and scanned with Microsoft Defender on Windows, or ClamAV on Linux and macOS if it's installed.
+- **Search**: search all the sites you've added to your own **Prowlarr** or **Jackett** from inside the app, then double-click a result to download it. It finds Prowlarr or Jackett on the same computer automatically. No sites are built in.
 - Pause/resume, and **remove with or without deleting the downloaded files**.
 - **Speed limits** that apply immediately.
 - **Per-torrent download folders**: changing the folder affects new torrents only, and the choice is remembered.
@@ -114,6 +115,7 @@ We checked this with the OS's own socket list: while downloading, the app's **on
 | **Per-user installer (no admin)** | Matches the per-user magnet registration, avoids a UAC prompt, and upgrades in place. |
 | **Linux release built in an Arch container** | CachyOS is the main Linux target, and building on Arch matches its library versions. |
 | **A `nofunding` build flag** | The funding is optional for users, so removing it shouldn't need code changes. One flag strips the sponsor button and referral links, and stops the updater from installing the official (funded) release over it. |
+| **Search through Prowlarr or Jackett, with no sites built in** | Bundling scrapers for torrent sites would make the app look like a piracy tool and break whenever a site changes. Prowlarr and Jackett are maintained by their own communities, and users choose their own sources (the same model as qBittorrent's search plugins). |
 
 ## Limitations
 
@@ -314,7 +316,7 @@ We'd rather tell you upfront than have you find out later.
 
 **What never happens:**
 - No ads, no bundled software, no "recommended offers" in the installer.
-- **No telemetry or analytics.** The app never sends data to us; there is no server of ours for it to talk to. Its only connections are the torrent network (peers, trackers and web seeds, all through the VPN), your VPN provider's own API when you sign in or connect, Cloudflare's public trace page to check your exit IP, and GitHub to check for updates (through the VPN, about once a day; you can turn this off in Settings).
+- **No telemetry or analytics.** The app never sends data to us; there is no server of ours for it to talk to. Its only connections are the torrent network (peers, trackers and web seeds, all through the VPN), your VPN provider's own API when you sign in or connect, Cloudflare's public trace page to check your exit IP, and GitHub to check for updates (through the VPN, about once a day; you can turn this off in Settings), plus your own Prowlarr or Jackett when you search.
 - Your data, logins and download history are never sold or shared.
 
 Every link lives in one file, [`links.go`](links.go), so anyone can check exactly what the app links to. To build without any of it, use the `nofunding` build flag (see [Build without funding links](#build-without-funding-links)): no sponsor button, plain provider links and no referral labels. Because this is GPL software, you're free to change or remove anything else too.

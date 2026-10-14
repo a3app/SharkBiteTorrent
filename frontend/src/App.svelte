@@ -8,6 +8,7 @@
   import { EventsOn, OnFileDrop } from '../wailsjs/runtime/runtime.js'
   import type { engine, main } from '../wailsjs/go/models'
   import FilesPanel from './FilesPanel.svelte'
+  import SearchView from './SearchView.svelte'
   import Settings from './Settings.svelte'
   import { bytes, rate, duration } from './format'
 
@@ -18,6 +19,7 @@
   let error = $state('')
   let settings = $state<main.Settings | null>(null)
   let showSettings = $state(false)
+  let searching = $state(false) // the search view replaces the torrent list
   let removing = $state<engine.Status | null>(null)
   let deleteFiles = $state(false)
 
@@ -222,6 +224,9 @@
       <button class="primary" type="submit" disabled={!connected || !magnet.trim()}>Add</button>
     </form>
     <button onclick={() => run(PickTorrentFile)} disabled={!connected}>Open .torrent…</button>
+    <button class:active={searching} onclick={() => (searching = !searching)} disabled={!connected}>
+      {searching ? '← Torrents' : 'Search'}
+    </button>
     <span class="sep"></span>
     <button onclick={() => sel && run(() => Resume(sel.hash))} disabled={!sel || sel.state !== 'paused'}>Resume</button>
     <button onclick={() => sel && run(() => Pause(sel.hash))} disabled={!sel || sel.state === 'paused'}>Pause</button>
@@ -248,6 +253,11 @@
 
   {#if error}<div class="error" role="alert"><span>{error}</span> <button onclick={() => (error = '')} aria-label="Dismiss">✕</button></div>{/if}
 
+  {#if searching}
+    <main>
+      <SearchView onAdded={refresh} onError={e => (error = e)} onOpenSettings={() => (showSettings = true)} />
+    </main>
+  {:else}
   <main class:split={!!sel}>
     <div class="list">
       {#if torrents.length === 0}
@@ -309,6 +319,7 @@
       </div>
     {/if}
   </main>
+  {/if}
 
   <footer>
     <span class="path" title={settings?.downloadDir}>Downloads go to {settings?.downloadDir}</span>
@@ -387,6 +398,7 @@
     background: rgba(210, 153, 34, 0.15); color: var(--warn);
   }
   .icon { padding: 2px 9px; font-size: 16px; }
+  .toolbar button.active { border-color: var(--accent); color: var(--accent); }
   .warn { color: var(--warn); }
   td.threat { color: var(--err); font-weight: 600; }
   .flag { margin-right: 4px; font-weight: 700; }
