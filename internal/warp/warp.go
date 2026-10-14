@@ -38,6 +38,12 @@ func LoadOrRegister(path string) (*Account, error) {
 		return nil, err
 	}
 
+	return Reregister(path)
+}
+
+// Reregister registers a new WARP device and saves it at path, replacing any
+// previous one. The old file is only overwritten once registration succeeds.
+func Reregister(path string) (*Account, error) {
 	acc, err := Register()
 	if err != nil {
 		return nil, err

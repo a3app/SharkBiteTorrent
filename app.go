@@ -245,38 +245,24 @@ func (a *App) connect() {
 		}
 		conn, cfg = c, c.Config
 	default:
-		acc, err := warp.LoadOrRegister(filepath.Join(a.configDir, "warp.json"))
+		acc, err := warp.LoadOrRegister(a.warpPath())
 		if err != nil {
 			fail(err)
 			return
 		}
-		cfg = tunnel.Config{
-			PrivateKey:    acc.PrivateKey,
-			PeerPublicKey: acc.PeerPublicKey,
-			Endpoint:      acc.Endpoint,
-			Addresses:     []string{acc.AddressV4, acc.AddressV6},
-			DNS:           []string{"1.1.1.1", "1.0.0.1"},
-		}
+		cfg = warpConfig(acc)
 	}
 
-	tun, err := tunnel.Start(cfg)
-	if err != nil {
-		fail(err)
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	tr, err := tun.CheckTrace(ctx)
-	cancel()
-	switch {
-	case err != nil:
-		err = fmt.Errorf("VPN not passing traffic: %w", err)
-	case set.VpnProvider == "warp" && tr.Warp != "on" && tr.Warp != "plus":
-		err = fmt.Errorf("tunnel is up but Cloudflare reports warp=%q", tr.Warp)
-	case realIP != "" && tr.IP == realIP:
-		err = errors.New("VPN exit IP is the same as your real IP")
+	tun, tr, err := startTunnel(cfg, set.VpnProvider, realIP)
+	if err != nil && set.VpnProvider != "account" && set.VpnProvider != "custom" {
+		// Cloudflare may have dropped the saved WARP device (rotated endpoint,
+		// pruned inactive account). If a fresh registration works, use it.
+		if acc, rerr := warp.Reregister(a.warpPath()); rerr == nil {
+			runtime.LogWarningf(a.ctx, "WARP: saved device failed (%v); registered a new one", err)
+			tun, tr, err = startTunnel(warpConfig(acc), set.VpnProvider, realIP)
+		}
 	}
 	if err != nil {
-		tun.Close()
 		fail(err)
 		return
 	}
@@ -343,6 +329,46 @@ func (a *App) connect() {
 	}
 }
 
+func (a *App) warpPath() string { return filepath.Join(a.configDir, "warp.json") }
+
+func warpConfig(acc *warp.Account) tunnel.Config {
+	return tunnel.Config{
+		PrivateKey:    acc.PrivateKey,
+		PeerPublicKey: acc.PeerPublicKey,
+		Endpoint:      acc.Endpoint,
+		Addresses:     []string{acc.AddressV4, acc.AddressV6},
+		DNS:           []string{"1.1.1.1", "1.0.0.1"},
+	}
+}
+
+// startTunnel brings the tunnel up and confirms traffic leaves through the
+// VPN. The engine can only reach the network through the tunnel either way;
+// this check is what turns a dead or misrouted tunnel into a clear error.
+func startTunnel(cfg tunnel.Config, provider, realIP string) (*tunnel.Tunnel, *tunnel.Trace, error) {
+	tun, err := tunnel.Start(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	tr, err := tun.CheckTrace(ctx)
+	cancel()
+	switch {
+	case err != nil:
+		err = fmt.Errorf("VPN not passing traffic: %w", err)
+	case provider != "account" && provider != "custom" && tr.Warp != "on" && tr.Warp != "plus":
+		err = fmt.Errorf("tunnel is up but Cloudflare reports warp=%q", tr.Warp)
+	case tr.IP == "":
+		err = errors.New("VPN check failed: Cloudflare's trace page didn't report an exit IP")
+	case realIP != "" && tr.IP == realIP:
+		err = errors.New("VPN exit IP is the same as your real IP")
+	}
+	if err != nil {
+		tun.Close()
+		return nil, nil, err
+	}
+	return tun, tr, nil
+}
+
 // keepPortForward refreshes a provider's port mapping; PIA drops it if not
 // renewed every 15 minutes.
 func (a *App) keepPortForward(ctx context.Context, keep func(context.Context) error, every time.Duration) {
@@ -357,11 +383,21 @@ func (a *App) keepPortForward(ctx context.Context, keep func(context.Context) er
 		cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		err := keep(cctx)
 		cancel()
-		if err != nil && ctx.Err() == nil {
-			a.mu.Lock()
-			a.vpn.Warning = "port forwarding refresh failed: " + err.Error()
-			a.mu.Unlock()
+		if ctx.Err() != nil {
+			return
 		}
+		if errors.Is(err, vpnprov.ErrRenew) {
+			// The port's signature is about to expire; only a fresh connection gets a new one.
+			a.Reconnect()
+			return
+		}
+		a.mu.Lock()
+		if err != nil {
+			a.vpn.Warning = "port forwarding refresh failed: " + err.Error()
+		} else if strings.HasPrefix(a.vpn.Warning, "port forwarding refresh failed") {
+			a.vpn.Warning = ""
+		}
+		a.mu.Unlock()
 	}
 }
 

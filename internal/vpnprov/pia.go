@@ -255,12 +255,18 @@ func piaPortForward(ctx context.Context, t *tunnel.Tunnel, ip, cn, token string)
 		return 0, nil, 0, fmt.Errorf("PIA port forwarding payload: %w", err)
 	}
 	var payload struct {
-		Port int `json:"port"`
+		Port      int    `json:"port"`
+		ExpiresAt string `json:"expires_at"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil || payload.Port == 0 {
 		return 0, nil, 0, fmt.Errorf("PIA port forwarding payload: %v", err)
 	}
+	expires, _ := time.Parse(time.RFC3339Nano, payload.ExpiresAt)
 	bind := func(ctx context.Context) error {
+		// The signed payload is good for about two months; renew well before.
+		if !expires.IsZero() && time.Until(expires) < 24*time.Hour {
+			return ErrRenew
+		}
 		var r struct {
 			Status  string `json:"status"`
 			Message string `json:"message"`

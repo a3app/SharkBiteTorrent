@@ -19,6 +19,11 @@ func TestNewerVersion(t *testing.T) {
 		{"0.2.0", "0.2.0", false},
 		{"0.2.0", "0.2.1", false},
 		{"0.2", "0.2.0", false},
+		{"0.3.0", "0.3.0-rc1", true},
+		{"0.3.0-rc1", "0.3.0", false},
+		{"0.3.0-rc2", "0.3.0-rc1", true},
+		{"0.3.0-rc1", "0.2.18", true},
+		{"0.2.18", "0.3.0-rc1", false},
 	}
 	for _, c := range cases {
 		if got := newerVersion(c.a, c.b); got != c.want {

@@ -21,6 +21,8 @@ func fake(t *testing.T, h http.HandlerFunc) *httptest.Server {
 }
 
 func TestMullvad(t *testing.T) {
+	var mullvadPub string
+	var mullvadDeleted bool
 	srv := fake(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/wg":
@@ -33,7 +35,21 @@ func TestMullvad(t *testing.T) {
 			if r.Form.Get("pubkey") == "" {
 				t.Error("no pubkey sent")
 			}
+			mullvadPub = r.Form.Get("pubkey")
 			w.Write([]byte("10.66.1.2/32,fc00:bbbb:bbbb:bb01::3:102/128\n"))
+		case "/auth/v1/token":
+			w.Write([]byte(`{"access_token":"tok","expiry":"2099-01-01T00:00:00Z"}`))
+		case "/accounts/v1/devices":
+			if r.Header.Get("Authorization") != "Bearer tok" {
+				w.WriteHeader(401)
+				return
+			}
+			w.Write([]byte(`[{"id":"other","pubkey":"x"},{"id":"ours","pubkey":"` + mullvadPub + `"}]`))
+		case "/accounts/v1/devices/ours":
+			if r.Method == http.MethodDelete {
+				mullvadDeleted = true
+				w.WriteHeader(204)
+			}
 		case "/public/relays/wireguard/v1/":
 			w.Write([]byte(`{"countries":[{"name":"Sweden","code":"se","cities":[{"name":"Malmo","relays":[{"hostname":"se-mma-wg-001","ipv4_addr_in":"193.138.218.220","public_key":"xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg="}]}]},{"name":"USA","code":"us","cities":[{"name":"Dallas","relays":[{"hostname":"us-dal-wg-001","ipv4_addr_in":"198.54.1.1","public_key":"TrMvSoP4jYQlY6RIzBgbssQqY3vxI2Pi+y71lOWWXX0="}]}]}]}`))
 		}
@@ -58,6 +74,9 @@ func TestMullvad(t *testing.T) {
 	}
 	if c.Config.Endpoint != "198.54.1.1:51820" || len(c.Config.Addresses) != 2 || c.Config.DNS[0] != "10.64.0.1" {
 		t.Errorf("config %+v", c.Config)
+	}
+	if err := p.Logout(ctx, acc); err != nil || !mullvadDeleted {
+		t.Errorf("logout didn't remove our device: %v", err)
 	}
 	regions, _ := p.Regions(ctx)
 	if len(regions) != 2 || regions[0].ID != "se" {

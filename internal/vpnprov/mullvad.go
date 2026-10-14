@@ -1,7 +1,9 @@
 package vpnprov
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,7 +28,7 @@ func (mullvad) Info() Info {
 		Name: "Mullvad",
 		Fields: []Field{{Key: "account", Label: "Account number", Kind: "password",
 			Help: "The 16-digit number you log in to mullvad.net with."}},
-		Note: "Adds a device to your Mullvad account. You can remove it at mullvad.net if you sign out.",
+		Note: "Adds a device to your Mullvad account. Signing out removes it again.",
 	}
 }
 
@@ -69,7 +71,59 @@ func (mullvad) Login(ctx context.Context, creds map[string]string) (*Account, er
 	}, nil
 }
 
-func (mullvad) Logout(context.Context, *Account) error { return nil }
+// Logout removes our key from the account's device list, so repeated
+// sign-ins don't use up Mullvad's five device slots.
+func (mullvad) Logout(ctx context.Context, acc *Account) error {
+	pub, err := publicKey(acc.Data["privateKey"])
+	if err != nil {
+		return err
+	}
+	body, _ := json.Marshal(map[string]string{"account_number": acc.Data["account"]})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mullvadAPI+"/auth/v1/token", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpClient().Do(req)
+	if err != nil {
+		return err
+	}
+	var tok struct {
+		AccessToken string `json:"access_token"`
+	}
+	err = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&tok)
+	resp.Body.Close()
+	if err != nil || tok.AccessToken == "" {
+		return fmt.Errorf("Mullvad sign-out: no access token (HTTP %d)", resp.StatusCode)
+	}
+	auth := func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+tok.AccessToken) }
+	var devices []struct {
+		ID     string `json:"id"`
+		Pubkey string `json:"pubkey"`
+	}
+	if err := getJSON(ctx, httpClient(), mullvadAPI+"/accounts/v1/devices", &devices, auth); err != nil {
+		return fmt.Errorf("Mullvad sign-out: %w", err)
+	}
+	for _, d := range devices {
+		if d.Pubkey != pub {
+			continue
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, mullvadAPI+"/accounts/v1/devices/"+url.PathEscape(d.ID), nil)
+		if err != nil {
+			return err
+		}
+		auth(req)
+		resp, err := httpClient().Do(req)
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			return fmt.Errorf("Mullvad sign-out: removing device: HTTP %d", resp.StatusCode)
+		}
+	}
+	return nil
+}
 
 type mullvadRelays struct {
 	Countries []struct {

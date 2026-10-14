@@ -73,7 +73,7 @@ Download the latest build from the [**Releases**](../../releases) page.
 | Windows (portable) | `SharkBiteTorrent.exe` | Run from anywhere. Use Settings → *Open magnet links…* to register. |
 | **Arch / CachyOS** | `sharkbitetorrent-*.pkg.tar.zst` | `sudo pacman -U sharkbitetorrent-*.pkg.tar.zst` |
 | Other Linux | `SharkBiteTorrent-*-linux-x86_64.tar.gz` | Needs GTK 3 and WebKitGTK 4.1. |
-| **macOS** (Intel + Apple Silicon) | `SharkBiteTorrent-macos-universal.zip` | Unsigned: the first time, right-click the app → **Open**. |
+| **macOS** (Intel + Apple Silicon) | `SharkBiteTorrent-macos-universal.zip` | Unsigned: the first time, macOS blocks it. Go to **System Settings → Privacy & Security → Open Anyway**. |
 
 > **Note:** On Windows 11, the first magnet link you click after installing shows a one-time *"Pick an app"* prompt. Choose Shark BiteTorrent. Windows requires you to confirm this yourself; no installer can skip it.
 
@@ -113,7 +113,7 @@ We checked this with the OS's own socket list: while downloading, the app's **on
 | **Plain file I/O instead of memory-mapping** | anacrolix's default memory-maps files and never unmaps them, so Windows kept removed torrents' files locked and "delete files" failed. A tiny `earlyinit` module switches the library to plain I/O before it initializes. |
 | **"Unlimited" speed is a very large finite limit** | With an infinite rate limiter, anacrolix stopped connecting to peers: it saw zero download "tokens" and treated that as no budget. |
 | **Per-user installer (no admin)** | Matches the per-user magnet registration, avoids a UAC prompt, and upgrades in place. |
-| **Linux release built in an Arch container** | CachyOS is the main Linux target, and building on Arch matches its library versions. |
+| **Linux release built on Ubuntu 22.04** | Building against older system libraries means one binary runs on current distros (CachyOS/Arch, Fedora) and older ones (Debian, Ubuntu LTS). The Arch package wraps that same binary. |
 | **A `nofunding` build flag** | The funding is optional for users, so removing it shouldn't need code changes. One flag strips the sponsor button and referral links, and stops the updater from installing the official (funded) release over it. |
 | **Search through Prowlarr or Jackett, with no sites built in** | Bundling scrapers for torrent sites would make the app look like a piracy tool and break whenever a site changes. Prowlarr and Jackett are maintained by their own communities, and users choose their own sources (the same model as qBittorrent's search plugins). |
 

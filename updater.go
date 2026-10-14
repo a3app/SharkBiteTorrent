@@ -96,7 +96,25 @@ func (a *App) checkUpdate(ctx context.Context, allowDirect bool) (UpdateInfo, er
 }
 
 // newerVersion reports whether a > b for dotted numeric versions ("0.2.10" > "0.2.9").
+// A pre-release suffix ("0.3.0-rc1") sorts before the release it leads up to.
 func newerVersion(a, b string) bool {
+	a, preA, _ := strings.Cut(a, "-")
+	b, preB, _ := strings.Cut(b, "-")
+	if a == b || !newerCore(a, b) && !newerCore(b, a) {
+		switch {
+		case preA == preB:
+			return false
+		case preA == "":
+			return true // release beats its own pre-release
+		case preB == "":
+			return false
+		}
+		return preA > preB
+	}
+	return newerCore(a, b)
+}
+
+func newerCore(a, b string) bool {
 	pa, pb := strings.Split(a, "."), strings.Split(b, ".")
 	for i := 0; i < len(pa) || i < len(pb); i++ {
 		var x, y int

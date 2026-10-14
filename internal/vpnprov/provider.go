@@ -132,6 +132,23 @@ func newKeypair() (priv, pub string, err error) {
 	return base64.StdEncoding.EncodeToString(k[:]), base64.StdEncoding.EncodeToString(p), nil
 }
 
+// ErrRenew from a port-forward keepalive means the mapping can't be extended
+// and the connection should be re-established to get a new one.
+var ErrRenew = errors.New("port forwarding needs a fresh connection")
+
+// publicKey derives the WireGuard public key from a base64 private key.
+func publicKey(priv string) (string, error) {
+	k, err := base64.StdEncoding.DecodeString(priv)
+	if err != nil || len(k) != 32 {
+		return "", errors.New("bad private key")
+	}
+	p, err := curve25519.X25519(k, curve25519.Basepoint)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(p), nil
+}
+
 // getJSON GETs url and decodes the JSON body into v.
 func getJSON(ctx context.Context, hc *http.Client, url string, v any, setup ...func(*http.Request)) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
