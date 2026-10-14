@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -54,7 +55,17 @@ var Categories = map[string]int{
 	"movies": 2000, "tv": 5000, "music": 3000, "software": 4000, "books": 7000,
 }
 
-var httpClient = &http.Client{Timeout: 90 * time.Second}
+// localTransport reaches the user's own server with the operating system's
+// name resolution. The torrent engine points net.DefaultResolver into the
+// VPN tunnel (to keep tracker lookups private), and the VPN's DNS server
+// doesn't know "localhost" or names on the home network, so with the default
+// transport the server was unreachable while the VPN was up.
+var localTransport = &http.Transport{
+	DialContext:         (&net.Dialer{Timeout: 10 * time.Second, Resolver: &net.Resolver{}}).DialContext,
+	TLSHandshakeTimeout: 10 * time.Second,
+}
+
+var httpClient = &http.Client{Timeout: 90 * time.Second, Transport: localTransport}
 
 func (c Config) base() string { return strings.TrimRight(c.URL, "/") }
 
@@ -226,7 +237,8 @@ func Fetch(ctx context.Context, r Result) (source string, tempFile string, err e
 	}
 	var magnet string
 	client := &http.Client{
-		Timeout: 60 * time.Second,
+		Timeout:   60 * time.Second,
+		Transport: localTransport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.URL.Scheme == "magnet" {
 				magnet = req.URL.String()
