@@ -18,9 +18,8 @@ import (
 // labels, and no in-app installs of the official (funded) release.
 var links = Links{
 	Repo: "https://github.com/trevercomb/SharkBiteTorrent",
-	// Sponsor is hidden in the app until set, e.g.
-	// "https://github.com/sponsors/trevercomb".
-	Sponsor: "",
+	// Sponsor shows as "Support development" in Settings → About.
+	Sponsor: "https://github.com/sponsors/trevercomb",
 	Providers: map[string]ProviderLink{
 		// Affiliate programs: replace the URL with your referral link and set
 		// Referral to true.
