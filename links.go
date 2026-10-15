@@ -60,6 +60,8 @@ type About struct {
 	Links   Links  `json:"links"`
 	// Funding is false in builds made with -tags nofunding.
 	Funding bool `json:"funding"`
+	// Store is true in the Microsoft Store build (-tags store).
+	Store bool `json:"store"`
 }
 
 // GetAbout returns the version (from wails.json, which the release workflow
@@ -71,7 +73,7 @@ func (a *App) GetAbout() About {
 		} `json:"info"`
 	}
 	json.Unmarshal(wailsJSON, &w)
-	return About{Version: w.Info.ProductVersion, License: "GPL-3.0-or-later", Links: links, Funding: fundingEnabled}
+	return About{Version: w.Info.ProductVersion, License: "GPL-3.0-or-later", Links: links, Funding: fundingEnabled, Store: storeBuild}
 }
 
 // OpenURL opens an http(s) link in the user's default browser.

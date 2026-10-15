@@ -170,7 +170,13 @@
               files are marked as downloaded from the internet so the system checks them when opened.
             </p>
           {/if}
-          {#if assoc.supported}
+          {#if about?.store}
+            <p class="muted small">
+              Installed from the Microsoft Store: magnet links and .torrent files were registered when it was installed.
+              To make Shark BiteTorrent the app that opens them,
+              <button class="link" onclick={() => OpenDefaultAppsSettings()}>open Default Apps</button>.
+            </p>
+          {:else if assoc.supported}
             <div class="row">
               <span class="status">
                 Magnet links: <b class:ok={assoc.magnet}>{assoc.magnet ? 'open here' : 'not set'}</b> ·
@@ -198,6 +204,9 @@
               <span class="muted">· free software ({about.license})</span>
               <button class="link" onclick={() => OpenURL(about!.links.repo)}>Source code ↗</button>
             </div>
+            {#if about.store}
+              <p class="muted small">Updates are installed by the Microsoft Store.</p>
+            {:else}
             <div class="row">
               <button onclick={checkUpdates} disabled={checking || installing}>
                 {checking ? 'Checking…' : 'Check for updates'}
@@ -225,6 +234,7 @@
               <input type="checkbox" bind:checked={s.autoUpdateCheck} />
               <span>Check for updates automatically <span class="muted">(about once a day, through the VPN)</span></span>
             </label>
+            {/if}
             {#if about.links.sponsor}
               <div class="row">
                 <button class="sponsor" onclick={() => OpenURL(about!.links.sponsor)}>♥ Support development</button>

@@ -246,6 +246,16 @@ That build has:
 
 Everything else is identical. To check it, run `go test -tags nofunding -run TestLinks .`
 
+### Microsoft Store package
+
+The Store version is the same app built with the `store` tag: the Store installs updates and registers magnet links and `.torrent` files from the package manifest, so the app's own updater and registry setup are turned off. To build the `.msix` (from Git Bash, on Windows):
+
+```sh
+packaging/msix/build-msix.sh [path/to/windows-sdk/bin/x64]
+```
+
+It needs `makeappx.exe` and `makepri.exe` from the Windows SDK (or the `Microsoft.Windows.SDK.BuildTools` NuGet package). The package is unsigned; Partner Center signs it after upload. The package identity in [`packaging/msix/AppxManifest.xml`](packaging/msix/AppxManifest.xml) belongs to the official Store listing, so change it if you publish your own.
+
 ### Development
 
 ```sh
@@ -264,7 +274,7 @@ Pushing a version tag builds Windows, Linux and macOS on GitHub Actions and publ
 git tag v0.2.1 && git push origin v0.2.1
 ```
 
-Running the **Release** workflow by hand from the Actions tab builds everything without publishing.
+Running the **Release** workflow by hand from the Actions tab builds everything without publishing. Each run also builds the Microsoft Store `.msix` as a downloadable artifact (**msix**); it isn't attached to the release, because it's only installable after the Store signs it.
 
 ## Project layout
 
@@ -282,7 +292,7 @@ internal/platform        Open folder, magnet/.torrent registration (Windows/Linu
 internal/winassoc        Windows registry associations and Default Apps
 earlyinit/               Sets the torrent library's file I/O mode before it initializes
 frontend/                Svelte 5 + TypeScript UI
-packaging/               Linux .desktop file and Arch PKGBUILD
+packaging/               Linux .desktop file, Arch PKGBUILD, Microsoft Store manifest (msix/)
 build/                   Icons, Windows installer script, macOS Info.plist
 .github/workflows        Release builds for all three platforms
 ```
@@ -319,7 +329,7 @@ We'd rather tell you upfront than have you find out later.
 **What never happens:**
 - No ads, no bundled software, no "recommended offers" in the installer.
 - **No telemetry or analytics.** The app never sends data to us; there is no server of ours for it to talk to. Its only connections are the torrent network (peers, trackers and web seeds, all through the VPN), your VPN provider's own API when you sign in or connect, Cloudflare's public trace page to check your exit IP, and GitHub to check for updates (through the VPN, about once a day; you can turn this off in Settings), plus your own Prowlarr or Jackett when you search. If you turn on the search proxy, the app changes Prowlarr's proxy setting through Prowlarr's API (and turns it off again when you switch the proxy off or disconnect search).
-- Your data, logins and download history are never sold or shared.
+- Your data, logins and download history are never sold or shared. See the [privacy policy](PRIVACY.md).
 
 Every link lives in one file, [`links.go`](links.go), so anyone can check exactly what the app links to. To build without any of it, use the `nofunding` build flag (see [Build without funding links](#build-without-funding-links)): no sponsor button, plain provider links and no referral labels. Because this is GPL software, you're free to change or remove anything else too.
 

@@ -110,6 +110,31 @@ jobs:
             dist/*.tar.gz
             dist/*.pkg.tar.zst
 
+  store:
+    # Microsoft Store package. Not part of the GitHub release: it's unsigned
+    # until Partner Center signs it, so it's uploaded there by hand
+    # (Actions → this run → Artifacts → msix).
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          sed -i "s/\"productVersion\": \"[^\"]*\"/\"productVersion\": \"${GITHUB_REF_NAME#v}\"/" wails.json
+      - run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
+      - name: Build MSIX
+        shell: bash
+        run: packaging/msix/build-msix.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msix
+          path: dist/*.msix
+
   macos:
     runs-on: macos-26
     steps:
@@ -149,7 +174,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # PKGBUILD only travels along for the arch job; it isn't a download.
-          rm -f artifacts/PKGBUILD
+          rm -f artifacts/PKGBUILD artifacts/*.msix
           # Checksums let the in-app updater verify what it downloads.
           (cd artifacts && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt)
           ls -la artifacts

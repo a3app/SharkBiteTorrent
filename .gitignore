@@ -3,3 +3,5 @@ frontend/dist
 frontend/node_modules
 build/windows/installer/tmp
 build/windows/appicon.ico
+build/msix
+dist

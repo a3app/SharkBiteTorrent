@@ -137,7 +137,7 @@ func (a *App) autoCheckUpdate() {
 	a.mu.Lock()
 	s := a.settings
 	a.mu.Unlock()
-	if !s.AutoUpdateCheck || time.Since(time.Unix(s.LastUpdateCheck, 0)) < autoCheckPeriod {
+	if storeBuild || !s.AutoUpdateCheck || time.Since(time.Unix(s.LastUpdateCheck, 0)) < autoCheckPeriod {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -161,6 +161,9 @@ func (a *App) autoCheckUpdate() {
 // CheckForUpdates is the manual "Check for updates" button. It uses the VPN
 // if it's up, and otherwise the normal connection (reported via Direct).
 func (a *App) CheckForUpdates() (UpdateInfo, error) {
+	if storeBuild {
+		return UpdateInfo{}, errors.New("the Microsoft Store installs updates for this version")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	info, err := a.checkUpdate(ctx, true)
@@ -277,5 +280,5 @@ func download(ctx context.Context, hc *http.Client, url, path string) (string, e
 // release. Not in nofunding builds: the official release has the funding
 // links back in, so those users get a link to rebuild or download instead.
 func (a *App) canInstallUpdates() bool {
-	return fundingEnabled && canSelfUpdate(a.exe)
+	return fundingEnabled && !storeBuild && canSelfUpdate(a.exe)
 }

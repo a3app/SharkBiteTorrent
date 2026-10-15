@@ -688,7 +688,9 @@ func (a *App) GetSettings() SettingsView {
 			v.CustomEndpoint = cfg.Endpoint
 		}
 	}
-	v.Assoc = platform.Associations(a.exe)
+	if !storeBuild { // the Store package registers these itself
+		v.Assoc = platform.Associations(a.exe)
+	}
 	return v
 }
 
@@ -807,6 +809,9 @@ func (a *App) ImportWireGuardConfig() (string, error) {
 }
 
 func (a *App) RegisterAssociations() (platform.AssocStatus, error) {
+	if storeBuild {
+		return platform.AssocStatus{}, errors.New("the Microsoft Store version registers magnet links and .torrent files when installed")
+	}
 	if err := platform.RegisterAssociations(a.exe); err != nil {
 		return platform.AssocStatus{}, err
 	}

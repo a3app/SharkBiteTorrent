@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Microsoft Store package. Identity values come from Partner Center
+     (Product identity); VERSION is filled in by build-msix.sh. -->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 rescap">
+
+  <Identity
+    Name="SharkByteSoftware.SharkBiteTorrent"
+    Publisher="CN=F24EAB7D-1003-4885-82FF-B41F42C5D4FA"
+    Version="VERSION"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Shark BiteTorrent</DisplayName>
+    <PublisherDisplayName>SharkByte Software</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="SharkBiteTorrent" Executable="SharkBiteTorrent.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Shark BiteTorrent"
+        Description="BitTorrent client with a built-in per-app VPN"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+      </uap:VisualElements>
+      <Extensions>
+        <!-- The link or file is passed on the command line, as with the
+             installer's registry entries, so the app handles both the same. -->
+        <uap3:Extension Category="windows.protocol">
+          <uap3:Protocol Name="magnet" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>Magnet link</uap:DisplayName>
+          </uap3:Protocol>
+        </uap3:Extension>
+        <uap:Extension Category="windows.fileTypeAssociation">
+          <uap:FileTypeAssociation Name="torrent">
+            <uap:DisplayName>Torrent file</uap:DisplayName>
+            <uap:Logo>Assets\StoreLogo.png</uap:Logo>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.torrent</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap:FileTypeAssociation>
+        </uap:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <Capability Name="internetClient" />
+    <!-- A regular desktop (Win32) app, not a sandboxed UWP app. -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>
