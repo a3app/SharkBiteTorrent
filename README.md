@@ -284,7 +284,7 @@ go run ./cmd/releasekey publish v0.2.1
 
 The signing key never goes into git or GitHub Actions; a compromised GitHub account must not be able to sign. It's stored on the maintainer's computer encrypted with the OS (`~/.sharkbite-release/`), with a password-protected backup kept offline (`releasekey backup` / `restore`). The public half, [`release.pub`](release.pub), is built into the app, and the updater refuses a release whose signature is missing, invalid, or made for a different version. Before signing, `publish` checks every file in the draft against GitHub's build provenance (attestations): each must have been built by this repo's `release.yml`, on a GitHub-hosted runner, from exactly the commit the maintainer's local tag points to, and `SHA256SUMS.txt` must match the hashes it computes itself. Files swapped into the draft, or built from other code or a modified workflow, are refused instead of signed. Anyone can check a download with [minisign](https://jedisct1.github.io/minisign/): `minisign -Vm SHA256SUMS.txt -p release.pub`.
 
-Running the **Release** workflow by hand from the Actions tab builds everything without publishing. Each run also builds the Microsoft Store `.msix` as a downloadable artifact (**msix**); it isn't attached to the release, because it's only installable after the Store signs it.
+Running the **Release** workflow by hand from the Actions tab builds everything without publishing. Each run also builds the Microsoft Store `.msix` (with build provenance) as an artifact; it isn't attached to the release, because it's only installable after the Store signs it. `releasekey publish` verifies it and hands it over for upload to Partner Center.
 
 ## Project layout
 

@@ -233,6 +233,13 @@ func publish(tag string) error {
 	if err != nil {
 		return fmt.Errorf("not signing %s: %w", tag, err)
 	}
+	// The Microsoft Store package, checked the same way before anything is
+	// published. It isn't part of the GitHub release (Partner Center signs
+	// it), so it comes from the release workflow run's artifacts.
+	msix, err := storePackage(dir, tag, commit)
+	if err != nil {
+		return fmt.Errorf("not publishing %s: Store package: %w", tag, err)
+	}
 	fmt.Printf("Signing %s for %s:\n%s", sumsAsset, tag, sums)
 	sig := minisign.SignWithComments(k, sums, fmt.Sprintf(commentForm, tag), "signed with the Shark BiteTorrent release key")
 	if !minisign.Verify(pub, sums, sig) {
@@ -249,6 +256,56 @@ func publish(tag string) error {
 		return err
 	}
 	fmt.Printf("Published %s with a signed %s.\n", tag, sumsAsset)
+
+	home, _ := os.UserHomeDir()
+	dst := filepath.Join(home, "Downloads", filepath.Base(msix))
+	data, err := os.ReadFile(msix)
+	if err == nil {
+		err = os.WriteFile(dst, data, 0o644)
+	}
+	if err != nil {
+		return fmt.Errorf("published, but couldn't copy the Store package to Downloads: %w", err)
+	}
+	fmt.Printf("Verified Store package: %s\nUpload it in Partner Center: the app → Packages → drag it in → Submit.\n", dst)
+	return nil
+}
+
+// storePackage downloads the .msix built by the release workflow run for
+// tag and checks its build provenance like the release files.
+func storePackage(dir, tag, commit string) (string, error) {
+	out, err := exec.Command("gh", "run", "list", "--repo", repo, "--workflow", "release.yml",
+		"--branch", tag, "--event", "push", "--limit", "1", "--json", "databaseId", "--jq", ".[0].databaseId").Output()
+	runID := strings.TrimSpace(string(out))
+	if err != nil || runID == "" {
+		return "", fmt.Errorf("no release workflow run found for %s", tag)
+	}
+	msixDir := filepath.Join(dir, "msix")
+	if err := gh("run", "download", runID, "--repo", repo, "--name", "msix", "--dir", msixDir); err != nil {
+		return "", err
+	}
+	found, _ := filepath.Glob(filepath.Join(msixDir, "*.msix"))
+	if len(found) != 1 {
+		return "", fmt.Errorf("expected one .msix in the run's artifact, found %d", len(found))
+	}
+	if err := verifyProvenance(found[0], tag, commit); err != nil {
+		return "", err
+	}
+	fmt.Printf("  ok %s: built by release.yml from %.12s\n", filepath.Base(found[0]), commit)
+	return found[0], nil
+}
+
+// verifyProvenance checks that GitHub's build provenance shows path was built
+// by this repo's release workflow, on a GitHub-hosted runner, from exactly
+// commit (what the local tag points to).
+func verifyProvenance(path, tag, commit string) error {
+	cmd := exec.Command("gh", "attestation", "verify", path, "--repo", repo,
+		"--source-digest", commit,
+		"--source-ref", "refs/tags/"+tag,
+		"--signer-workflow", repo+"/.github/workflows/release.yml",
+		"--deny-self-hosted-runners")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s has no valid build provenance for %s at %.12s:\n%s", filepath.Base(path), tag, commit, out)
+	}
 	return nil
 }
 
@@ -272,13 +329,8 @@ func checkDraft(dir, tag, commit string) ([]byte, error) {
 			continue
 		}
 		path := filepath.Join(dir, name)
-		cmd := exec.Command("gh", "attestation", "verify", path, "--repo", repo,
-			"--source-digest", commit,
-			"--source-ref", "refs/tags/"+tag,
-			"--signer-workflow", repo+"/.github/workflows/release.yml",
-			"--deny-self-hosted-runners")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("%s has no valid build provenance for %s at %.12s:\n%s", name, tag, commit, out)
+		if err := verifyProvenance(path, tag, commit); err != nil {
+			return nil, err
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {

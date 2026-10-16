@@ -24,7 +24,9 @@ git tag -a vX.Y.Z -m "Shark BiteTorrent X.Y.Z" && git push origin vX.Y.Z
 go run ./cmd/releasekey publish vX.Y.Z   # checks build provenance + hashes, signs, publishes
 ```
 
-Check the draft's release notes before publishing. For the Microsoft Store, upload that run's **msix** artifact in Partner Center.
+Check the draft's release notes before publishing.
+
+`publish` also downloads the Microsoft Store package (`.msix`) from that release run, checks its build provenance the same way (nothing is published if it fails), and puts it in your Downloads folder. Upload that file in Partner Center: the app → **Packages** → drag it in → **Submit**. (Store API automation isn't available on individual developer accounts; and keeping the upload on the maintainer's computer means a hijacked GitHub account can't push a Store update either.)
 
 ## Audit brief
 

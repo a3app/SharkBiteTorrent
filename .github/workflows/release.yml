@@ -115,9 +115,14 @@ jobs:
 
   store:
     # Microsoft Store package. Not part of the GitHub release: it's unsigned
-    # until Partner Center signs it, so it's uploaded there by hand
-    # (Actions → this run → Artifacts → msix).
+    # until Partner Center signs it. releasekey publish checks its build
+    # provenance (below) and puts it in the maintainer's Downloads folder for
+    # uploading to Partner Center.
     runs-on: windows-2025
+    permissions:
+      contents: read
+      id-token: write     # for the provenance attestation
+      attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
@@ -134,6 +139,9 @@ jobs:
       - name: Build MSIX
         shell: bash
         run: packaging/msix/build-msix.sh
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: 'dist/*.msix'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: msix
