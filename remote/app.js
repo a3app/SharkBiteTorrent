@@ -162,10 +162,33 @@ async function pairIfNeeded() {
   await pair(m[1])
 }
 
+const INSTALLED_KEY = 'sharkbite-remote-on-home-screen'
+
+// installSteps explains adding the page to the home screen in this browser.
+function installSteps() {
+  const ua = navigator.userAgent
+  if (isIOS) {
+    if (/FxiOS/.test(ua)) return 'In Firefox, tap the menu (☰), then Share, then “Add to Home Screen”.'
+    if (/CriOS/.test(ua)) return 'In Chrome, tap the Share button in the address bar, then “Add to Home Screen”.'
+    if (/EdgiOS/.test(ua)) return 'In Edge, tap the menu (⋯), then Share, then “Add to Home Screen”.'
+    return 'In Safari, tap the Share button (the square with an arrow), then “Add to Home Screen”.'
+  }
+  if (isAndroid) {
+    if (/Firefox/.test(ua)) return 'In Firefox, tap the ⋮ menu, then “Add to Home screen” (in newer versions, “Add app to Home screen”).'
+    if (/SamsungBrowser/.test(ua)) return 'In Samsung Internet, tap the ≡ menu at the bottom, then “Add page to”, then “Home screen”.'
+    if (/EdgA/.test(ua)) return 'In Edge, tap the ⋯ menu at the bottom, then “Add to phone”.'
+    if (/OPR\//.test(ua)) return 'In Opera, tap the ⋮ menu, then “Add to Home screen”.'
+    return 'In Chrome, tap the ⋮ menu at the top right, then “Add to Home screen”.'
+  }
+  return 'Use your browser’s menu to add this page to your home screen, or bookmark it.'
+}
+
 function showApp() {
   $('unpaired').hidden = true
   $('app').hidden = false
-  $('installBtn').hidden = standalone() // already opened from the home screen
+  let added = false
+  try { added = localStorage.getItem(INSTALLED_KEY) === '1' } catch {}
+  $('installBtn').hidden = standalone() || added // already on the home screen
 }
 
 let refreshing = false
@@ -192,13 +215,18 @@ function wire() {
   // Browsers only let a page add itself to the home screen on HTTPS
   // (Android) or not at all (iPhone), so this explains the two taps.
   $('installBtn').onclick = () => {
-    const steps = isIOS
-      ? 'In Safari, tap the Share button (the square with an arrow), then “Add to Home Screen”.'
-      : isAndroid
-        ? 'In Chrome, tap the ⋮ menu at the top right, then “Add to Home screen”.'
-        : 'Use your browser’s menu to add this page to your home screen, or bookmark it.'
-    $('installSteps').textContent = steps
-    $('installDialog').showModal()
+    $('installSteps').textContent = installSteps()
+    const d = $('installDialog')
+    d.returnValue = ''
+    d.onclose = () => {
+      // Some browsers' shortcuts open in a normal tab (Firefox), so the page
+      // can't tell it was opened from the home screen: let the user say so.
+      if (d.returnValue === 'done') {
+        try { localStorage.setItem(INSTALLED_KEY, '1') } catch {}
+        $('installBtn').hidden = true
+      }
+    }
+    d.showModal()
   }
   $('addForm').onsubmit = e => {
     e.preventDefault()
