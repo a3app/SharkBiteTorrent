@@ -56,7 +56,7 @@ It works out of the box with **free Cloudflare WARP**, so there's protection fro
 
 **Desktop**
 - **Tray icon** with close-to-tray, Pause all / Resume all, and live speeds in the tooltip.
-- **Updates**: on launch the app checks GitHub (through the VPN) and offers new versions. On Windows, *Update now* downloads the installer, verifies its SHA-256 checksum and upgrades in place. There's also *Check for updates* in Settings.
+- **Updates**: on launch the app checks GitHub (through the VPN) and offers new versions. On Windows, *Update now* downloads the installer, checks it against the release's signed SHA-256 checksums and upgrades in place. Releases are signed with a key kept off GitHub (`release.pub`), so a hijacked GitHub account couldn't push an update the app would install. There's also *Check for updates* in Settings.
 - **Single instance**: clicking a magnet link while the app is open sends it to the running window.
 - **Windows installer**: per-user, no admin. It registers magnet links and `.torrent` files and cleans up on uninstall.
 
@@ -268,11 +268,15 @@ go run ./cmd/enginecheck -seconds 30 [-down KB/s] [-delete] <magnet|file.torrent
 
 ### Releases
 
-Pushing a version tag builds Windows, Linux and macOS on GitHub Actions and publishes a Release:
+Pushing a version tag builds Windows, Linux and macOS on GitHub Actions and creates a **draft** Release. The maintainer then signs its `SHA256SUMS.txt` with the release key and publishes it:
 
 ```sh
 git tag v0.2.1 && git push origin v0.2.1
+# after the workflow finishes:
+go run ./cmd/releasekey publish v0.2.1
 ```
+
+The signing key never goes into git or GitHub Actions; a compromised GitHub account must not be able to sign. It's stored on the maintainer's computer encrypted with the OS (`~/.sharkbite-release/`), with a password-protected backup kept offline (`releasekey backup` / `restore`). The public half, [`release.pub`](release.pub), is built into the app, and the updater refuses a release whose signature is missing, invalid, or made for a different version. Anyone can check a download with [minisign](https://jedisct1.github.io/minisign/): `minisign -Vm SHA256SUMS.txt -p release.pub`.
 
 Running the **Release** workflow by hand from the Actions tab builds everything without publishing. Each run also builds the Microsoft Store `.msix` as a downloadable artifact (**msix**); it isn't attached to the release, because it's only installable after the Store signs it.
 
@@ -283,6 +287,8 @@ main.go, app.go          Wails entry point; app state, VPN connect/reconnect, to
 accounts.go              VPN provider sign-in/out (encrypted storage)
 links*.go                Sponsor and VPN sign-up links (links.go); the nofunding build flag strips them
 tray*.go                 Tray icon (per-OS files)
+updater*.go, release.pub In-app updates, checked against the signed release checksums
+cmd/releasekey           Maintainer tool: create/back up the signing key, sign and publish a release
 internal/tunnel          In-process WireGuard + netstack, .conf parser, exit-IP check
 internal/engine          anacrolix/torrent wired to the tunnel; files, limits, removal
 internal/warp            Cloudflare WARP registration (via wgcf)

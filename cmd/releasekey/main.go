@@ -1,0 +1,253 @@
+// Command releasekey manages the key that signs releases, so the in-app
+// updater only installs releases the maintainer signed, even if the GitHub
+// account or a release's files are tampered with.
+//
+// The private key never goes into git or GitHub: it's kept on the
+// maintainer's computer, encrypted with the OS (DPAPI on Windows, the
+// keyring elsewhere), plus a password-protected backup kept offline.
+//
+//	go run ./cmd/releasekey init              new key; writes release.pub (commit it)
+//	go run ./cmd/releasekey backup <file>     password-protected copy for safekeeping
+//	go run ./cmd/releasekey restore <file>    load a backup onto this computer
+//	go run ./cmd/releasekey publish <tag>     sign a draft release's SHA256SUMS.txt and publish it
+//
+// Signatures are standard minisign, so anyone can check a release with:
+//
+//	minisign -Vm SHA256SUMS.txt -p release.pub
+package main
+
+import (
+	"bytes"
+	"crypto/rand"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"syscall"
+
+	"aead.dev/minisign"
+	"golang.org/x/term"
+
+	"sharkbite/internal/secret"
+)
+
+const (
+	repo        = "trevercomb/SharkBiteTorrent"
+	pubKeyFile  = "release.pub" // in the repo root; embedded in the app
+	sumsAsset   = "SHA256SUMS.txt"
+	sigAsset    = "SHA256SUMS.txt.minisig"
+	commentForm = "SharkBiteTorrent %s" // trusted comment; the updater checks it
+)
+
+func keyPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".sharkbite-release", "minisign.key")
+}
+
+func main() {
+	if len(os.Args) < 2 {
+		usage()
+	}
+	var err error
+	switch arg := func(i int) string {
+		if len(os.Args) <= i {
+			usage()
+		}
+		return os.Args[i]
+	}; os.Args[1] {
+	case "init":
+		err = initKey()
+	case "backup":
+		err = backup(arg(2))
+	case "restore":
+		err = restore(arg(2))
+	case "publish":
+		err = publish(arg(2))
+	default:
+		usage()
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "releasekey:", err)
+		os.Exit(1)
+	}
+}
+
+func usage() {
+	fmt.Fprintln(os.Stderr, "usage: releasekey init | backup <file> | restore <file> | publish <tag>")
+	os.Exit(2)
+}
+
+func loadKey() (minisign.PrivateKey, error) {
+	var k minisign.PrivateKey
+	data, err := secret.ReadFile(keyPath())
+	if err != nil {
+		return k, fmt.Errorf("no signing key on this computer (%v); run init or restore", err)
+	}
+	return k, k.UnmarshalText(data)
+}
+
+func saveKey(k minisign.PrivateKey) error {
+	text, err := k.MarshalText()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(keyPath()), 0o700); err != nil {
+		return err
+	}
+	return secret.WriteFile(keyPath(), text)
+}
+
+func writePub(k minisign.PrivateKey) error {
+	pub := k.Public().(minisign.PublicKey)
+	text, err := pub.MarshalText()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(pubKeyFile, append(bytes.TrimSpace(text), '\n'), 0o644)
+}
+
+func initKey() error {
+	if _, err := os.Stat(keyPath()); err == nil {
+		return fmt.Errorf("a key already exists at %s; refusing to replace it", keyPath())
+	}
+	_, priv, err := minisign.GenerateKey(rand.Reader)
+	if err != nil {
+		return err
+	}
+	if err := saveKey(priv); err != nil {
+		return err
+	}
+	if err := writePub(priv); err != nil {
+		return err
+	}
+	fmt.Printf("Key %X saved (encrypted) to %s\nPublic key written to %s; commit it.\nNow make a backup: go run ./cmd/releasekey backup <file>\n", priv.ID(), keyPath(), pubKeyFile)
+	return nil
+}
+
+func password(prompt string) (string, error) {
+	fmt.Fprint(os.Stderr, prompt)
+	b, err := term.ReadPassword(int(syscall.Stdin))
+	fmt.Fprintln(os.Stderr)
+	return string(b), err
+}
+
+func backup(file string) error {
+	k, err := loadKey()
+	if err != nil {
+		return err
+	}
+	p1, err := password("Backup password: ")
+	if err != nil {
+		return err
+	}
+	if len(p1) < 12 {
+		return errors.New("use at least 12 characters")
+	}
+	p2, err := password("Again: ")
+	if err != nil {
+		return err
+	}
+	if p1 != p2 {
+		return errors.New("passwords don't match")
+	}
+	enc, err := minisign.EncryptKey(p1, k)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(file, enc, 0o600); err != nil {
+		return err
+	}
+	// Prove the backup opens before anyone relies on it.
+	if back, err := minisign.DecryptKey(p1, enc); err != nil || !back.Equal(k) {
+		return errors.New("backup didn't verify; don't use it")
+	}
+	fmt.Printf("Backup written to %s (minisign format, password-protected). Keep it and the password somewhere safe, off this computer.\n", file)
+	return nil
+}
+
+func restore(file string) error {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return err
+	}
+	p, err := password("Backup password: ")
+	if err != nil {
+		return err
+	}
+	k, err := minisign.DecryptKey(p, data)
+	if err != nil {
+		return err
+	}
+	if err := saveKey(k); err != nil {
+		return err
+	}
+	fmt.Printf("Key %X restored to %s\n", k.ID(), keyPath())
+	return nil
+}
+
+var tagPattern = regexp.MustCompile(`^v[0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z.]+)?$`)
+
+// publish signs the checksums of a draft release made by the release
+// workflow, uploads the signature, and publishes the release.
+func publish(tag string) error {
+	if !tagPattern.MatchString(tag) {
+		return fmt.Errorf("not a release tag: %q", tag)
+	}
+	k, err := loadKey()
+	if err != nil {
+		return err
+	}
+	pubText, err := os.ReadFile(pubKeyFile)
+	if err != nil {
+		return fmt.Errorf("run from the repo root: %w", err)
+	}
+	var pub minisign.PublicKey
+	if err := pub.UnmarshalText(bytes.TrimSpace(pubText)); err != nil {
+		return err
+	}
+	if !pub.Equal(k.Public()) {
+		return errors.New("this computer's key doesn't match release.pub")
+	}
+
+	dir, err := os.MkdirTemp("", "releasekey-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	if err := gh("release", "download", tag, "--repo", repo, "--pattern", sumsAsset, "--dir", dir); err != nil {
+		return err
+	}
+	sums, err := os.ReadFile(filepath.Join(dir, sumsAsset))
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Signing %s for %s:\n%s", sumsAsset, tag, sums)
+	sig := minisign.SignWithComments(k, sums, fmt.Sprintf(commentForm, tag), "signed with the Shark BiteTorrent release key")
+	if !minisign.Verify(pub, sums, sig) {
+		return errors.New("signature didn't verify")
+	}
+	sigPath := filepath.Join(dir, sigAsset)
+	if err := os.WriteFile(sigPath, sig, 0o644); err != nil {
+		return err
+	}
+	if err := gh("release", "upload", tag, sigPath, "--repo", repo, "--clobber"); err != nil {
+		return err
+	}
+	if err := gh("release", "edit", tag, "--repo", repo, "--draft=false", "--latest"); err != nil {
+		return err
+	}
+	fmt.Printf("Published %s with a signed %s.\n", tag, sumsAsset)
+	return nil
+}
+
+func gh(args ...string) error {
+	cmd := exec.Command("gh", args...)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gh %s: %w", strings.Join(args[:2], " "), err)
+	}
+	return nil
+}

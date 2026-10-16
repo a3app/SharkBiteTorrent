@@ -5,6 +5,7 @@ go 1.26.0
 toolchain go1.27.2
 
 require (
+	aead.dev/minisign v0.3.0
 	fyne.io/systray v1.12.2
 	github.com/ViRb3/wgcf/v2 v2.3.1
 	github.com/anacrolix/dht/v2 v2.23.0
@@ -12,6 +13,7 @@ require (
 	github.com/wailsapp/wails/v2 v2.16.0
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/sys v0.49.0
+	golang.org/x/term v0.47.0
 	golang.org/x/time v0.14.0
 	golang.zx2c4.com/wireguard v0.0.0-20261006164505-2631ce99a06f
 )

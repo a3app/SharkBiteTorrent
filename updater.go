@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"aead.dev/minisign"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -27,6 +30,7 @@ const (
 	releasesURL     = "https://github.com/trevercomb/SharkBiteTorrent/releases"
 	installerAsset  = "SharkBiteTorrent-amd64-installer.exe"
 	checksumsAsset  = "SHA256SUMS.txt"
+	signatureAsset  = "SHA256SUMS.txt.minisig"
 	autoCheckPeriod = 20 * time.Hour
 )
 
@@ -206,9 +210,9 @@ func (a *App) InstallUpdate(version string) error {
 	defer cancel()
 	base := releasesURL + "/download/v" + version + "/"
 
-	want, err := fetchChecksum(ctx, hc, base+checksumsAsset, installerAsset)
+	want, err := signedChecksum(ctx, hc, base, "v"+version, installerAsset)
 	if err != nil {
-		return fmt.Errorf("couldn't get checksums: %w", err)
+		return fmt.Errorf("couldn't verify the release: %w", err)
 	}
 	dir, err := os.MkdirTemp("", "sharkbite-update-")
 	if err != nil {
@@ -231,22 +235,68 @@ func (a *App) InstallUpdate(version string) error {
 	return nil
 }
 
-func fetchChecksum(ctx context.Context, hc *http.Client, url, name string) (string, error) {
+// releasePub is the maintainer's release-signing public key (minisign). The
+// private key is kept offline, never on GitHub, so a compromised GitHub
+// account can't publish an update this app will install.
+//
+//go:embed release.pub
+var releasePub []byte
+
+// signedChecksum fetches the release's SHA256SUMS.txt and its signature,
+// checks the signature against releasePub and that it was made for this tag
+// (so an older signed release can't be passed off as a newer one), and
+// returns the checksum listed for name.
+func signedChecksum(ctx context.Context, hc *http.Client, base, tag, name string) (string, error) {
+	var pub minisign.PublicKey
+	if err := pub.UnmarshalText(bytes.TrimSpace(releasePub)); err != nil {
+		return "", fmt.Errorf("bad built-in key: %w", err)
+	}
+	sums, err := fetchSmall(ctx, hc, base+checksumsAsset)
+	if err != nil {
+		return "", fmt.Errorf("checksums: %w", err)
+	}
+	sig, err := fetchSmall(ctx, hc, base+signatureAsset)
+	if err != nil {
+		return "", fmt.Errorf("signature: %w", err)
+	}
+	return verifyChecksum(pub, sums, sig, tag, name)
+}
+
+func verifyChecksum(pub minisign.PublicKey, sums, sig []byte, tag, name string) (string, error) {
+	if !minisign.Verify(pub, sums, sig) {
+		return "", errors.New("the release's signature doesn't match; not installing it")
+	}
+	var s minisign.Signature
+	if err := s.UnmarshalText(sig); err != nil {
+		return "", err
+	}
+	if s.TrustedComment != "SharkBiteTorrent "+tag {
+		return "", fmt.Errorf("the signature is for %q, not %s", s.TrustedComment, tag)
+	}
+	return checksumFor(sums, name)
+}
+
+func fetchSmall(ctx context.Context, hc *http.Client, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	sc := bufio.NewScanner(io.LimitReader(resp.Body, 1<<20))
+	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+}
+
+// checksumFor finds name in sha256sum output ("<hex>  <name>"; binary mode
+// prefixes the name with "*").
+func checksumFor(sums []byte, name string) (string, error) {
+	sc := bufio.NewScanner(bytes.NewReader(sums))
 	for sc.Scan() {
-		// sha256sum format: "<hex>  <name>" (binary mode prefixes "*").
 		fields := strings.Fields(sc.Text())
 		if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") == name && len(fields[0]) == 64 {
 			return fields[0], nil
