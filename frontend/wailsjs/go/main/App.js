@@ -18,6 +18,10 @@ export function CheckForUpdates() {
   return window['go']['main']['App']['CheckForUpdates']();
 }
 
+export function CheckSearchProxy() {
+  return window['go']['main']['App']['CheckSearchProxy']();
+}
+
 export function ChooseDirectory(arg1) {
   return window['go']['main']['App']['ChooseDirectory'](arg1);
 }

@@ -14,6 +14,8 @@ export function AutoDetectSearch():Promise<main.SearchStatus>;
 
 export function CheckForUpdates():Promise<main.UpdateInfo>;
 
+export function CheckSearchProxy():Promise<main.ProxyCheck>;
+
 export function ChooseDirectory(arg1:string):Promise<string>;
 
 export function ChooseDownloadDir():Promise<string>;

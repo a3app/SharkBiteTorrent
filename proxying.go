@@ -239,3 +239,35 @@ func (a *App) disableSearchProxy() {
 		runtime.LogWarningf(a.ctx, "proxy: %v", err)
 	}
 }
+
+// ProxyCheck is the result of CheckSearchProxy.
+type ProxyCheck struct {
+	Used        bool  `json:"used"`        // the server's traffic went through the proxy
+	Connections int64 `json:"connections"` // connections it made through it during the test
+}
+
+// CheckSearchProxy confirms the search server really uses the proxy (for
+// Jackett, whose proxy the user sets by hand). It runs a search for a random
+// word, so the server can't answer from its cache and has to contact its
+// sites, and counts the connections that came through the proxy meanwhile.
+func (a *App) CheckSearchProxy() (ProxyCheck, error) {
+	sc, ok := a.searchConfig()
+	if !ok {
+		return ProxyCheck{}, errors.New("connect Prowlarr or Jackett first")
+	}
+	a.mu.Lock()
+	s := a.proxy
+	a.mu.Unlock()
+	if s == nil {
+		return ProxyCheck{}, errors.New("the proxy isn't running; turn the option on first")
+	}
+	before := s.Requests.Load()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	if _, err := search.Search(ctx, sc, "sharkbite proxy check "+randomToken()[:8], ""); err != nil {
+		return ProxyCheck{}, err
+	}
+	time.Sleep(time.Second) // let connections still being opened arrive
+	n := s.Requests.Load() - before
+	return ProxyCheck{Used: n > 0, Connections: n}, nil
+}

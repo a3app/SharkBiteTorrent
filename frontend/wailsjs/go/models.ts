@@ -267,6 +267,20 @@ export namespace main {
 		}
 	}
 	
+	export class ProxyCheck {
+	    used: boolean;
+	    connections: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProxyCheck(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.used = source["used"];
+	        this.connections = source["connections"];
+	    }
+	}
 	export class ProxyStatus {
 	    enabled: boolean;
 	    running: boolean;

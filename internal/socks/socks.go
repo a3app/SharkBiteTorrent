@@ -12,6 +12,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,6 +23,10 @@ type Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
 type Server struct {
 	Username, Password string
 	Dial               Dialer
+
+	// Requests counts CONNECT requests from clients that logged in, so the
+	// app can confirm a search server really sends its traffic through here.
+	Requests atomic.Int64
 
 	mu    sync.Mutex
 	ln    net.Listener
@@ -163,6 +168,7 @@ func (s *Server) negotiate(c net.Conn) (string, error) {
 		return "", errors.New("wrong credentials")
 	}
 	c.Write([]byte{1, 0})
+	s.Requests.Add(1)
 
 	// Request: ver cmd rsv atyp addr port
 	var req [4]byte

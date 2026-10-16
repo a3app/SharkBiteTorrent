@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { GetSearchStatus, AutoDetectSearch, ConnectSearch, DisconnectSearch, GetProxyStatus, SetSearchProxy } from '../wailsjs/go/main/App.js'
+  import { GetSearchStatus, AutoDetectSearch, ConnectSearch, DisconnectSearch, GetProxyStatus, SetSearchProxy, CheckSearchProxy } from '../wailsjs/go/main/App.js'
   import { ClipboardSetText } from '../wailsjs/runtime/runtime.js'
   import type { main } from '../wailsjs/go/models'
 
@@ -14,6 +14,20 @@
   let proxyBusy = $state(false)
   let showPass = $state(false)
   let detailsOpen = $state(false)
+  let check = $state<main.ProxyCheck | null>(null)
+  let checking = $state(false)
+
+  async function runCheck() {
+    checking = true
+    check = null
+    onError('')
+    try {
+      check = await CheckSearchProxy()
+    } catch (e) {
+      onError(String(e))
+    }
+    checking = false
+  }
 
   GetSearchStatus().then(s => (status = s))
   $effect(() => {
@@ -31,6 +45,7 @@
     try {
       proxy = await SetSearchProxy(on)
       detailsOpen = proxy.manual
+      check = null
     } catch (e) {
       onError(String(e))
       proxy = await GetProxyStatus()
@@ -84,6 +99,20 @@
           <button type="button" class="link" onclick={() => setProxy(true)} disabled={proxyBusy}>Set it again</button>
         </p>
       {/if}
+      <div class="row">
+        <button onclick={runCheck} disabled={checking}>{checking ? 'Checking…' : "Check it's working"}</button>
+        {#if check?.used}
+          <span class="ok small">
+            ✓ {name(status.kind)}'s test search went through the VPN ({check.connections} connection{check.connections === 1 ? '' : 's'}).
+          </span>
+        {:else if check}
+          <span class="warn small">
+            ⚠ {name(status.kind)} searched without using the proxy.
+            {proxy.manual ? 'Check the Proxy settings on its page (values below) and click Apply server settings.' : ''}
+            It needs at least one site added to search.
+          </span>
+        {/if}
+      </div>
       <details class="small" bind:open={detailsOpen}>
         <summary class="muted">Proxy details</summary>
         <div class="grid">

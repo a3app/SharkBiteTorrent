@@ -43,13 +43,16 @@ func TestProxy(t *testing.T) {
 	if body, err := get("u", "secret"); err != nil || body != "hello" {
 		t.Fatalf("through proxy: %q %v", body, err)
 	}
+	if s.Requests.Load() != 1 {
+		t.Errorf("requests counted: %d", s.Requests.Load())
+	}
 	if len(dialed) != 1 || dialed[0] != site.Listener.Addr().String() {
 		t.Errorf("dialed %v", dialed)
 	}
 	if _, err := get("u", "wrong"); err == nil {
 		t.Error("wrong password was accepted")
 	}
-	if len(dialed) != 1 {
-		t.Error("dialed out for an unauthenticated client")
+	if len(dialed) != 1 || s.Requests.Load() != 1 {
+		t.Error("dialed out for (or counted) an unauthenticated client")
 	}
 }
