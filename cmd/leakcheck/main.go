@@ -106,6 +106,11 @@ func run() int {
 
 	var watched *pidSet
 	allowed := map[string]bool{} // "udp ip:port" of the WireGuard endpoint
+	// Control: a connection of our own (to this computer) that the audit log
+	// must record. It proves auditing works, so silence from the app means
+	// clean rather than "not logged". (A running app's VPN connection
+	// started before the check, so it logs no new event.)
+	control := controlConnection()
 	if *app {
 		watched, err = watchApp(*secs, allowed)
 	} else {
@@ -125,6 +130,14 @@ func run() int {
 		return fatalCode("reading the connection log: " + err.Error())
 	}
 	lookups, dnsErr := dnsEvents(start, watched)
+	controlSeen := false
+	if ownConns, err := connectionEvents(start, newPIDSet(os.Getpid())); err == nil {
+		for _, c := range ownConns {
+			if c.dst == control || strings.HasSuffix(control, ":"+portOf(c.dst)) {
+				controlSeen = true
+			}
+		}
+	}
 
 	var leaks []string
 	seenTunnel := false
@@ -156,10 +169,14 @@ func run() int {
 		}
 		return 1
 	}
-	if !seenTunnel {
-		// Not even the tunnel's own traffic was logged: the check didn't
-		// actually see anything, so it can't claim a pass.
-		fmt.Println("FAIL: no connection events were recorded for the watched processes, so nothing was verified")
+	if !controlSeen {
+		fmt.Println("FAIL: the audit log didn't record the check's own test connection, so nothing was verified")
+		return 1
+	}
+	if !*app && !seenTunnel {
+		// The engine run starts its tunnel during the check, so its traffic
+		// must show up.
+		fmt.Println("FAIL: the tunnel's own traffic wasn't recorded, so nothing was verified")
 		return 1
 	}
 	if dnsErr != nil {
@@ -261,6 +278,30 @@ func watchApp(secs int, allowed map[string]bool) (*pidSet, error) {
 		time.Sleep(time.Second)
 	}
 	return set, nil
+}
+
+// controlConnection makes one loopback TCP connection and returns the
+// listening address it connected to.
+func controlConnection() string {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return ""
+	}
+	defer ln.Close()
+	go func() {
+		if c, err := ln.Accept(); err == nil {
+			c.Close()
+		}
+	}()
+	if c, err := net.Dial("tcp", ln.Addr().String()); err == nil {
+		c.Close()
+	}
+	return ln.Addr().String()
+}
+
+func portOf(hostport string) string {
+	_, p, _ := net.SplitHostPort(hostport)
+	return p
 }
 
 // --- auditing on/off ---

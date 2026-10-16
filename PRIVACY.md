@@ -27,6 +27,8 @@ Normally everything below goes through the VPN. The exceptions are spelled out: 
 - **GitHub**, to check for new versions: about once a day through the VPN, and you can turn this off in Settings. A manual *Check for updates* while the VPN is down, or any check with *No VPN* chosen, uses your normal connection. When a new version is available, its release notes are also loaded from `raw.githubusercontent.com` the same way. The Microsoft Store version gets updates from the Store instead and doesn't check GitHub.
 - **Your own Prowlarr or Jackett**, only if you set up search. Downloading a search result goes through your Prowlarr/Jackett, or through the VPN for links to other sites (directly with *No VPN*). If you turn on the search proxy, the app changes Prowlarr's proxy setting through Prowlarr's API, and changes it back when you turn the proxy off.
 
+The app's window is drawn by Microsoft WebView2 (the engine of Microsoft Edge). The app turns off WebView2's own background connections (proxy auto-discovery, Edge configuration and component updates, metrics) and its writing suggestions and spellcheck (which would send what you type to Microsoft), so the window itself doesn't contact anyone. Windows may still update the WebView2 runtime through its own update service, outside the app.
+
 None of these connections carry information about you to the developers.
 
 ## Links in the app
