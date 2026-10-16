@@ -559,7 +559,8 @@ func descendants(start time.Time, root int) (*pidSet, error) {
 }
 
 func parseHexPID(s string) (int, error) {
-	n, err := strconv.ParseInt(strings.TrimPrefix(strings.ToLower(s), "0x"), 16, 64)
+	// Windows process IDs are 32-bit.
+	n, err := strconv.ParseUint(strings.TrimPrefix(strings.ToLower(s), "0x"), 16, 32)
 	return int(n), err
 }
 
