@@ -23,7 +23,8 @@
   let removing = $state<engine.Status | null>(null)
   let deleteFiles = $state(false)
 
-  const connected = $derived(vpn.state === 'connected')
+  // "off" is the user's explicit No VPN choice; the engine runs either way.
+  const connected = $derived(vpn.state === 'connected' || vpn.state === 'off')
   const sel = $derived(torrents.find(t => t.hash === selected))
   const totalDown = $derived(torrents.reduce((s, t) => s + t.downRate, 0))
   const totalUp = $derived(torrents.reduce((s, t) => s + t.upRate, 0))
@@ -207,6 +208,10 @@
         </span>
         {#if vpn.error}<span class="warn" title={vpn.error}>⚠ check failed</span>{/if}
         {#if vpn.warning}<span class="warn" title={vpn.warning}>⚠ no port forwarding</span>{/if}
+      {:else if vpn.state === 'off'}
+        <span class="text" title="Chosen in Settings → VPN. Peers and trackers see your real IP address.">
+          <b>VPN off</b> · torrents use your normal connection
+        </span>
       {:else if vpn.state === 'connecting'}
         <span class="text"><b>Connecting {vpn.name || 'VPN'}…</b> Torrents start once the tunnel is verified.</span>
       {:else}
@@ -398,6 +403,8 @@
   .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--warn); }
   .vpn.connected .dot { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
   .vpn.error .dot { background: var(--err); }
+  .vpn.off .dot { background: var(--warn); }
+  .vpn.off b { color: var(--warn); }
   .vpn.connecting .dot { animation: pulse 1s infinite alternate; }
   @keyframes pulse { to { opacity: 0.3; } }
   .totals { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }

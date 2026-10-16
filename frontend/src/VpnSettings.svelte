@@ -218,6 +218,18 @@
   {/if}
 </div>
 
+<label class="radio">
+  <input type="radio" bind:group={s.vpnProvider} value="none" />
+  <span><b>No VPN</b> <span class="muted">use your normal connection, e.g. if your router or computer already runs a VPN.</span></span>
+</label>
+{#if s.vpnProvider === 'none'}
+  <div class="sub nowarn">
+    ⚠ Peers and trackers will see your real IP address. Only choose this if a VPN already covers this computer,
+    or you only download things that are legal to share. The app never switches to this on its own: if a VPN fails,
+    downloads stop until it's fixed.
+  </div>
+{/if}
+
 <p class="muted small">🔒 Sign-ins, keys and imported configs are encrypted on this computer and readable only by your user account.</p>
 
 <style>
@@ -233,6 +245,7 @@
   .muted { color: var(--muted); }
   .small { font-size: 12px; margin: 4px 0 0; }
   .note { color: var(--warn); margin: 10px 0 0; font-size: 13px; }
+  .nowarn { color: var(--warn); font-size: 13px; max-width: 520px; }
   .ok { color: var(--ok); }
   .link { background: none; border: none; padding: 0; color: var(--accent); text-decoration: underline; }
   .check { display: flex; align-items: center; gap: 8px; margin-top: 8px; cursor: pointer; }

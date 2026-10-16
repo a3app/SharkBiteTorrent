@@ -39,6 +39,7 @@ It works out of the box with **free Cloudflare WARP**, so there's protection fro
 - 🔓 **Automatic port forwarding with PIA**: other peers can connect to you, which means much better seeding. The forwarding is renewed every 15 minutes.
 - 📄 **Import any WireGuard `.conf` file**: works with any provider (Proton, AirVPN, …), with an optional forwarded port.
 - 🛑 **Kill switch by design**: the torrent engine starts only after the tunnel is verified (exit IP checked) and has no other network path.
+- 🚫 **No VPN, if you choose it**: for people whose router or computer already runs a VPN (or who only download legal content). It's an explicit choice in Settings with a warning, the header shows an amber **VPN off**, and the app never switches to it by itself: if a VPN fails, downloads stop. The Prowlarr/Jackett proxy refuses connections in this mode; Prowlarr keeps searching on its own connection if the proxy is off.
 - 🔒 **Encrypted secrets**: WARP keys, VPN sign-ins and imported configs are encrypted on disk.
 
 **Torrents**
@@ -118,6 +119,7 @@ We checked this with the OS's own socket list: while downloading, the app's **on
 | **Per-user installer (no admin)** | Matches the per-user magnet registration, avoids a UAC prompt, and upgrades in place. |
 | **Linux release built on Ubuntu 22.04** | Building against older system libraries means one binary runs on current distros (CachyOS/Arch, Fedora) and older ones (Debian, Ubuntu LTS). The Arch package wraps that same binary. |
 | **A `nofunding` build flag** | The funding is optional for users, so removing it shouldn't need code changes. One flag strips the sponsor button and referral links, and stops the updater from installing the official (funded) release over it. |
+| **"No VPN" is a separate engine path, never a fallback** | VPN mode builds the torrent client with OS sockets disabled and only tunnel-backed dialers; "No VPN" builds a plain client instead. The two never mix, so a VPN failure can't turn into a direct connection. |
 | **A local proxy for Prowlarr/Jackett, not a system-wide VPN** | The point of the app is that nothing else on the computer is affected. A proxy lets the search server opt in to the tunnel, and it fails closed: no app, no searches. |
 | **Search through Prowlarr or Jackett, with no sites built in** | Bundling scrapers for torrent sites would make the app look like a piracy tool and break whenever a site changes. Prowlarr and Jackett are maintained by their own communities, and users choose their own sources (the same model as qBittorrent's search plugins). |
 

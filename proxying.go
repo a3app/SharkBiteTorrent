@@ -67,7 +67,9 @@ func (c proxyConfig) search() search.Proxy {
 	return search.Proxy{Host: proxyHost, Port: c.Port, Username: c.Username, Password: c.Password}
 }
 
-// dialTunnel is the proxy's way out: only ever through the VPN.
+// dialTunnel is the proxy's way out: only ever through the VPN. With "No
+// VPN" chosen it refuses too, so a proxied Prowlarr never quietly switches
+// to the real IP; Prowlarr without the proxy keeps working on its own.
 func (a *App) dialTunnel(ctx context.Context, network, addr string) (net.Conn, error) {
 	a.mu.Lock()
 	tun := a.tun
@@ -76,6 +78,24 @@ func (a *App) dialTunnel(ctx context.Context, network, addr string) (net.Conn, e
 		return nil, errors.New("VPN not connected")
 	}
 	return tun.DialContext(ctx, network, addr)
+}
+
+// directMode reports whether the user chose "No VPN" and the engine runs on
+// the normal network.
+func (a *App) directMode() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.vpn.Provider == "none" && a.vpn.State == "off"
+}
+
+// searchDial is how search downloads reach hosts other than the user's
+// Prowlarr/Jackett: through the VPN, or directly when "No VPN" is chosen.
+func (a *App) searchDial(ctx context.Context, network, addr string) (net.Conn, error) {
+	if a.directMode() {
+		var d net.Dialer
+		return d.DialContext(ctx, network, addr)
+	}
+	return a.dialTunnel(ctx, network, addr)
 }
 
 // startProxy runs the proxy if it's turned on. It keeps running across VPN
@@ -139,6 +159,10 @@ func (a *App) GetProxyStatus() ProxyStatus {
 		return st
 	}
 	st.Host, st.Port, st.Username, st.Password = proxyHost, c.Port, c.Username, c.Password
+	if a.directMode() && st.Error == "" {
+		st.Error = "The VPN is turned off (No VPN), so searches through this proxy fail instead of using your real IP. " +
+			"Turn this option off to let it search over your normal connection."
+	}
 	if sc, ok := a.searchConfig(); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

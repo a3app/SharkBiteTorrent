@@ -25,6 +25,7 @@ func main() {
 	del := flag.Bool("delete", false, "remove the torrent and its files at the end")
 	recheck := flag.Bool("recheck", false, "verify existing data first, as the app does after a restart")
 	dirFlag := flag.String("dir", "", "download folder (default: a temp folder)")
+	direct := flag.Bool("direct", false, "no VPN: use the normal network (the app's No VPN mode)")
 	state := flag.String("state", "", "folder for the progress database (default: in memory)")
 	flag.Parse()
 	if flag.NArg() != 1 {
@@ -32,32 +33,35 @@ func main() {
 		os.Exit(2)
 	}
 
-	dir, _ := os.UserConfigDir()
-	acc, err := warp.LoadOrRegister(filepath.Join(dir, "SharkBiteTorrent", "warp.json"))
-	if err != nil {
-		fmt.Println("register:", err)
-		os.Exit(1)
+	var t *tunnel.Tunnel // nil with -direct: the engine uses the normal network
+	if !*direct {
+		dir, _ := os.UserConfigDir()
+		acc, err := warp.LoadOrRegister(filepath.Join(dir, "SharkBiteTorrent", "warp.json"))
+		if err != nil {
+			fmt.Println("register:", err)
+			os.Exit(1)
+		}
+		t, err = tunnel.Start(tunnel.Config{
+			PrivateKey:    acc.PrivateKey,
+			PeerPublicKey: acc.PeerPublicKey,
+			Endpoint:      acc.Endpoint,
+			Addresses:     []string{acc.AddressV4, acc.AddressV6},
+			DNS:           []string{"1.1.1.1", "1.0.0.1"},
+		})
+		if err != nil {
+			fmt.Println("tunnel:", err)
+			os.Exit(1)
+		}
+		defer t.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		tr, err := t.CheckTrace(ctx)
+		cancel()
+		if err != nil {
+			fmt.Println("trace:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("tunnel up, exit IP %s warp=%s\n", tr.IP, tr.Warp)
 	}
-	t, err := tunnel.Start(tunnel.Config{
-		PrivateKey:    acc.PrivateKey,
-		PeerPublicKey: acc.PeerPublicKey,
-		Endpoint:      acc.Endpoint,
-		Addresses:     []string{acc.AddressV4, acc.AddressV6},
-		DNS:           []string{"1.1.1.1", "1.0.0.1"},
-	})
-	if err != nil {
-		fmt.Println("tunnel:", err)
-		os.Exit(1)
-	}
-	defer t.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	tr, err := t.CheckTrace(ctx)
-	cancel()
-	if err != nil {
-		fmt.Println("trace:", err)
-		os.Exit(1)
-	}
-	fmt.Printf("tunnel up, exit IP %s warp=%s\n", tr.IP, tr.Warp)
 
 	out := filepath.Join(os.TempDir(), "sharkbite-enginecheck")
 	if *dirFlag != "" {

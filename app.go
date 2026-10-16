@@ -49,7 +49,7 @@ type App struct {
 }
 
 type VpnStatus struct {
-	State    string `json:"state"` // connecting, connected, error
+	State    string `json:"state"` // connecting, connected, error, off ("No VPN" chosen)
 	Provider string `json:"provider"`
 	Name     string `json:"name"`   // display name: "WARP", "Mullvad", "WireGuard"
 	Server   string `json:"server"` // server picked by an account provider
@@ -63,7 +63,7 @@ type VpnStatus struct {
 
 type Settings struct {
 	DownloadDir   string `json:"downloadDir"`
-	VpnProvider   string `json:"vpnProvider"`   // "warp", "account" or "custom"
+	VpnProvider   string `json:"vpnProvider"`   // "warp", "account", "custom" or "none" (no VPN)
 	ForwardedPort int    `json:"forwardedPort"` // custom only; accounts forward automatically
 	// AccountProvider/AccountRegion apply when VpnProvider is "account".
 	// An empty region means a server in the user's own country.
@@ -196,6 +196,12 @@ func (a *App) connect() {
 		return
 	}
 	set := a.settings
+	if set.VpnProvider == "none" {
+		a.vpn = VpnStatus{State: "connecting", Provider: "none", Name: "No VPN"}
+		a.mu.Unlock()
+		a.connectDirect(set)
+		return
+	}
 	name := "WARP"
 	switch set.VpnProvider {
 	case "custom":
@@ -305,15 +311,42 @@ func (a *App) connect() {
 		return
 	}
 
+	st := VpnStatus{State: "connected", Provider: set.VpnProvider, Name: name,
+		ExitIP: tr.IP, Location: tr.Location, Colo: tr.Colo, Port: port, Warning: pfWarning}
+	if conn != nil {
+		st.Server = conn.Server
+	}
+	mctx := a.startEngine(tun, eng, st)
+	go a.monitor(mctx, tun)
+	if keepalive != nil {
+		go a.keepPortForward(mctx, keepalive, every)
+	}
+}
+
+// connectDirect starts the engine on the normal network, for "No VPN". It
+// only runs when the user picked that; a failing VPN never falls back here.
+func (a *App) connectDirect(set Settings) {
+	eng, err := engine.New(nil, engine.Options{
+		DownLimit: set.DownLimitKB * 1024,
+		UpLimit:   set.UpLimitKB * 1024,
+		StateDir:  a.configDir,
+	})
+	if err != nil {
+		a.setVpn(VpnStatus{State: "error", Provider: "none", Name: "No VPN", Error: err.Error()})
+		return
+	}
+	a.startEngine(nil, eng, VpnStatus{State: "off", Provider: "none", Name: "No VPN"})
+}
+
+// startEngine records the running engine, restores saved and pending
+// torrents and starts background work. The returned context ends when the
+// engine is stopped.
+func (a *App) startEngine(tun *tunnel.Tunnel, eng *engine.Engine, st VpnStatus) context.Context {
 	mctx, stop := context.WithCancel(context.Background())
 	a.mu.Lock()
 	a.tun, a.eng, a.stopMonitor = tun, eng, stop
 	a.verifyCtx = mctx
-	a.vpn = VpnStatus{State: "connected", Provider: set.VpnProvider, Name: name,
-		ExitIP: tr.IP, Location: tr.Location, Colo: tr.Colo, Port: port, Warning: pfWarning}
-	if conn != nil {
-		a.vpn.Server = conn.Server
-	}
+	a.vpn = st
 	saved := append([]savedTorrent(nil), a.saved...)
 	pending := a.pending
 	a.pending = nil
@@ -330,12 +363,9 @@ func (a *App) connect() {
 			a.notifyError(err)
 		}
 	}
-	go a.monitor(mctx, tun)
 	go a.autoCheckUpdate()
 	go a.scanLoop(mctx)
-	if keepalive != nil {
-		go a.keepPortForward(mctx, keepalive, every)
-	}
+	return mctx
 }
 
 func (a *App) warpPath() string { return filepath.Join(a.configDir, "warp.json") }
@@ -704,7 +734,7 @@ func (a *App) SaveSettings(s Settings) error {
 	if s.DownloadDir == "" {
 		return errors.New("download folder can't be empty")
 	}
-	if s.VpnProvider != "custom" && s.VpnProvider != "account" {
+	if s.VpnProvider != "custom" && s.VpnProvider != "account" && s.VpnProvider != "none" {
 		s.VpnProvider = "warp"
 	}
 	if s.VpnProvider == "account" && a.account(s.AccountProvider) == nil {

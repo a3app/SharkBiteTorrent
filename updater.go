@@ -61,7 +61,7 @@ func (a *App) updateClient(allowDirect bool) (*http.Client, bool, error) {
 		c.Timeout = 10 * time.Minute // installer downloads
 		return c, false, nil
 	}
-	if !allowDirect {
+	if !allowDirect && !a.directMode() {
 		return nil, false, errors.New("VPN not connected")
 	}
 	return &http.Client{Timeout: 10 * time.Minute}, true, nil
@@ -137,7 +137,8 @@ func newerCore(a, b string) bool {
 }
 
 // autoCheckUpdate runs after the VPN connects: at most once per period,
-// through the tunnel only, and only if the user hasn't turned it off.
+// through the tunnel only (or directly if the user chose "No VPN"), and only
+// if the user hasn't turned it off.
 func (a *App) autoCheckUpdate() {
 	a.mu.Lock()
 	s := a.settings

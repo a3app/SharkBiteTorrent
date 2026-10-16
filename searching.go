@@ -111,7 +111,7 @@ func (a *App) AddSearchResult(r search.Result) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	c, _ := a.searchConfig()
-	src, tmp, err := search.Fetch(ctx, c, r, a.dialTunnel)
+	src, tmp, err := search.Fetch(ctx, c, r, a.searchDial)
 	if err != nil {
 		return err
 	}

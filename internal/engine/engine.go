@@ -82,8 +82,17 @@ type entry struct {
 	downRate, upRate   int64
 }
 
-// New starts a torrent client bound entirely to tun.
+// systemResolver is the resolver the process started with, restored when the
+// engine runs without the VPN (New points the default at the tunnel).
+var systemResolver = net.DefaultResolver
+
+// New starts a torrent client bound entirely to tun. With a nil tun (the
+// user chose "No VPN") it uses the computer's normal network instead; see
+// newDirect. The VPN path below never falls back to OS sockets.
 func New(tun *tunnel.Tunnel, opts Options) (*Engine, error) {
+	if tun == nil {
+		return newDirect(opts)
+	}
 	tnet := tun.Net()
 
 	// Force every DNS lookup in this process through the tunnel, regardless
@@ -188,6 +197,49 @@ func New(tun *tunnel.Tunnel, opts Options) (*Engine, error) {
 	}
 	e.dht = ds
 	cl.AddDhtServer(torrent.AnacrolixDhtServerWrapper{Server: ds})
+	return e, nil
+}
+
+// newDirect starts the client on the computer's own network, for users who
+// chose "No VPN" (for example because their router or system already runs
+// one). It uses the library's normal sockets: TCP, DHT and UDP trackers, plus
+// UPnP/NAT-PMP so peers can connect in.
+func newDirect(opts Options) (*Engine, error) {
+	net.DefaultResolver = systemResolver
+
+	e := &Engine{
+		down:    rate.NewLimiter(unlimited, 0),
+		up:      rate.NewLimiter(unlimited, 0),
+		entries: map[metainfo.Hash]*entry{},
+	}
+	e.SetLimits(opts.DownLimit, opts.UpLimit)
+	if opts.StateDir != "" {
+		pc, err := storage.NewBoltPieceCompletion(opts.StateDir)
+		if err != nil {
+			return nil, fmt.Errorf("opening download progress database: %w", err)
+		}
+		e.pc = pc
+	} else {
+		e.pc = storage.NewMapPieceCompletion()
+	}
+
+	cfg := torrent.NewDefaultClientConfig()
+	cfg.Seed = true
+	cfg.EstablishedConnsPerTorrent = 200
+	cfg.PieceHashersPerTorrent = 16 // see New
+	cfg.DataDir = os.TempDir()
+	cfg.DownloadRateLimiter = e.down
+	cfg.UploadRateLimiter = e.up
+	cfg.DisableUTP = true // as in VPN mode: no uTP (see README)
+	cfg.DisableWebtorrent = true
+	cfg.ListenPort = 0 // a free port; UPnP maps whichever we get
+
+	cl, err := torrent.NewClient(cfg)
+	if err != nil {
+		e.pc.Close()
+		return nil, fmt.Errorf("torrent client: %w", err)
+	}
+	e.cl = cl
 	return e, nil
 }
 
