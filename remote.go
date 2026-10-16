@@ -568,7 +568,7 @@ func (a *App) remoteHandler(rs *remoteServer) http.Handler {
 		if a.ctx != nil {
 			runtime.EventsEmit(a.ctx, "remote-paired")
 			// Make a pairing visible, in case it wasn't you.
-			runtime.EventsEmit(a.ctx, "error", fmt.Sprintf(
+			runtime.EventsEmit(a.ctx, "notice", fmt.Sprintf(
 				"A phone (%s, %s) just paired with the remote control. Not you? Remove it in Settings → Remote control.", name, ip))
 		}
 		writeJSON(w, map[string]string{"token": token})

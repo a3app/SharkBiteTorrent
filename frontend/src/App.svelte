@@ -18,6 +18,7 @@
   let selected = $state<string | null>(null)
   let magnet = $state('')
   let error = $state('')
+  let notice = $state('') // worth seeing, not an error (e.g. a phone paired)
   let settings = $state<main.Settings | null>(null)
   let showSettings = $state(false)
   let searching = $state(false) // the search view replaces the torrent list
@@ -48,6 +49,7 @@
     const id = setInterval(refresh, 1000)
     const off = EventsOn('error', (msg: string) => (error = msg))
     const offUpdate = EventsOn('update-available', (info: main.UpdateInfo) => (update = info))
+    const offNotice = EventsOn('notice', (msg: string) => (notice = msg))
     // Wails only attaches its window drop listeners when OnFileDrop is called
     // from JS. Dropped file paths are then handled in Go (runtime.OnFileDrop in
     // app.go), so the JS callback has nothing to do. useDropTarget=false: the
@@ -65,6 +67,7 @@
       clearInterval(id)
       off()
       offUpdate()
+      offNotice()
     }
   })
 
@@ -276,6 +279,7 @@
     </div>
   {/if}
 
+  {#if notice}<div class="notice" role="status"><span>{notice}</span> <button onclick={() => (notice = '')} aria-label="Dismiss">✕</button></div>{/if}
   {#if error}<div class="error" role="alert"><span>{error}</span> <button onclick={() => (error = '')} aria-label="Dismiss">✕</button></div>{/if}
 
   {#if searching}
@@ -460,6 +464,12 @@
     display: flex; justify-content: space-between; align-items: center; gap: 8px; user-select: text;
   }
   .error button { padding: 2px 8px; background: none; border: none; }
+  .notice {
+    margin: 0 14px 8px; padding: 8px 12px; border-radius: 6px;
+    background: rgba(210, 153, 34, 0.12); border: 1px solid rgba(210, 153, 34, 0.45);
+    display: flex; justify-content: space-between; align-items: center; gap: 8px; user-select: text;
+  }
+  .notice button { padding: 2px 8px; background: none; border: none; }
 
   main { flex: 1; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--border); }
   .list { flex: 1; min-height: 0; overflow: auto; }
