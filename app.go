@@ -189,7 +189,52 @@ func (a *App) setVpn(s VpnStatus) {
 
 // connect starts the configured VPN, verifies it, then starts the torrent
 // engine. Nothing is downloaded until this succeeds.
-func (a *App) connect() {
+func (a *App) connect() { a.connectPrepared(nil) }
+
+// preparedConn is what connecting needs from outside the tunnel being
+// built: the real IP (to confirm the new tunnel's exit differs) and, for
+// VPN accounts, the provider's connection details.
+type preparedConn struct {
+	set          Settings // what it was prepared for
+	realIP, home string
+	conn         *vpnprov.Connection
+}
+
+// prepareConn does the steps of connecting that talk to the provider's API
+// (sign-in token, server choice, key registration). Provider API calls go
+// through whatever tunnel is up at the time (vpnprov.SetTunnel), so
+// Reconnect runs this before closing the old tunnel.
+func (a *App) prepareConn(set Settings) (*preparedConn, error) {
+	p := &preparedConn{set: set}
+	// Only WARP reports warp=on, so for other providers we confirm the tunnel
+	// by checking that the exit IP differs from the real one. The real
+	// connection's country also picks the automatic server location.
+	if set.VpnProvider != "warp" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if tr, err := tunnel.DirectTrace(ctx); err == nil {
+			p.realIP, p.home = tr.IP, tr.Location
+		}
+		cancel()
+	}
+	if set.VpnProvider == "account" {
+		prov, ok := vpnprov.Get(set.AccountProvider)
+		acc := a.account(set.AccountProvider)
+		if !ok || acc == nil {
+			return nil, errors.New("not signed in to a VPN account; open Settings to sign in")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		c, err := prov.Connect(ctx, acc, set.AccountRegion, p.home)
+		if err != nil {
+			return nil, err
+		}
+		p.conn = c
+	}
+	return p, nil
+}
+
+// connectPrepared is connect, optionally with prepareConn already done.
+func (a *App) connectPrepared(prep *preparedConn) {
 	a.mu.Lock()
 	if a.vpn.State == "connecting" || a.eng != nil {
 		a.mu.Unlock()
@@ -218,20 +263,20 @@ func (a *App) connect() {
 		a.setVpn(VpnStatus{State: "error", Provider: set.VpnProvider, Name: name, Error: err.Error()})
 	}
 
-	// Only WARP reports warp=on, so for other providers we confirm the tunnel
-	// by checking that the exit IP differs from the real one. The real
-	// connection's country also picks the automatic server location.
-	var realIP, home string
-	if set.VpnProvider != "warp" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if tr, err := tunnel.DirectTrace(ctx); err == nil {
-			realIP, home = tr.IP, tr.Location
-		}
-		cancel()
+	if prep != nil && (prep.set.VpnProvider != set.VpnProvider ||
+		prep.set.AccountProvider != set.AccountProvider || prep.set.AccountRegion != set.AccountRegion) {
+		prep = nil // settings changed meanwhile
 	}
+	if prep == nil {
+		var err error
+		if prep, err = a.prepareConn(set); err != nil {
+			fail(err)
+			return
+		}
+	}
+	realIP, conn := prep.realIP, prep.conn
 
 	var cfg tunnel.Config
-	var conn *vpnprov.Connection
 	switch set.VpnProvider {
 	case "custom":
 		data, err := secret.ReadFile(a.customConfPath())
@@ -244,20 +289,7 @@ func (a *App) connect() {
 			return
 		}
 	case "account":
-		p, ok := vpnprov.Get(set.AccountProvider)
-		acc := a.account(set.AccountProvider)
-		if !ok || acc == nil {
-			fail(errors.New("not signed in to a VPN account; open Settings to sign in"))
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		c, err := p.Connect(ctx, acc, set.AccountRegion, home)
-		cancel()
-		if err != nil {
-			fail(err)
-			return
-		}
-		conn, cfg = c, c.Config
+		cfg = conn.Config
 	default:
 		acc, err := warp.LoadOrRegister(a.warpPath())
 		if err != nil {
@@ -507,8 +539,19 @@ func (a *App) GetVpnStatus() VpnStatus {
 // current settings. Torrents resume where they left off.
 func (a *App) Reconnect() {
 	go func() {
+		// Talk to the (new) provider's API through the current tunnel while
+		// it's still up, instead of over the normal connection after closing
+		// it. If that fails (the old tunnel may be why we're reconnecting),
+		// connect prepares again on its own.
+		a.mu.Lock()
+		set, hadTunnel := a.settings, a.tun != nil
+		a.mu.Unlock()
+		var prep *preparedConn
+		if hadTunnel && set.VpnProvider != "none" {
+			prep, _ = a.prepareConn(set)
+		}
 		a.disconnect()
-		a.connect()
+		a.connectPrepared(prep)
 	}()
 }
 

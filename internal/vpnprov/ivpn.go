@@ -49,7 +49,7 @@ func (ivpn) post(ctx context.Context, path string, body any, out any) (int, stri
 		return 0, "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := httpClient().Do(req)
+	resp, err := do(req)
 	if err != nil {
 		return 0, "", fmt.Errorf("couldn't reach IVPN: %w", err)
 	}

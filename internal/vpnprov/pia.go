@@ -60,7 +60,7 @@ func (pia) token(ctx context.Context, user, pass string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
-	resp, err := httpClient().Do(req)
+	resp, err := do(req)
 	if err != nil {
 		return "", fmt.Errorf("couldn't reach PIA: %w", err)
 	}
@@ -111,7 +111,7 @@ func (pia) regions(ctx context.Context) ([]piaRegion, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := httpClient().Do(req)
+	resp, err := do(req)
 	if err != nil {
 		return nil, fmt.Errorf("PIA server list: %w", err)
 	}
@@ -199,8 +199,9 @@ func (p pia) Connect(ctx context.Context, acc *Account, region, home string) (*C
 	if err != nil {
 		return nil, err
 	}
-	d := &net.Dialer{Timeout: 10 * time.Second}
-	hc := piaClient(srv.IP, srv.CN, d.DialContext)
+	// addKey registers our key with the chosen server: through the current
+	// tunnel when switching from another VPN, otherwise directly.
+	hc := piaClient(srv.IP, srv.CN, apiDial())
 	var wg struct {
 		Status     string   `json:"status"`
 		Message    string   `json:"message"`

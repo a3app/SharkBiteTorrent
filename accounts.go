@@ -43,6 +43,16 @@ func (a *App) GetVpnRegions(provider string) ([]vpnprov.Region, error) {
 	if !ok {
 		return nil, fmt.Errorf("unknown provider %q", provider)
 	}
+	// With no VPN connected this request would go out on the real
+	// connection. Only do that for a provider the user signed in to (they're
+	// about to connect to it, which shows it their IP anyway), not for every
+	// provider they click on while browsing Settings.
+	a.mu.Lock()
+	noTunnel, mode := a.tun == nil, a.settings.VpnProvider
+	a.mu.Unlock()
+	if noTunnel && mode != "none" && a.account(provider) == nil {
+		return []vpnprov.Region{}, nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	return p.Regions(ctx)

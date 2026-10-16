@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -120,18 +121,25 @@ func SetTunnel(dial func(ctx context.Context, network, addr string) (net.Conn, e
 	tunnelMu.Unlock()
 }
 
-// apiClient talks to provider APIs: through the tunnel if one is up (see
-// SetTunnel), otherwise over the normal connection with its own resolver
-// (the torrent engine points net.DefaultResolver into the tunnel). Each
-// request gets a fresh connection that's closed afterwards, so nothing
-// lingers.
-func apiClient() *http.Client {
+// apiDial dials through the tunnel if one is up (see SetTunnel), otherwise
+// directly.
+func apiDial() func(ctx context.Context, network, addr string) (net.Conn, error) {
 	tunnelMu.Lock()
 	dial := tunnelDial
 	tunnelMu.Unlock()
 	if dial == nil {
 		dial = (&net.Dialer{Timeout: 10 * time.Second, Resolver: &net.Resolver{}}).DialContext
 	}
+	return dial
+}
+
+// apiClient talks to provider APIs: through the tunnel if one is up (see
+// SetTunnel), otherwise over the normal connection with its own resolver
+// (the torrent engine points net.DefaultResolver into the tunnel). Each
+// request gets a fresh connection that's closed afterwards, so nothing
+// lingers.
+func apiClient() *http.Client {
+	dial := apiDial()
 	return &http.Client{
 		Timeout: 20 * time.Second,
 		Transport: &http.Transport{
@@ -187,7 +195,7 @@ func getJSON(ctx context.Context, hc *http.Client, url string, v any, setup ...f
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
-		return err
+		return hideURL(err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
@@ -195,6 +203,27 @@ func getJSON(ctx context.Context, hc *http.Client, url string, v any, setup ...f
 		return &httpError{resp.StatusCode, strings.TrimSpace(string(body))}
 	}
 	return json.Unmarshal(body, v)
+}
+
+// do sends a provider API request; errors never include the URL's path or
+// query, which can carry tokens (PIA's addKey?pt=…, getSignature?token=…).
+func do(req *http.Request) (*http.Response, error) {
+	resp, err := httpClient().Do(req)
+	return resp, hideURL(err)
+}
+
+// hideURL keeps only the scheme and host of the URL in an HTTP error, so
+// tokens in a request URL can't end up in messages shown to the user.
+func hideURL(err error) error {
+	var ue *url.Error
+	if err == nil || !errors.As(err, &ue) {
+		return err
+	}
+	short := ue.URL
+	if u, perr := url.Parse(ue.URL); perr == nil {
+		short = u.Scheme + "://" + u.Host
+	}
+	return &url.Error{Op: ue.Op, URL: short, Err: ue.Err}
 }
 
 type httpError struct {

@@ -47,7 +47,7 @@ func (mullvad) Login(ctx context.Context, creds map[string]string) (*Account, er
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := httpClient().Do(req)
+	resp, err := do(req)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't reach Mullvad: %w", err)
 	}
@@ -84,7 +84,7 @@ func (mullvad) Logout(ctx context.Context, acc *Account) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := httpClient().Do(req)
+	resp, err := do(req)
 	if err != nil {
 		return err
 	}
@@ -113,7 +113,7 @@ func (mullvad) Logout(ctx context.Context, acc *Account) error {
 			return err
 		}
 		auth(req)
-		resp, err := httpClient().Do(req)
+		resp, err := do(req)
 		if err != nil {
 			return err
 		}

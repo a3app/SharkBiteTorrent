@@ -295,8 +295,7 @@ links*.go                Sponsor and VPN sign-up links (links.go); the nofunding
 tray*.go                 Tray icon (per-OS files)
 updater*.go, release.pub In-app updates, checked against the signed release checksums
 cmd/releasekey           Maintainer tool: create/back up the signing key, sign and publish a release
-cmd/leakcheck            Release check: fails if anything leaves outside the VPN tunnel
-scripts/connlog.sh       Release check: logs the running app's connections outside the tunnel
+cmd/leakcheck            Release check (Windows, admin): every connection and DNS lookup outside the VPN tunnel fails it
 internal/tunnel          In-process WireGuard + netstack, .conf parser, exit-IP check
 internal/engine          anacrolix/torrent wired to the tunnel; files, limits, removal
 internal/warp            Cloudflare WARP registration (via wgcf)
@@ -342,7 +341,7 @@ We'd rather tell you upfront than have you find out later.
 
 **What never happens:**
 - No ads, no bundled software, no "recommended offers" in the installer.
-- **No telemetry or analytics.** The app never sends data to us; there is no server of ours for it to talk to. Its only connections are the torrent network (peers, trackers and web seeds, all through the VPN), your VPN provider's own API when you sign in or connect, Cloudflare's public trace page to check your exit IP, and GitHub to check for updates (through the VPN, about once a day; you can turn this off in Settings), plus your own Prowlarr or Jackett when you search. If you turn on the search proxy, the app changes Prowlarr's proxy setting through Prowlarr's API (and turns it off again when you switch the proxy off or disconnect search).
+- **No telemetry or analytics.** The app never sends data to us; there is no server of ours for it to talk to. Its only connections are the torrent network (through the VPN), your VPN provider's API (through the VPN when one is connected; directly only to the provider you're signing in to or connecting to while no VPN is up), Cloudflare's trace page to check your exit IP, GitHub for update checks and release notes (through the VPN by default; you can turn the daily check off), and your own Prowlarr or Jackett when you search. [PRIVACY.md](PRIVACY.md) lists exactly when each one can use your normal connection.
 - Your data, logins and download history are never sold or shared. See the [privacy policy](PRIVACY.md).
 
 Every link lives in one file, [`links.go`](links.go), so anyone can check exactly what the app links to. To build without any of it, use the `nofunding` build flag (see [Build without funding links](#build-without-funding-links)): no sponsor button, plain provider links and no referral labels. Because this is GPL software, you're free to change or remove anything else too.

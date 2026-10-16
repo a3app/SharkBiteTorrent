@@ -7,13 +7,14 @@
 </script>
 
 <div class="notes">
-  {#each notes as n (n.version)}
+  <!-- Keyed by position: a duplicated heading in CHANGELOG.md must not break rendering. -->
+  {#each notes as n, i (i)}
     <section>
       <h4>{n.version}{#if n.date}<span class="muted"> · {n.date}</span>{/if}</h4>
       {#each n.text ?? [] as p}
         <p>{@html p}</p>
       {/each}
-      {#each n.groups ?? [] as g (g.title)}
+      {#each n.groups ?? [] as g, j (j)}
         <div class="group">{g.title}</div>
         <ul>
           {#each g.items ?? [] as item}

@@ -8,7 +8,11 @@ What changed in each release of Shark BiteTorrent. The release notes on GitHub a
 - **Release notes in the app.** When an update is available, *What's new* in the update banner (and in Settings → About) lists every change since your version, right in the app. Settings → About also has *What's new* for the version you're running.
 
 ### Fixed
-- **Privacy:** opening Settings → VPN no longer contacts a VPN provider over your normal connection. Server lists load only when *VPN account* is selected, and while any VPN is connected, provider requests (server lists, sign-in, sign-out) go through it. They go direct only when there's no tunnel yet, i.e. while connecting. Those direct connections are also closed right away instead of lingering. Found by an independent audit.
+- **Privacy:** opening Settings or browsing VPN providers no longer contacts any provider over your normal connection. Found by an independent audit.
+  - A provider's server list only loads once you've chosen *VPN account* and signed in to that provider.
+  - While a VPN is connected, requests to VPN providers (server lists, sign-in, sign-out) go through it. That includes switching providers: the new provider is set up through the old VPN before it's closed.
+  - With no VPN connected (the first connection, after a failed connection, or in *No VPN* mode), the only provider contacted directly is the one you're signing in to or connecting to, which sees your IP when you connect anyway. These direct connections now close right away instead of lingering.
+- Error messages from PIA no longer include its temporary access token.
 
 ## [0.2.30] - 2026-10-16
 

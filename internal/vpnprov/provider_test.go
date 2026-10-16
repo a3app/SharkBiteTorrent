@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -213,5 +214,44 @@ func TestLiveServerLists(t *testing.T) {
 		if err != nil || len(regions) < 10 {
 			t.Errorf("%s: %d regions, %v", id, len(regions), err)
 		}
+	}
+}
+
+func TestErrorsHideTokens(t *testing.T) {
+	// Nothing listens on port 1, so this fails with a *url.Error.
+	req, _ := http.NewRequest("GET", "https://127.0.0.1:1/addKey?pt=SECRET-TOKEN&pubkey=abc", nil)
+	_, err := do(req)
+	if err == nil || strings.Contains(err.Error(), "SECRET-TOKEN") || strings.Contains(err.Error(), "addKey") {
+		t.Fatalf("error leaks the URL: %v", err)
+	}
+	if !strings.Contains(err.Error(), "127.0.0.1:1") {
+		t.Errorf("error should still name the host: %v", err)
+	}
+	err = getJSON(context.Background(), apiClient(), "https://127.0.0.1:1/getSignature?token=SECRET-TOKEN", &struct{}{})
+	if err == nil || strings.Contains(err.Error(), "SECRET-TOKEN") {
+		t.Fatalf("getJSON error leaks the URL: %v", err)
+	}
+}
+
+func TestAPIUsesTunnelWhenSet(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{}`)) }))
+	defer srv.Close()
+	var viaTunnel int
+	SetTunnel(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		viaTunnel++
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
+	})
+	if err := getJSON(context.Background(), apiClient(), srv.URL, &struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := apiDial()(context.Background(), "tcp", srv.Listener.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	if viaTunnel != 2 {
+		t.Errorf("tunnel dials = %d, want 2", viaTunnel)
+	}
+	SetTunnel(nil)
+	if err := getJSON(context.Background(), apiClient(), srv.URL, &struct{}{}); err != nil || viaTunnel != 2 {
+		t.Errorf("after SetTunnel(nil): err=%v, tunnel dials=%d", err, viaTunnel)
 	}
 }

@@ -38,11 +38,12 @@
   const signedIn = $derived(!!accounts[s.accountProvider])
 
   // Load server locations for the selected provider.
-  // Only when "VPN account" is chosen: loading a provider's server list
-  // contacts that provider, which shouldn't happen just from opening Settings.
+  // Only when "VPN account" is chosen and you're signed in to the provider
+  // (the list is only shown then): loading it contacts that provider, which
+  // shouldn't happen just from opening Settings or browsing providers.
   $effect(() => {
     const id = s.accountProvider
-    if (s.vpnProvider !== 'account' || !id || id === regionsFor) return
+    if (s.vpnProvider !== 'account' || !signedIn || !id || id === regionsFor) return
     regionsFor = id
     regions = []
     GetVpnRegions(id)
