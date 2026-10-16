@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sharkbite/internal/search"
 	"strconv"
 	"strings"
 	"testing"
@@ -163,5 +164,30 @@ func TestRemoteStoreFormats(t *testing.T) {
 	}
 	if (lanNet{Gateway: "192.168.1.1", GatewayMAC: "11:22:33:44:55:66"}).same(*a.store.Home) {
 		t.Error("different router counted as home")
+	}
+}
+
+// Search results reach the phone without their links (which carry the
+// Prowlarr/Jackett API key), and downloading takes only an ID.
+func TestRemoteSearchResultsHideLinks(t *testing.T) {
+	_, rs, h := newTestRemote(t)
+	token := pairPhone(t, rs, h, "192.168.1.20:5000")
+	out := rs.keepResults([]search.Result{{
+		Title: "Debian", Size: 1, Seeders: 5,
+		Download: "http://localhost:9696/1/download?apikey=SECRET",
+		Magnet:   "http://localhost:9696/1/download?apikey=SECRET&link=x",
+	}})
+	b, _ := json.Marshal(out)
+	if len(out) != 1 || strings.Contains(string(b), "SECRET") || strings.Contains(string(b), "9696") {
+		t.Fatalf("phone sees links: %s", b)
+	}
+	if r, ok := rs.result(out[0].ID); !ok || r.Download == "" {
+		t.Errorf("result not kept on the computer")
+	}
+	// A made-up ID (or a whole result with a URL of the phone's choosing) is refused.
+	w := remoteRequest(h, "POST", "/api/search/add", "192.168.1.20:5000", "192.168.1.5:8732", token,
+		`{"id":"nope","download":"http://evil.example/x"}`)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "expired") {
+		t.Errorf("unknown id: %d %s", w.Code, w.Body.String())
 	}
 }

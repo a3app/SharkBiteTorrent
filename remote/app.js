@@ -282,7 +282,7 @@ function wire() {
         info.append(el('div', 'name', r.title))
         info.append(el('div', 'meta', [bytes(r.size), `${r.seeders} seeds`, r.indexer].join(' · ')))
         const btn = el('button', 'primary', 'Download')
-        btn.onclick = () => act(async () => { btn.disabled = true; await api('POST', '/api/search/add', r) }, 'Added.')
+        btn.onclick = () => act(async () => { btn.disabled = true; await api('POST', '/api/search/add', { id: r.id }) }, 'Added.')
         item.append(info, btn)
         box.append(item)
       }

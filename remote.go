@@ -92,6 +92,62 @@ type remoteServer struct {
 	pairFailures int // wrong codes against the current one, from anywhere
 	keyFails     map[string][]time.Time
 	codeFails    map[string][]time.Time
+
+	// Search results by ID. Their download links point at the user's
+	// Prowlarr/Jackett and contain its API key, so they stay on this
+	// computer: the phone only gets an ID, a title and numbers, and sends
+	// back the ID (so it also can't make the app fetch a URL of its choice).
+	results      map[string]search.Result
+	resultsSince map[string]time.Time
+}
+
+// phoneResult is a search result as the phone sees it.
+type phoneResult struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Size      int64  `json:"size"`
+	Seeders   int    `json:"seeders"`
+	Leechers  int    `json:"leechers"`
+	Indexer   string `json:"indexer"`
+	Published string `json:"published"`
+}
+
+const (
+	resultLifetime = 30 * time.Minute
+	maxResults     = 2000
+)
+
+// keepResults stores results for later and returns what the phone may see.
+func (rs *remoteServer) keepResults(res []search.Result) []phoneResult {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if rs.results == nil {
+		rs.results, rs.resultsSince = map[string]search.Result{}, map[string]time.Time{}
+	}
+	now := time.Now()
+	for id, t := range rs.resultsSince {
+		if now.Sub(t) > resultLifetime || len(rs.results)+len(res) > maxResults {
+			delete(rs.results, id)
+			delete(rs.resultsSince, id)
+		}
+	}
+	out := make([]phoneResult, 0, len(res))
+	for _, r := range res {
+		id := randomString(9)
+		rs.results[id], rs.resultsSince[id] = r, now
+		out = append(out, phoneResult{id, r.Title, r.Size, r.Seeders, r.Leechers, r.Indexer, r.Published})
+	}
+	return out
+}
+
+func (rs *remoteServer) result(id string) (search.Result, bool) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	r, ok := rs.results[id]
+	if ok && time.Since(rs.resultsSince[id]) > resultLifetime {
+		return search.Result{}, false
+	}
+	return r, ok
 }
 
 // RemoteStatus is what Settings shows.
@@ -640,17 +696,21 @@ func (a *App) remoteHandler(rs *remoteServer) http.Handler {
 		return errors.New("unknown action")
 	})
 	api("GET /api/search", func(w http.ResponseWriter, r *http.Request) error {
-		rs, err := a.SearchTorrents(r.URL.Query().Get("q"), r.URL.Query().Get("cat"))
+		res, err := a.SearchTorrents(r.URL.Query().Get("q"), r.URL.Query().Get("cat"))
 		if err != nil {
 			return err
 		}
-		writeJSON(w, rs)
+		writeJSON(w, rs.keepResults(res))
 		return nil
 	})
 	api("POST /api/search/add", func(w http.ResponseWriter, r *http.Request) error {
-		var res search.Result
-		if err := json.NewDecoder(r.Body).Decode(&res); err != nil {
+		var req struct{ ID string }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			return errors.New("bad request")
+		}
+		res, ok := rs.result(req.ID)
+		if !ok {
+			return errors.New("that search result has expired; search again")
 		}
 		return a.AddSearchResult(res)
 	})
