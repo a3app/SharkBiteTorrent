@@ -18,14 +18,15 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/skip2/go-qrcode"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/net/netutil"
 
 	"sharkbite/internal/search"
 	"sharkbite/internal/secret"
@@ -35,21 +36,23 @@ import (
 // and manage torrents on this computer. It's off by default.
 //
 // Security model:
-//   - It listens on the computer's own network (never inside the VPN
-//     tunnel, which can be reachable from the internet through a forwarded
-//     port) and only answers private addresses: 192.168.x.x, 10.x.x.x,
-//     172.16–31.x.x, IPv6 ULA/link-local, and this computer itself.
-//   - The Host header must be an IP address or "localhost", which stops DNS
-//     rebinding (a web page making your browser talk to it under its own
-//     domain name).
-//   - A phone pairs by scanning a QR code with a one-time code (5 minutes),
-//     and gets a long random access key, sent as an Authorization header.
-//     Pages on other sites can't read it or add that header, so they can't
-//     act on your behalf. Keys are stored only as hashes, encrypted.
-//   - Failed pairing/keys are rate-limited per address.
-//   - Plain HTTP: the user chose this for the home network (a self-signed
-//     HTTPS certificate would warn on every phone). Someone already on the
-//     Wi-Fi could in principle capture a key.
+//   - It only listens on real local networks (an interface whose default
+//     gateway has a hardware address: Wi-Fi or Ethernet, not Docker/WSL/
+//     Hyper-V adapters or overlay VPNs), never inside the app's VPN tunnel,
+//     and only answers private addresses.
+//   - Once a phone has paired, it only runs on that home network (same
+//     router), so a laptop on café or hotel Wi-Fi doesn't serve it there.
+//   - The Host header must be an IP address or "localhost" (no DNS
+//     rebinding). Pairing must be a JSON POST, which a web page can't send
+//     cross-site without a CORS preflight we never answer.
+//   - A phone pairs by scanning a QR code or typing an 8-character code (one
+//     use, 5 minutes) and gets a random access key, sent as an Authorization
+//     header; keys are stored only as hashes, encrypted. A valid key is never
+//     rate-limited; wrong keys and wrong codes are, separately.
+//   - Phones get only what the page shows: no VPN exit IP, forwarded port or
+//     download folders.
+//   - Plain HTTP: the owner chose this for the home network. Someone else on
+//     the Wi-Fi could read the traffic (torrent names, searches, the key).
 
 //go:embed remote/*
 var remoteFiles embed.FS
@@ -58,31 +61,45 @@ const (
 	defaultRemotePort = 8732
 	pairCodeLifetime  = 5 * time.Minute
 	maxTorrentUpload  = 10 << 20
+	maxRemoteConns    = 64
+	recheckNetwork    = 20 * time.Second
 )
 
 type remoteDevice struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
+	IP        string `json:"ip"` // where it paired from
 	TokenHash string `json:"tokenHash"`
 	Created   int64  `json:"created"`
 	LastSeen  int64  `json:"lastSeen"`
 }
 
+// remoteStore is remote.json (encrypted): the home network and the paired
+// phones. It's loaded once and kept in memory.
+type remoteStore struct {
+	Home    *lanNet        `json:"home"`
+	Devices []remoteDevice `json:"devices"`
+}
+
 type remoteServer struct {
-	srv  *http.Server
-	port int
+	srv   *http.Server
+	port  int
+	addrs []string // local addresses it listens on
 
 	mu           sync.Mutex
 	pairCode     string
 	pairUntil    time.Time
-	pairFailures int                    // wrong codes against the current one, from anywhere
-	failures     map[string][]time.Time // by client IP
+	pairFailures int // wrong codes against the current one, from anywhere
+	keyFails     map[string][]time.Time
+	codeFails    map[string][]time.Time
 }
 
 // RemoteStatus is what Settings shows.
 type RemoteStatus struct {
 	Enabled bool               `json:"enabled"`
 	Running bool               `json:"running"`
+	Paused  string             `json:"paused"` // why it isn't running although enabled
+	Home    string             `json:"home"`   // the home network's router, if paired
 	Port    int                `json:"port"`
 	URLs    []string           `json:"urls"`
 	Error   string             `json:"error"`
@@ -92,6 +109,7 @@ type RemoteStatus struct {
 type RemoteDeviceView struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
+	IP       string `json:"ip"`
 	Created  int64  `json:"created"`
 	LastSeen int64  `json:"lastSeen"`
 }
@@ -106,16 +124,37 @@ type RemotePairing struct {
 
 func (a *App) remotePath() string { return filepath.Join(a.configDir, "remote.json") }
 
-func (a *App) loadRemoteDevices() []remoteDevice {
-	var ds []remoteDevice
-	if data, err := secret.ReadFile(a.remotePath()); err == nil {
-		json.Unmarshal(data, &ds)
+// loadRemoteStore reads remote.json once. If it can't be read (e.g. a
+// locked keyring), the remote control stays off rather than starting with
+// no phones and then overwriting the file.
+func (a *App) loadRemoteStore() {
+	a.remoteMu.Lock()
+	defer a.remoteMu.Unlock()
+	a.store, a.storeErr = remoteStore{}, nil
+	data, err := secret.ReadFile(a.remotePath())
+	if errors.Is(err, os.ErrNotExist) {
+		return
 	}
-	return ds
+	if err != nil {
+		a.storeErr = fmt.Errorf("couldn't read the paired phones (%v)", err)
+		return
+	}
+	if len(data) > 0 && data[0] == '[' { // older format: just the devices
+		err = json.Unmarshal(data, &a.store.Devices)
+	} else {
+		err = json.Unmarshal(data, &a.store)
+	}
+	if err != nil {
+		a.storeErr = fmt.Errorf("couldn't read the paired phones (%v)", err)
+	}
 }
 
-func (a *App) saveRemoteDevices(ds []remoteDevice) error {
-	data, _ := json.Marshal(ds)
+// saveRemoteStore writes remote.json. Call with remoteMu held.
+func (a *App) saveRemoteStore() error {
+	if a.storeErr != nil {
+		return a.storeErr
+	}
+	data, _ := json.Marshal(a.store)
 	return secret.WriteFile(a.remotePath(), data)
 }
 
@@ -128,59 +167,149 @@ func (a *App) remotePort() int {
 	return defaultRemotePort
 }
 
-// startRemote starts the remote-control server if it's turned on.
+// remoteAddrs picks the local addresses to listen on now: the home network
+// once one is set, otherwise every real local network. reason says why
+// there are none.
+func (a *App) remoteAddrs() (addrs []string, reason string) {
+	lans := lanNetworks()
+	a.remoteMu.Lock()
+	home := a.store.Home
+	a.remoteMu.Unlock()
+	for _, l := range lans {
+		if home == nil || l.same(*home) {
+			addrs = append(addrs, l.LocalIP)
+		}
+	}
+	switch {
+	case len(addrs) > 0:
+	case home != nil:
+		reason = "paused: this computer isn't on the home network the phones were paired on (router " + home.Gateway + ")"
+	default:
+		reason = "paused: no home network (Wi-Fi or Ethernet with a router) found"
+	}
+	return addrs, reason
+}
+
+// startRemote starts the remote-control server if it's turned on and the
+// computer is on its network. Call with remoteOpMu held.
 func (a *App) startRemote() {
 	a.mu.Lock()
 	enabled := a.settings.RemoteEnabled
 	a.mu.Unlock()
+	a.remoteMu.Lock()
+	storeErr := a.storeErr
+	a.remoteMu.Unlock()
+	setState := func(err, paused string) {
+		a.mu.Lock()
+		a.remoteErr, a.remotePaused = err, paused
+		a.mu.Unlock()
+	}
 	if !enabled {
+		setState("", "")
+		return
+	}
+	if storeErr != nil {
+		setState(storeErr.Error()+"; the remote control stays off", "")
+		return
+	}
+	// Phones paired before home networks were recorded: the computer's
+	// current network becomes home (if it's on exactly one), once.
+	a.remoteMu.Lock()
+	if a.store.Home == nil && len(a.store.Devices) > 0 {
+		if lans := lanNetworks(); len(lans) == 1 {
+			a.store.Home = &lans[0]
+			a.saveRemoteStore()
+		}
+	}
+	a.remoteMu.Unlock()
+	addrs, reason := a.remoteAddrs()
+	if len(addrs) == 0 {
+		setState("", reason)
 		return
 	}
 	port := a.remotePort()
-	// The computer's own network, not the VPN tunnel (that's a separate,
-	// in-process network stack the OS never sees).
-	ln, err := net.Listen("tcp", net.JoinHostPort("", strconv.Itoa(port)))
-	if err != nil {
-		a.mu.Lock()
-		a.remoteErr = fmt.Sprintf("couldn't start on port %d: %v", port, err)
-		a.mu.Unlock()
-		return
-	}
-	rs := &remoteServer{port: port, failures: map[string][]time.Time{}}
+	rs := &remoteServer{port: port, addrs: addrs, keyFails: map[string][]time.Time{}, codeFails: map[string][]time.Time{}}
 	rs.srv = &http.Server{
 		Handler:           a.remoteHandler(rs),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
-		WriteTimeout:      90 * time.Second, // searches can take a while
+		WriteTimeout:      120 * time.Second, // searches take up to 90 s
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 	}
-	a.mu.Lock()
-	a.remote, a.remoteErr = rs, ""
-	a.mu.Unlock()
-	go func() {
-		if err := rs.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			runtime.LogWarningf(a.ctx, "remote control: %v", err)
+	var lns []net.Listener
+	for _, ip := range addrs {
+		// This computer's own network stack: the VPN tunnel is a separate,
+		// in-process stack the OS never sees, so this can't be reached
+		// through it.
+		ln, err := net.Listen("tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
+		if err != nil {
+			for _, l := range lns {
+				l.Close()
+			}
+			setState(fmt.Sprintf("couldn't start on port %d: %v", port, err), "")
+			return
 		}
-	}()
+		lns = append(lns, netutil.LimitListener(ln, maxRemoteConns))
+	}
+	a.mu.Lock()
+	a.remote, a.remoteErr, a.remotePaused = rs, "", ""
+	a.mu.Unlock()
+	for _, ln := range lns {
+		go func(ln net.Listener) {
+			if err := rs.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) && a.ctx != nil {
+				runtime.LogWarningf(a.ctx, "remote control: %v", err)
+			}
+		}(ln)
+	}
 }
 
+// stopRemote stops the server and drops every connection, including
+// requests still running. Call with remoteOpMu held.
 func (a *App) stopRemote() {
 	a.mu.Lock()
 	rs := a.remote
 	a.remote = nil
 	a.mu.Unlock()
 	if rs != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		rs.srv.Shutdown(ctx)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if rs.srv.Shutdown(ctx) != nil {
+			rs.srv.Close()
+		}
 		cancel()
+	}
+}
+
+// watchRemoteNetwork follows network changes: leaving the home network
+// pauses the server, coming back (or a new local address) restarts it.
+func (a *App) watchRemoteNetwork() {
+	for range time.Tick(recheckNetwork) {
+		if a.isShuttingDown() {
+			return
+		}
+		a.mu.Lock()
+		enabled, rs := a.settings.RemoteEnabled, a.remote
+		a.mu.Unlock()
+		if !enabled {
+			continue
+		}
+		want, _ := a.remoteAddrs()
+		var have []string
+		if rs != nil {
+			have = rs.addrs
+		}
+		if strings.Join(want, ",") != strings.Join(have, ",") {
+			a.remoteOpMu.Lock()
+			a.stopRemote()
+			a.startRemote()
+			a.remoteOpMu.Unlock()
+		}
 	}
 }
 
 // --- request checks ---
 
-// privateClient reports whether a request comes from the home network or
-// this computer.
+// privateClient reports whether a request comes from a private address.
 func privateClient(remoteAddr string) (string, bool) {
 	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
@@ -191,6 +320,16 @@ func privateClient(remoteAddr string) (string, bool) {
 		return host, false
 	}
 	return ip.String(), ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+}
+
+// limitKey groups addresses for rate limiting: IPv6 per /64, since one
+// device can use many addresses in its /64.
+func limitKey(ip string) string {
+	p := net.ParseIP(ip)
+	if p != nil && p.To4() == nil {
+		return p.Mask(net.CIDRMask(64, 128)).String() + "/64"
+	}
+	return ip
 }
 
 // hostIsAddress reports whether the Host header is an IP address or
@@ -205,24 +344,39 @@ func hostIsAddress(host string) bool {
 	return h == "localhost" || net.ParseIP(h) != nil
 }
 
-func (rs *remoteServer) tooManyFailures(ip string) bool {
+// tooMany reports whether key has 10 failures in the last 10 minutes.
+func (rs *remoteServer) tooMany(m map[string][]time.Time, key string) bool {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	cut := time.Now().Add(-10 * time.Minute)
-	recent := rs.failures[ip][:0]
-	for _, t := range rs.failures[ip] {
+	recent := m[key][:0]
+	for _, t := range m[key] {
 		if t.After(cut) {
 			recent = append(recent, t)
 		}
 	}
-	rs.failures[ip] = recent
+	if len(recent) == 0 {
+		delete(m, key)
+		return false
+	}
+	m[key] = recent
 	return len(recent) >= 10
 }
 
-func (rs *remoteServer) recordFailure(ip string) {
+func (rs *remoteServer) fail(m map[string][]time.Time, key string) {
 	rs.mu.Lock()
-	rs.failures[ip] = append(rs.failures[ip], time.Now())
-	rs.mu.Unlock()
+	defer rs.mu.Unlock()
+	if len(m) > 4096 { // bounded memory: forget old entries wholesale
+		for k := range m {
+			delete(m, k)
+		}
+	}
+	m[key] = append(m[key], time.Now())
+}
+
+func hashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 // Pairing codes are 8 characters a person can type: no 0/O, 1/I/L.
@@ -232,9 +386,13 @@ const pairAlphabet = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
 
 func newPairCode() string {
 	b := make([]byte, 8)
-	rand.Read(b)
-	for i := range b {
-		b[i] = pairAlphabet[int(b[i])%len(pairAlphabet)]
+	for i := 0; i < len(b); {
+		var c [1]byte
+		rand.Read(c[:])
+		if int(c[0]) < 256-256%len(pairAlphabet) { // no modulo bias
+			b[i] = pairAlphabet[int(c[0])%len(pairAlphabet)]
+			i++
+		}
 	}
 	return string(b)
 }
@@ -250,15 +408,30 @@ func normalizePairCode(s string) string {
 	return string(out)
 }
 
-func hashToken(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
-}
-
 func randomString(n int) string {
 	b := make([]byte, n)
 	rand.Read(b)
 	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// cleanName keeps a phone's name to 40 printable characters (no control or
+// direction-changing characters that could make it look like another).
+func cleanName(s string) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range strings.TrimSpace(s) {
+		if n == 40 {
+			break
+		}
+		if unicode.IsPrint(r) && !unicode.Is(unicode.Bidi_Control, r) {
+			b.WriteRune(r)
+			n++
+		}
+	}
+	if b.Len() == 0 {
+		return "Phone"
+	}
+	return b.String()
 }
 
 // device returns the paired device for the request's access key.
@@ -268,20 +441,53 @@ func (a *App) device(r *http.Request) (string, bool) {
 		return "", false
 	}
 	want := hashToken(token)
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	ds := a.loadRemoteDevices()
-	for i := range ds {
-		if subtle.ConstantTimeCompare([]byte(ds[i].TokenHash), []byte(want)) == 1 {
-			// Note when it was last used, at most once a minute.
-			if now := time.Now().Unix(); now-ds[i].LastSeen > 60 {
-				ds[i].LastSeen = now
-				a.saveRemoteDevices(ds)
+	a.remoteMu.Lock()
+	defer a.remoteMu.Unlock()
+	for i := range a.store.Devices {
+		d := &a.store.Devices[i]
+		if subtle.ConstantTimeCompare([]byte(d.TokenHash), []byte(want)) == 1 {
+			// Note when it was last used; written to disk at most every 10 minutes.
+			now := time.Now().Unix()
+			if now-d.LastSeen > 600 {
+				d.LastSeen = now
+				a.saveRemoteStore()
+			} else if now-d.LastSeen > 60 {
+				d.LastSeen = now
 			}
-			return ds[i].ID, true
+			return d.ID, true
 		}
 	}
 	return "", false
+}
+
+// --- the phone's view ---
+
+type phoneVPN struct {
+	State    string `json:"state"`
+	Name     string `json:"name"`
+	Location string `json:"location"`
+	Error    string `json:"error"`
+}
+
+type phoneTorrent struct {
+	Hash     string  `json:"hash"`
+	Name     string  `json:"name"`
+	State    string  `json:"state"`
+	Progress float64 `json:"progress"`
+	Size     int64   `json:"size"`
+	DownRate int64   `json:"downRate"`
+	UpRate   int64   `json:"upRate"`
+}
+
+// phoneState is only what the phone page shows. The traffic is plain HTTP,
+// so the VPN's exit IP, forwarded port and download folders stay off it.
+func (a *App) phoneState() any {
+	v := a.GetVpnStatus()
+	ts := []phoneTorrent{}
+	for _, t := range a.ListTorrents() {
+		ts = append(ts, phoneTorrent{t.Hash, t.Name, t.State, t.Progress, t.Size, t.DownRate, t.UpRate})
+	}
+	return map[string]any{"vpn": phoneVPN{v.State, v.Name, v.Location, v.Error}, "torrents": ts}
 }
 
 // --- handlers ---
@@ -295,6 +501,17 @@ func (a *App) remoteHandler(rs *remoteServer) http.Handler {
 
 	mux.HandleFunc("POST /api/pair", func(w http.ResponseWriter, r *http.Request) {
 		ip, _ := privateClient(r.RemoteAddr)
+		key := limitKey(ip)
+		if rs.tooMany(rs.codeFails, key) {
+			http.Error(w, "too many wrong codes; try again in a few minutes", http.StatusTooManyRequests)
+			return
+		}
+		// JSON only: a web page can't send that cross-site without a CORS
+		// preflight, which this server never answers.
+		if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+			http.Error(w, "bad request", http.StatusUnsupportedMediaType)
+			return
+		}
 		var req struct{ Code, Name string }
 		if json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req) != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
@@ -308,45 +525,67 @@ func (a *App) remoteHandler(rs *remoteServer) http.Handler {
 			rs.pairCode = "" // one use only
 		} else if rs.pairCode != "" {
 			// Besides the per-address limit: too many wrong guesses from
-			// anywhere (e.g. many addresses) cancel the code altogether.
+			// anywhere cancel the code altogether.
 			if rs.pairFailures++; rs.pairFailures >= 20 {
 				rs.pairCode = ""
 			}
 		}
 		rs.mu.Unlock()
 		if !ok {
-			rs.recordFailure(ip)
-			http.Error(w, "this pairing code is wrong or expired; show a new QR code in Settings → Remote control", http.StatusForbidden)
+			rs.fail(rs.codeFails, key)
+			http.Error(w, "this pairing code is wrong or expired; show a new one in Settings → Remote control", http.StatusForbidden)
 			return
 		}
+
+		// The network this phone paired on becomes the home network.
+		var here *lanNet
+		if la, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
+			if host, _, err := net.SplitHostPort(la.String()); err == nil {
+				for _, l := range lanNetworks() {
+					if l.LocalIP == host {
+						l := l
+						here = &l
+					}
+				}
+			}
+		}
 		token := randomString(32)
-		name := strings.TrimSpace(req.Name)
-		if len(name) > 60 {
-			name = name[:60]
-		}
-		if name == "" {
-			name = "Phone"
-		}
 		now := time.Now().Unix()
-		a.mu.Lock()
-		ds := append(a.loadRemoteDevices(), remoteDevice{ID: randomString(9), Name: name, TokenHash: hashToken(token), Created: now, LastSeen: now})
-		err := a.saveRemoteDevices(ds)
-		a.mu.Unlock()
+		name := cleanName(req.Name)
+		a.remoteMu.Lock()
+		if a.store.Home == nil && here != nil {
+			a.store.Home = here
+		}
+		a.store.Devices = append(a.store.Devices, remoteDevice{
+			ID: randomString(9), Name: name, IP: ip, TokenHash: hashToken(token), Created: now, LastSeen: now,
+		})
+		err := a.saveRemoteStore()
+		a.remoteMu.Unlock()
 		if err != nil {
 			http.Error(w, "couldn't save the pairing", http.StatusInternalServerError)
 			return
 		}
 		if a.ctx != nil {
 			runtime.EventsEmit(a.ctx, "remote-paired")
+			// Make a pairing visible, in case it wasn't you.
+			runtime.EventsEmit(a.ctx, "error", fmt.Sprintf(
+				"A phone (%s, %s) just paired with the remote control. Not you? Remove it in Settings → Remote control.", name, ip))
 		}
 		writeJSON(w, map[string]string{"token": token})
 	})
 
 	api := func(pattern string, h func(w http.ResponseWriter, r *http.Request) error) {
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
-			ip, _ := privateClient(r.RemoteAddr)
 			if _, ok := a.device(r); !ok {
-				rs.recordFailure(ip)
+				// A valid key is never rate-limited; wrong ones are (by
+				// address), separately from wrong pairing codes, so a phone
+				// with an old key can still pair again.
+				ip, _ := privateClient(r.RemoteAddr)
+				if rs.tooMany(rs.keyFails, limitKey(ip)) {
+					http.Error(w, "too many failed attempts; try again in a few minutes", http.StatusTooManyRequests)
+					return
+				}
+				rs.fail(rs.keyFails, limitKey(ip))
 				http.Error(w, "not paired", http.StatusUnauthorized)
 				return
 			}
@@ -357,7 +596,7 @@ func (a *App) remoteHandler(rs *remoteServer) http.Handler {
 		})
 	}
 	api("GET /api/state", func(w http.ResponseWriter, r *http.Request) error {
-		writeJSON(w, map[string]any{"vpn": a.GetVpnStatus(), "torrents": a.ListTorrents()})
+		writeJSON(w, a.phoneState())
 		return nil
 	})
 	api("POST /api/magnet", func(w http.ResponseWriter, r *http.Request) error {
@@ -417,17 +656,12 @@ func (a *App) remoteHandler(rs *remoteServer) http.Handler {
 	})
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip, ok := privateClient(r.RemoteAddr)
-		if !ok {
+		if _, ok := privateClient(r.RemoteAddr); !ok {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 		if !hostIsAddress(r.Host) {
 			http.Error(w, "use this computer's address, not a domain name", http.StatusMisdirectedRequest)
-			return
-		}
-		if rs.tooManyFailures(ip) {
-			http.Error(w, "too many failed attempts; try again in a few minutes", http.StatusTooManyRequests)
 			return
 		}
 		h := w.Header()
@@ -444,51 +678,32 @@ func writeJSON(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-// lanURLs lists this computer's home-network addresses, most likely first.
-func lanURLs(port int) []string {
-	var out []string
-	ifaces, _ := net.Interfaces()
-	for _, ifc := range ifaces {
-		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		addrs, _ := ifc.Addrs()
-		for _, ad := range addrs {
-			ipn, ok := ad.(*net.IPNet)
-			if !ok || ipn.IP.To4() == nil || !ipn.IP.IsPrivate() {
-				continue
-			}
-			out = append(out, "http://"+net.JoinHostPort(ipn.IP.String(), strconv.Itoa(port))+"/")
-		}
-	}
-	rank := func(u string) int {
-		switch {
-		case strings.HasPrefix(u, "http://192.168."):
-			return 0
-		case strings.HasPrefix(u, "http://10."):
-			return 1
-		}
-		return 2
-	}
-	sort.SliceStable(out, func(i, j int) bool { return rank(out[i]) < rank(out[j]) })
-	return out
-}
-
 // --- bound to the frontend ---
 
 func (a *App) GetRemoteStatus() RemoteStatus {
 	a.mu.Lock()
-	st := RemoteStatus{Enabled: a.settings.RemoteEnabled, Running: a.remote != nil, Error: a.remoteErr}
-	ds := a.loadRemoteDevices()
+	st := RemoteStatus{Enabled: a.settings.RemoteEnabled, Running: a.remote != nil, Error: a.remoteErr, Paused: a.remotePaused}
+	var addrs []string
+	if a.remote != nil {
+		addrs = a.remote.addrs
+	}
 	a.mu.Unlock()
 	st.Port = a.remotePort()
-	if st.Running {
-		st.URLs = lanURLs(st.Port)
+	for _, ip := range addrs {
+		st.URLs = append(st.URLs, "http://"+net.JoinHostPort(ip, strconv.Itoa(st.Port))+"/")
+	}
+	a.remoteMu.Lock()
+	if a.store.Home != nil {
+		st.Home = a.store.Home.Gateway
+	}
+	if a.storeErr != nil && st.Error == "" {
+		st.Error = a.storeErr.Error()
 	}
 	st.Devices = []RemoteDeviceView{}
-	for _, d := range ds {
-		st.Devices = append(st.Devices, RemoteDeviceView{ID: d.ID, Name: d.Name, Created: d.Created, LastSeen: d.LastSeen})
+	for _, d := range a.store.Devices {
+		st.Devices = append(st.Devices, RemoteDeviceView{ID: d.ID, Name: d.Name, IP: d.IP, Created: d.Created, LastSeen: d.LastSeen})
 	}
+	a.remoteMu.Unlock()
 	return st
 }
 
@@ -500,10 +715,11 @@ func (a *App) SetRemote(enabled bool, port int) (RemoteStatus, error) {
 	if port < 1024 || port > 65535 {
 		return a.GetRemoteStatus(), errors.New("use a port between 1024 and 65535")
 	}
+	a.remoteOpMu.Lock()
+	defer a.remoteOpMu.Unlock()
 	a.stopRemote()
 	a.mu.Lock()
 	a.settings.RemoteEnabled, a.settings.RemotePort = enabled, port
-	a.remoteErr = ""
 	a.mu.Unlock()
 	if err := a.writeSettings(); err != nil {
 		return a.GetRemoteStatus(), err
@@ -516,13 +732,13 @@ func (a *App) SetRemote(enabled bool, port int) (RemoteStatus, error) {
 func (a *App) StartRemotePairing() (RemotePairing, error) {
 	a.mu.Lock()
 	rs := a.remote
+	paused := a.remotePaused
 	a.mu.Unlock()
 	if rs == nil {
+		if paused != "" {
+			return RemotePairing{}, errors.New("the remote control is " + paused)
+		}
 		return RemotePairing{}, errors.New("turn the remote control on first")
-	}
-	urls := lanURLs(rs.port)
-	if len(urls) == 0 {
-		return RemotePairing{}, errors.New("this computer doesn't seem to be on a home network")
 	}
 	code := newPairCode()
 	until := time.Now().Add(pairCodeLifetime)
@@ -531,7 +747,7 @@ func (a *App) StartRemotePairing() (RemotePairing, error) {
 	rs.mu.Unlock()
 	// The code is in the #fragment: the browser doesn't send that to any
 	// server or put it in logs; the page reads it and posts it once.
-	u := urls[0] + "#pair=" + code
+	u := "http://" + net.JoinHostPort(rs.addrs[0], strconv.Itoa(rs.port)) + "/#pair=" + code
 	png, err := qrcode.Encode(u, qrcode.Medium, 320)
 	if err != nil {
 		return RemotePairing{}, err
@@ -540,14 +756,32 @@ func (a *App) StartRemotePairing() (RemotePairing, error) {
 }
 
 func (a *App) RemoveRemoteDevice(id string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	ds := a.loadRemoteDevices()
-	out := ds[:0]
-	for _, d := range ds {
+	a.remoteMu.Lock()
+	defer a.remoteMu.Unlock()
+	out := a.store.Devices[:0]
+	for _, d := range a.store.Devices {
 		if d.ID != id {
 			out = append(out, d)
 		}
 	}
-	return a.saveRemoteDevices(out)
+	a.store.Devices = out
+	return a.saveRemoteStore()
+}
+
+// ForgetRemoteHome clears the home network: the remote control then runs on
+// whatever local network the computer is on, until a phone pairs there.
+// For moving house or changing routers.
+func (a *App) ForgetRemoteHome() (RemoteStatus, error) {
+	a.remoteMu.Lock()
+	a.store.Home = nil
+	err := a.saveRemoteStore()
+	a.remoteMu.Unlock()
+	if err != nil {
+		return a.GetRemoteStatus(), err
+	}
+	a.remoteOpMu.Lock()
+	a.stopRemote()
+	a.startRemote()
+	a.remoteOpMu.Unlock()
+	return a.GetRemoteStatus(), nil
 }

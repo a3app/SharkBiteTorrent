@@ -51,6 +51,11 @@ type App struct {
 	// queued Reconnect see that a newer one supersedes it.
 	remote       *remoteServer // phone remote control (remote.go)
 	remoteErr    string
+	remotePaused string     // why it isn't running although enabled
+	remoteOpMu   sync.Mutex // serializes starting/stopping it
+	remoteMu     sync.Mutex // guards store/storeErr
+	store        remoteStore
+	storeErr     error
 	shuttingDown bool
 	connMu       sync.Mutex
 	reconnectGen atomic.Uint64
@@ -127,7 +132,11 @@ func (a *App) startup(ctx context.Context) {
 	go a.runTray()
 	go a.connect()
 	a.startProxy()
+	a.loadRemoteStore()
+	a.remoteOpMu.Lock()
 	a.startRemote()
+	a.remoteOpMu.Unlock()
+	go a.watchRemoteNetwork()
 }
 
 func (a *App) isShuttingDown() bool {
@@ -141,7 +150,9 @@ func (a *App) shutdown(ctx context.Context) {
 	a.shuttingDown = true // a Reconnect in progress must not start anything new
 	a.mu.Unlock()
 	a.stopProxy()
+	a.remoteOpMu.Lock()
 	a.stopRemote()
+	a.remoteOpMu.Unlock()
 	a.disconnect()
 	quitTray()
 }

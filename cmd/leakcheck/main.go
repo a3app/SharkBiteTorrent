@@ -397,8 +397,6 @@ func defaultExe() string {
 	return filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "Shark BiteTorrent", appImage)
 }
 
-// appEndpoint reads the WireGuard endpoint the app will connect to from its
-// saved settings: the WARP account or the imported WireGuard config.
 // appRemotePort returns the remote control's port if it's turned on.
 func appRemotePort() string {
 	cfgDir, _ := os.UserConfigDir()
@@ -429,6 +427,8 @@ func privateAddr(hp string) bool {
 	return ip != nil && (ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLoopback())
 }
 
+// appEndpoint reads the WireGuard endpoint the app will connect to from its
+// saved settings: the WARP account or the imported WireGuard config.
 func appEndpoint() (string, error) {
 	cfgDir, _ := os.UserConfigDir()
 	dir := filepath.Join(cfgDir, "SharkBiteTorrent")

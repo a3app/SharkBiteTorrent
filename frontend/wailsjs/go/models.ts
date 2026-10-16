@@ -362,6 +362,7 @@ export namespace main {
 	export class RemoteDeviceView {
 	    id: string;
 	    name: string;
+	    ip: string;
 	    created: number;
 	    lastSeen: number;
 	
@@ -373,6 +374,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.name = source["name"];
+	        this.ip = source["ip"];
 	        this.created = source["created"];
 	        this.lastSeen = source["lastSeen"];
 	    }
@@ -398,6 +400,8 @@ export namespace main {
 	export class RemoteStatus {
 	    enabled: boolean;
 	    running: boolean;
+	    paused: string;
+	    home: string;
 	    port: number;
 	    urls: string[];
 	    error: string;
@@ -411,6 +415,8 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.enabled = source["enabled"];
 	        this.running = source["running"];
+	        this.paused = source["paused"];
+	        this.home = source["home"];
 	        this.port = source["port"];
 	        this.urls = source["urls"];
 	        this.error = source["error"];

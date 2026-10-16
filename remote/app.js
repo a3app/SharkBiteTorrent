@@ -16,6 +16,11 @@ async function api(method, path, body) {
   }
   const res = await fetch(path, opts)
   if (res.status === 401) {
+    // Removed in Settings (or the computer forgot it): stop polling with the
+    // dead key, forget it, and offer pairing again.
+    token = ''
+    try { localStorage.removeItem(TOKEN_KEY) } catch {}
+    stopRefreshing()
     showUnpaired()
     throw new Error('not paired')
   }
@@ -191,12 +196,15 @@ function showApp() {
   $('installBtn').hidden = standalone() || added // already on the home screen
 }
 
-let refreshing = false
+let timer = null
 function startRefreshing() {
-  if (refreshing) return
-  refreshing = true
+  if (timer) return
+  timer = setInterval(refresh, 2000)
   refresh()
-  setInterval(refresh, 2000)
+}
+function stopRefreshing() {
+  clearInterval(timer)
+  timer = null
 }
 
 function wire() {

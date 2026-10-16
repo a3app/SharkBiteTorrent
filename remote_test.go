@@ -17,18 +17,37 @@ func remoteRequest(h http.Handler, method, path, from, host, token, body string)
 	if token != "" {
 		r.Header.Set("Authorization", "Bearer "+token)
 	}
+	if method == "POST" && strings.HasPrefix(body, "{") {
+		r.Header.Set("Content-Type", "application/json")
+	}
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	return w
 }
 
-func TestRemoteSecurity(t *testing.T) {
+func newTestRemote(t *testing.T) (*App, *remoteServer, http.Handler) {
 	a := &App{configDir: t.TempDir()}
-	rs := &remoteServer{port: 8732, failures: map[string][]time.Time{}}
-	h := a.remoteHandler(rs)
+	rs := &remoteServer{port: 8732, addrs: []string{"192.168.1.5"}, keyFails: map[string][]time.Time{}, codeFails: map[string][]time.Time{}}
+	return a, rs, a.remoteHandler(rs)
+}
+
+func pairPhone(t *testing.T, rs *remoteServer, h http.Handler, from string) string {
+	t.Helper()
+	rs.pairCode, rs.pairUntil, rs.pairFailures = newPairCode(), time.Now().Add(time.Minute), 0
+	w := remoteRequest(h, "POST", "/api/pair", from, "192.168.1.5:8732", "", `{"code":"`+rs.pairCode+`","name":"Test phone"}`)
+	var got struct{ Token string }
+	json.Unmarshal(w.Body.Bytes(), &got)
+	if w.Code != http.StatusOK || len(got.Token) < 40 {
+		t.Fatalf("pair: %d %q", w.Code, w.Body.String())
+	}
+	return got.Token
+}
+
+func TestRemoteSecurity(t *testing.T) {
+	a, rs, h := newTestRemote(t)
 	lan, host := "192.168.1.20:5000", "192.168.1.5:8732"
 
-	// Only the home network.
+	// Only private addresses.
 	if w := remoteRequest(h, "GET", "/", "203.0.113.9:5000", host, "", ""); w.Code != http.StatusForbidden {
 		t.Errorf("public address allowed: %d", w.Code)
 	}
@@ -36,22 +55,28 @@ func TestRemoteSecurity(t *testing.T) {
 	if w := remoteRequest(h, "GET", "/", lan, "evil.example:8732", "", ""); w.Code != http.StatusMisdirectedRequest {
 		t.Errorf("domain Host allowed: %d", w.Code)
 	}
-	// The page itself loads.
 	if w := remoteRequest(h, "GET", "/", lan, host, "", ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "app.js") {
 		t.Errorf("page: %d", w.Code)
 	}
-	// API needs a key.
 	if w := remoteRequest(h, "GET", "/api/state", lan, host, "", ""); w.Code != http.StatusUnauthorized {
 		t.Errorf("state without key: %d", w.Code)
 	}
 
-	// Pairing: wrong code refused; right code works once.
+	// Pairing must be JSON (a web page can't send that cross-site).
 	rs.pairCode, rs.pairUntil = "K7QM4XRP", time.Now().Add(time.Minute)
+	r := httptest.NewRequest("POST", "/api/pair", strings.NewReader(`{"code":"K7QM4XRP"}`))
+	r.RemoteAddr, r.Host = lan, host
+	r.Header.Set("Content-Type", "text/plain")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("text/plain pairing accepted: %d", w.Code)
+	}
+	// Wrong code refused; the right one (typed with a dash, lower case) works once.
 	if w := remoteRequest(h, "POST", "/api/pair", "192.168.1.30:5000", host, "", `{"code":"wrong","name":"x"}`); w.Code != http.StatusForbidden {
 		t.Errorf("wrong code: %d", w.Code)
 	}
-	// Typed the way people type it: lower case, with a dash.
-	w := remoteRequest(h, "POST", "/api/pair", lan, host, "", `{"code":"k7qm-4xrp","name":"Test phone"}`)
+	w = remoteRequest(h, "POST", "/api/pair", lan, host, "", `{"code":"k7qm-4xrp","name":"Test‮phone"}`)
 	var got struct{ Token string }
 	json.Unmarshal(w.Body.Bytes(), &got)
 	if w.Code != http.StatusOK || len(got.Token) < 40 {
@@ -60,37 +85,47 @@ func TestRemoteSecurity(t *testing.T) {
 	if w := remoteRequest(h, "POST", "/api/pair", lan, host, "", `{"code":"K7QM4XRP","name":"again"}`); w.Code != http.StatusForbidden {
 		t.Errorf("pairing code reused: %d", w.Code)
 	}
-	// The key works; a wrong key doesn't.
-	if w := remoteRequest(h, "GET", "/api/state", lan, host, got.Token, ""); w.Code != http.StatusOK {
-		t.Errorf("state with key: %d %s", w.Code, w.Body.String())
+	// Stored: hash only, the address it paired from, a cleaned name.
+	if d := a.store.Devices; len(d) != 1 || d[0].TokenHash == got.Token || d[0].IP != "192.168.1.20" || d[0].Name != "Testphone" {
+		t.Errorf("devices: %+v", d)
 	}
-	if w := remoteRequest(h, "GET", "/api/state", lan, host, got.Token+"x", ""); w.Code != http.StatusUnauthorized {
-		t.Errorf("wrong key accepted: %d", w.Code)
+
+	// The key works and the phone only gets what it shows.
+	w = remoteRequest(h, "GET", "/api/state", lan, host, got.Token, "")
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "exitIP") || strings.Contains(w.Body.String(), `"dir"`) {
+		t.Errorf("state: %d %s", w.Code, w.Body.String())
 	}
-	// Only the hash is stored.
-	if ds := a.loadRemoteDevices(); len(ds) != 1 || ds[0].TokenHash == got.Token || ds[0].Name != "Test phone" {
-		t.Errorf("devices: %+v", ds)
-	}
-	// Bad torrent IDs are refused before reaching the engine.
 	if w := remoteRequest(h, "POST", "/api/torrents/../remove", lan, host, got.Token, ""); w.Code == http.StatusOK {
 		t.Errorf("bad hash accepted")
 	}
-	// Removing the device revokes its key.
-	a.RemoveRemoteDevice(a.loadRemoteDevices()[0].ID)
+
+	// Removing the device revokes the key.
+	a.RemoveRemoteDevice(a.store.Devices[0].ID)
 	if w := remoteRequest(h, "GET", "/api/state", lan, host, got.Token, ""); w.Code != http.StatusUnauthorized {
 		t.Errorf("revoked key accepted: %d", w.Code)
 	}
+}
 
-	// Rate limit: 10 failures from one address lock it out.
-	for i := 0; i < 10; i++ {
-		remoteRequest(h, "GET", "/api/state", "192.168.1.40:5000", host, "nope", "")
+func TestRemoteRateLimits(t *testing.T) {
+	_, rs, h := newTestRemote(t)
+	host := "192.168.1.5:8732"
+
+	// A removed phone keeps polling with its old key and gets locked out of
+	// the API, but can still pair again (separate counters).
+	stale := "192.168.1.40:5000"
+	for i := 0; i < 12; i++ {
+		remoteRequest(h, "GET", "/api/state", stale, host, "old-key", "")
 	}
-	if w := remoteRequest(h, "GET", "/", "192.168.1.40:5000", host, "", ""); w.Code != http.StatusTooManyRequests {
-		t.Errorf("not rate limited: %d", w.Code)
+	if w := remoteRequest(h, "GET", "/api/state", stale, host, "old-key", ""); w.Code != http.StatusTooManyRequests {
+		t.Errorf("wrong keys not limited: %d", w.Code)
+	}
+	token := pairPhone(t, rs, h, stale)
+	// …and a valid key is never rate-limited.
+	if w := remoteRequest(h, "GET", "/api/state", stale, host, token, ""); w.Code != http.StatusOK {
+		t.Errorf("valid key blocked by the rate limit: %d", w.Code)
 	}
 
-	// 20 wrong guesses in total cancel the code, whatever the addresses.
-	rs.failures = map[string][]time.Time{}
+	// 20 wrong codes in total cancel the code, whatever the addresses.
 	rs.pairCode, rs.pairUntil, rs.pairFailures = "ABCDEFGH", time.Now().Add(time.Minute), 0
 	for i := 0; i < 20; i++ {
 		remoteRequest(h, "POST", "/api/pair", "10.0.0."+strconv.Itoa(i+1)+":5000", host, "", `{"code":"WRONGGGG"}`)
@@ -98,7 +133,35 @@ func TestRemoteSecurity(t *testing.T) {
 	if w := remoteRequest(h, "POST", "/api/pair", "10.0.1.1:5000", host, "", `{"code":"ABCDEFGH"}`); w.Code != http.StatusForbidden {
 		t.Errorf("code still valid after 20 wrong guesses: %d", w.Code)
 	}
+	// IPv6 addresses in one /64 share a limit.
+	if limitKey("fe80::1") != limitKey("fe80::abcd:1234") {
+		t.Error("IPv6 /64 not grouped")
+	}
 	if c := newPairCode(); len(c) != 8 || normalizePairCode(c) != c {
 		t.Errorf("pair code %q", c)
+	}
+}
+
+func TestRemoteStoreFormats(t *testing.T) {
+	a := &App{configDir: t.TempDir()}
+	a.loadRemoteStore()
+	if a.storeErr != nil || a.store.Home != nil {
+		t.Fatalf("empty: %+v %v", a.store, a.storeErr)
+	}
+	a.store.Home = &lanNet{LocalIP: "192.168.1.5", Gateway: "192.168.1.1", GatewayMAC: "aa:bb:cc:dd:ee:ff"}
+	a.store.Devices = []remoteDevice{{ID: "x", Name: "p"}}
+	if err := a.saveRemoteStore(); err != nil {
+		t.Fatal(err)
+	}
+	a.loadRemoteStore()
+	if a.store.Home == nil || a.store.Home.GatewayMAC != "aa:bb:cc:dd:ee:ff" || len(a.store.Devices) != 1 {
+		t.Errorf("round trip: %+v", a.store)
+	}
+	// Same router, new address for this computer: still home.
+	if !(lanNet{LocalIP: "192.168.1.9", Gateway: "192.168.1.1", GatewayMAC: normalizeMAC("AA-BB-CC-DD-EE-FF")}).same(*a.store.Home) {
+		t.Error("same router not recognized")
+	}
+	if (lanNet{Gateway: "192.168.1.1", GatewayMAC: "11:22:33:44:55:66"}).same(*a.store.Home) {
+		t.Error("different router counted as home")
 	}
 }

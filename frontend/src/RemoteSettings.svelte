@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { GetRemoteStatus, SetRemote, StartRemotePairing, RemoveRemoteDevice } from '../wailsjs/go/main/App.js'
+  import { GetRemoteStatus, SetRemote, StartRemotePairing, RemoveRemoteDevice, ForgetRemoteHome } from '../wailsjs/go/main/App.js'
   import { EventsOn } from '../wailsjs/runtime/runtime.js'
   import type { main } from '../wailsjs/go/models'
 
@@ -47,6 +47,15 @@
     }
   }
 
+  async function forgetHome() {
+    onError('')
+    try {
+      status = await ForgetRemoteHome()
+    } catch (e) {
+      onError(String(e))
+    }
+  }
+
   async function remove(id: string) {
     await RemoveRemoteDevice(id)
     await load()
@@ -70,6 +79,9 @@
     {#if status.error}
       <p class="warn small">{status.error}</p>
     {/if}
+    {#if status.paused}
+      <p class="warn small">The remote control is {status.paused}. It starts again by itself when you're back.</p>
+    {/if}
     <label class="row">
       <span class="lbl">Port</span>
       <input type="number" min="1024" max="65535" bind:value={port} class="short" />
@@ -78,9 +90,7 @@
       {/if}
     </label>
     {#if status.running}
-      <p class="muted small">
-        Open on a phone on the same Wi-Fi: {status.urls.length ? status.urls.join(' or ') : '(no home network address found)'}
-      </p>
+      <p class="muted small">Open on a phone on the same Wi-Fi: {(status.urls ?? []).join(' or ')}</p>
       <div class="row">
         <button class="primary" onclick={pair}>Pair a phone</button>
       </div>
@@ -89,7 +99,7 @@
           <img src={pairing.qr} alt="QR code to pair a phone" width="200" height="200" />
           <div>
             <p class="muted small">
-              Scan with the phone's camera, or open the address below on the phone and type this code:
+              Scan with the phone's camera, or open the address above on the phone and type this code:
             </p>
             <p class="code">{pairing.code}</p>
             <p class="muted small">
@@ -101,20 +111,34 @@
         </div>
       {/if}
     {/if}
-    {#if status.devices.length > 0}
-      <div class="devices">
-        {#each status.devices as d (d.id)}
-          <div class="row">
-            <span class="grow">{d.name} <span class="muted">· last used {ago(d.lastSeen)}</span></span>
-            <button onclick={() => remove(d.id)}>Remove</button>
-          </div>
-        {/each}
-      </div>
+    {#if status.home}
+      <p class="muted small">
+        Home network: the one with router {status.home}. The remote control only runs there, so it stays off on
+        other Wi-Fi (cafés, hotels, work).
+        <button class="link" onclick={forgetHome}>Forget home network</button>
+        <span>(after moving or changing routers; the next phone you pair sets it again)</span>
+      </p>
+    {:else}
+      <p class="muted small">The network you pair your first phone on becomes the home network; the remote control only runs there.</p>
     {/if}
+  {/if}
+  {#if status.devices.length > 0}
+    <div class="devices">
+      <p class="muted small">Paired phones{status.enabled ? '' : ' (they can connect again if you turn this back on)'}:</p>
+      {#each status.devices as d (d.id)}
+        <div class="row">
+          <span class="grow">{d.name} <span class="muted">· paired from {d.ip || 'unknown'} · last used {ago(d.lastSeen)}</span></span>
+          <button onclick={() => remove(d.id)}>Remove</button>
+        </div>
+      {/each}
+    </div>
+  {/if}
+  {#if status.enabled}
     <p class="muted small">
       Paired phones can do what this window can: add, pause and remove torrents (including deleting their files), and
-      search. It only answers devices on your home network, over plain HTTP. Remove a phone here if you lose it.
-      Tip: reserve this computer's address in your router ("DHCP reservation") so phone shortcuts keep working.
+      search. The page uses plain HTTP, so someone else on your Wi-Fi could see torrent names, searches and the phone's
+      access key. Remove a phone here if you lose it. Tip: reserve this computer's address in your router ("DHCP
+      reservation") so phone shortcuts keep working.
     </p>
   {/if}
 {/if}
@@ -130,5 +154,6 @@
   .pair { display: flex; gap: 12px; align-items: center; margin-top: 8px; }
   .pair img { background: #fff; padding: 6px; border-radius: 6px; image-rendering: pixelated; }
   .devices { margin-top: 6px; }
+  .link { background: none; border: none; padding: 0 4px; color: var(--accent); text-decoration: underline; font: inherit; }
   .code { font-size: 22px; font-weight: 600; letter-spacing: 0.12em; margin: 4px 0; font-variant-numeric: tabular-nums; }
 </style>
