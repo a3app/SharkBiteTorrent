@@ -169,18 +169,29 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      id-token: write     # for the provenance attestation below
+      attestations: write
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with: { path: artifacts, merge-multiple: true }
-      - name: Create release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Checksums
         run: |
           # PKGBUILD only travels along for the arch job; it isn't a download.
           rm -f artifacts/PKGBUILD artifacts/*.msix
           # Checksums let the in-app updater verify what it downloads.
           (cd artifacts && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt)
           ls -la artifacts
+      # GitHub-signed provenance: each file was built by this workflow from
+      # this commit. releasekey publish checks it against the maintainer's own
+      # copy of the tag before signing, so files swapped into the draft (or
+      # built from a different commit or workflow) are refused.
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: 'artifacts/*'
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
           # A draft: the maintainer signs SHA256SUMS.txt on their own computer
           # (go run ./cmd/releasekey publish <tag>), which also publishes it.
           # The in-app updater only installs releases with a valid signature.

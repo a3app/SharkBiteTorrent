@@ -39,7 +39,7 @@ It works out of the box with **free Cloudflare WARP**, so there's protection fro
 - 🔓 **Automatic port forwarding with PIA**: other peers can connect to you, which means much better seeding. The forwarding is renewed every 15 minutes.
 - 📄 **Import any WireGuard `.conf` file**: works with any provider (Proton, AirVPN, …), with an optional forwarded port.
 - 🛑 **Kill switch by design**: the torrent engine starts only after the tunnel is verified (exit IP checked) and has no other network path.
-- 🚫 **No VPN, if you choose it**: for people whose router or computer already runs a VPN (or who only download legal content). It's an explicit choice in Settings with a warning, the header shows an amber **VPN off**, and the app never switches to it by itself: if a VPN fails, downloads stop. The Prowlarr/Jackett proxy refuses connections in this mode; Prowlarr keeps searching on its own connection if the proxy is off.
+- 🚫 **No VPN, if you choose it**: for people whose router or computer already runs a VPN (or who only download legal content). It's an explicit choice in Settings with a warning (including that, like other clients, it may ask your router via UPnP/NAT-PMP to open a port), the header shows an amber **VPN off**, and the app never switches to it by itself: if a VPN fails, downloads stop. The Prowlarr/Jackett proxy refuses connections in this mode; Prowlarr keeps searching on its own connection if the proxy is off.
 - 🔒 **Encrypted secrets**: WARP keys, VPN sign-ins and imported configs are encrypted on disk.
 
 **Torrents**
@@ -280,7 +280,7 @@ git tag v0.2.1 && git push origin v0.2.1
 go run ./cmd/releasekey publish v0.2.1
 ```
 
-The signing key never goes into git or GitHub Actions; a compromised GitHub account must not be able to sign. It's stored on the maintainer's computer encrypted with the OS (`~/.sharkbite-release/`), with a password-protected backup kept offline (`releasekey backup` / `restore`). The public half, [`release.pub`](release.pub), is built into the app, and the updater refuses a release whose signature is missing, invalid, or made for a different version. Anyone can check a download with [minisign](https://jedisct1.github.io/minisign/): `minisign -Vm SHA256SUMS.txt -p release.pub`.
+The signing key never goes into git or GitHub Actions; a compromised GitHub account must not be able to sign. It's stored on the maintainer's computer encrypted with the OS (`~/.sharkbite-release/`), with a password-protected backup kept offline (`releasekey backup` / `restore`). The public half, [`release.pub`](release.pub), is built into the app, and the updater refuses a release whose signature is missing, invalid, or made for a different version. Before signing, `publish` checks every file in the draft against GitHub's build provenance (attestations): each must have been built by this repo's `release.yml`, on a GitHub-hosted runner, from exactly the commit the maintainer's local tag points to, and `SHA256SUMS.txt` must match the hashes it computes itself. Files swapped into the draft, or built from other code or a modified workflow, are refused instead of signed. Anyone can check a download with [minisign](https://jedisct1.github.io/minisign/): `minisign -Vm SHA256SUMS.txt -p release.pub`.
 
 Running the **Release** workflow by hand from the Actions tab builds everything without publishing. Each run also builds the Microsoft Store `.msix` as a downloadable artifact (**msix**); it isn't attached to the release, because it's only installable after the Store signs it.
 

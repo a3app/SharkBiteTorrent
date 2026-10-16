@@ -19,6 +19,8 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -212,17 +214,24 @@ func publish(tag string) error {
 		return errors.New("this computer's key doesn't match release.pub")
 	}
 
+	// The commit this computer's tag points to is what we trust; the draft's
+	// files must provably come from it.
+	commit, err := gitOut("rev-parse", tag+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("tag %s isn't in this repository: %w", tag, err)
+	}
+
 	dir, err := os.MkdirTemp("", "releasekey-")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(dir)
-	if err := gh("release", "download", tag, "--repo", repo, "--pattern", sumsAsset, "--dir", dir); err != nil {
+	if err := gh("release", "download", tag, "--repo", repo, "--dir", dir); err != nil {
 		return err
 	}
-	sums, err := os.ReadFile(filepath.Join(dir, sumsAsset))
+	sums, err := checkDraft(dir, tag, commit)
 	if err != nil {
-		return err
+		return fmt.Errorf("not signing %s: %w", tag, err)
 	}
 	fmt.Printf("Signing %s for %s:\n%s", sumsAsset, tag, sums)
 	sig := minisign.SignWithComments(k, sums, fmt.Sprintf(commentForm, tag), "signed with the Shark BiteTorrent release key")
@@ -241,6 +250,76 @@ func publish(tag string) error {
 	}
 	fmt.Printf("Published %s with a signed %s.\n", tag, sumsAsset)
 	return nil
+}
+
+// checkDraft verifies the downloaded draft before anything is signed:
+//   - every file has GitHub's build provenance showing it was built by this
+//     repo's release workflow, on a GitHub-hosted runner, from exactly the
+//     commit the local tag points to (so files swapped into the draft, or
+//     built from other code or a modified workflow, are refused);
+//   - SHA256SUMS.txt lists exactly those files, with the hashes computed here.
+//
+// It returns the checksums file's contents.
+func checkDraft(dir, tag, commit string) ([]byte, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	actual := map[string]string{}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || name == sigAsset {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		cmd := exec.Command("gh", "attestation", "verify", path, "--repo", repo,
+			"--source-digest", commit,
+			"--source-ref", "refs/tags/"+tag,
+			"--signer-workflow", repo+"/.github/workflows/release.yml",
+			"--deny-self-hosted-runners")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("%s has no valid build provenance for %s at %.12s:\n%s", name, tag, commit, out)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		sum := sha256.Sum256(data)
+		actual[name] = hex.EncodeToString(sum[:])
+		fmt.Printf("  ok %s: built by release.yml from %.12s\n", name, commit)
+	}
+
+	sums, err := os.ReadFile(filepath.Join(dir, sumsAsset))
+	if err != nil {
+		return nil, err
+	}
+	listed := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(sums)), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			return nil, fmt.Errorf("unexpected line in %s: %q", sumsAsset, line)
+		}
+		listed[strings.TrimPrefix(f[1], "*")] = strings.ToLower(f[0])
+	}
+	for name, h := range actual {
+		if name == sumsAsset {
+			continue
+		}
+		if listed[name] != h {
+			return nil, fmt.Errorf("%s: hash %s doesn't match %s (%q)", name, h, sumsAsset, listed[name])
+		}
+	}
+	for name := range listed {
+		if _, ok := actual[name]; !ok {
+			return nil, fmt.Errorf("%s lists %s, which isn't in the release", sumsAsset, name)
+		}
+	}
+	return sums, nil
+}
+
+func gitOut(args ...string) (string, error) {
+	out, err := exec.Command("git", args...).Output()
+	return strings.TrimSpace(string(out)), err
 }
 
 func gh(args ...string) error {

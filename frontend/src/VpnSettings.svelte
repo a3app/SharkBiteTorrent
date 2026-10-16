@@ -225,7 +225,8 @@
 {#if s.vpnProvider === 'none'}
   <div class="sub nowarn">
     ⚠ Peers and trackers will see your real IP address. Only choose this if a VPN already covers this computer,
-    or you only download things that are legal to share. The app never switches to this on its own: if a VPN fails,
+    or you only download things that are legal to share. Like other torrent clients, it may also ask your router
+    (UPnP / NAT-PMP) to open a port so peers can connect to you. The app never switches to this on its own: if a VPN fails,
     downloads stop until it's fixed.
   </div>
 {/if}
