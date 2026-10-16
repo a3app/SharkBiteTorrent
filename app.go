@@ -600,11 +600,15 @@ func (a *App) Reconnect() {
 			if superseded() || a.isShuttingDown() {
 				// The settings changed again while preparing (leave the old
 				// tunnel up so the newer Reconnect prepares through it too),
-				// or the app is quitting.
+				// or the app is quitting. Put the real status back first, so
+				// the next Reconnect saves that rather than "connecting".
+				a.mu.Lock()
+				a.vpn = before
+				a.mu.Unlock()
 				return
 			}
-			if err != nil {
-				// Don't close the working VPN and then contact the new
+			if err != nil && a.tunnelWorks() {
+				// Don't close a working VPN and then contact the new
 				// provider over the normal connection instead: stay on the
 				// current VPN and say why the switch didn't happen.
 				a.mu.Lock()
@@ -613,12 +617,29 @@ func (a *App) Reconnect() {
 				a.mu.Unlock()
 				return
 			}
+			// If preparing failed because the current tunnel is dead, there's
+			// no working VPN to protect: connect like the first time (prep is
+			// nil, so connecting prepares again once the tunnel is closed).
 		} else if a.isShuttingDown() {
 			return
 		}
 		a.disconnect()
 		a.connectPrepared(prep)
 	}()
+}
+
+// tunnelWorks reports whether the current tunnel still passes traffic.
+func (a *App) tunnelWorks() bool {
+	a.mu.Lock()
+	tun := a.tun
+	a.mu.Unlock()
+	if tun == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	tr, err := tun.CheckTrace(ctx)
+	return err == nil && tr.IP != ""
 }
 
 func (a *App) ListTorrents() []engine.Status {

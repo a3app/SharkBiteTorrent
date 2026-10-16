@@ -14,7 +14,7 @@ What changed in each release of Shark BiteTorrent. The release notes on GitHub a
   - With no VPN connected (the first connection, after a failed connection, or in *No VPN* mode), providers are contacted directly only for what you do with them (signing in, connecting, signing out, or listing locations for one you're signed in to). These direct connections now close right away instead of lingering.
 - **Privacy (Windows):** the app's window (Microsoft WebView2) no longer contacts Microsoft outside the VPN. Unpatched, at startup it looked up your Windows account at `substrate.office.com` and contacted `edge.microsoft.com`, did proxy auto-discovery (`wpad`), and when you typed in the app's boxes it called Microsoft's text prediction service. Those features are now off, and the window's own network layer is blocked (it never needs the network). Found by the new leak test.
 - Error messages from PIA no longer include its temporary access token.
-- Switching VPNs: if the new provider can't be set up through the current VPN, the app now stays connected as before and shows **VPN switch failed** with a Retry button, instead of closing the VPN and contacting the new provider directly. Quick successive switches no longer interfere with each other.
+- Switching VPNs: if the new provider can't be set up through the current (working) VPN, the app now stays connected as before and shows **VPN switch failed** with a Retry button, instead of closing the VPN and contacting the new provider directly. If the current VPN has stopped working, the switch goes ahead as a first connection would, instead of getting stuck. Quick successive switches no longer interfere with each other or leave the status stuck on "Connecting…".
 
 ## [0.2.30] - 2026-10-16
 
