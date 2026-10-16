@@ -34,6 +34,8 @@ export function GetProxyStatus():Promise<main.ProxyStatus>;
 
 export function GetReleaseNotes():Promise<Array<main.ReleaseNote>>;
 
+export function GetRemoteStatus():Promise<main.RemoteStatus>;
+
 export function GetSearchStatus():Promise<main.SearchStatus>;
 
 export function GetSettings():Promise<main.SettingsView>;
@@ -72,6 +74,8 @@ export function RegisterAssociations():Promise<platform.AssocStatus>;
 
 export function Remove(arg1:string,arg2:boolean):Promise<void>;
 
+export function RemoveRemoteDevice(arg1:string):Promise<void>;
+
 export function Resume(arg1:string):Promise<void>;
 
 export function ResumeAll():Promise<void>;
@@ -82,8 +86,12 @@ export function SearchTorrents(arg1:string,arg2:string):Promise<Array<search.Res
 
 export function SetFilesWanted(arg1:string,arg2:Array<number>,arg3:boolean):Promise<void>;
 
+export function SetRemote(arg1:boolean,arg2:number):Promise<main.RemoteStatus>;
+
 export function SetSearchProxy(arg1:boolean):Promise<main.ProxyStatus>;
 
 export function SkipUpdate(arg1:string):Promise<void>;
+
+export function StartRemotePairing():Promise<main.RemotePairing>;
 
 export function VerifyTorrent(arg1:string):Promise<void>;

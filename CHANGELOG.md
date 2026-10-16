@@ -4,6 +4,9 @@ What changed in each release of Shark BiteTorrent. The release notes on GitHub a
 
 ## [Unreleased]
 
+### Added
+- **Remote control from your phone** (Settings → Remote control, off by default). Pair a phone by scanning a QR code, then use its browser on your home Wi-Fi to add magnet links or `.torrent` files, search, and pause or remove torrents on your computer. Downloads still happen on the computer, through its VPN. It only answers devices on your home network, and you can remove a paired phone at any time.
+
 ## [0.2.31] - 2026-10-16
 
 ### Added

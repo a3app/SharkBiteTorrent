@@ -49,6 +49,8 @@ type App struct {
 	// connMu serializes connecting and reconnecting, so the startup connect
 	// and quick successive Reconnects can't interleave. reconnectGen lets a
 	// queued Reconnect see that a newer one supersedes it.
+	remote       *remoteServer // phone remote control (remote.go)
+	remoteErr    string
 	shuttingDown bool
 	connMu       sync.Mutex
 	reconnectGen atomic.Uint64
@@ -87,6 +89,10 @@ type Settings struct {
 	LastUpdateCheck int64  `json:"lastUpdateCheck"` // unix seconds
 	// ScanDownloads scans finished torrents with the system antivirus.
 	ScanDownloads bool `json:"scanDownloads"`
+	// Remote control from phones on the home network (remote.go); changed
+	// through SetRemote, not SaveSettings.
+	RemoteEnabled bool `json:"remoteEnabled"`
+	RemotePort    int  `json:"remotePort"`
 }
 
 // savedTorrent is persisted so torrents survive restarts. Source is a magnet
@@ -121,6 +127,7 @@ func (a *App) startup(ctx context.Context) {
 	go a.runTray()
 	go a.connect()
 	a.startProxy()
+	a.startRemote()
 }
 
 func (a *App) isShuttingDown() bool {
@@ -134,6 +141,7 @@ func (a *App) shutdown(ctx context.Context) {
 	a.shuttingDown = true // a Reconnect in progress must not start anything new
 	a.mu.Unlock()
 	a.stopProxy()
+	a.stopRemote()
 	a.disconnect()
 	quitTray()
 }
@@ -888,6 +896,9 @@ func (a *App) SaveSettings(s Settings) error {
 
 	a.mu.Lock()
 	old := a.settings
+	// The remote control has its own controls (SetRemote); the Settings
+	// form's copy may be stale.
+	s.RemoteEnabled, s.RemotePort = old.RemoteEnabled, old.RemotePort
 	a.settings = s
 	eng := a.eng
 	a.mu.Unlock()

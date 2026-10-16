@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>Shark BiteTorrent</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="brand">Shark Bite<b>Torrent</b></div>
+    <div id="vpn" class="vpn"></div>
+  </header>
+
+  <main>
+    <section id="unpaired" hidden>
+      <h2>Not paired</h2>
+      <p class="muted">On the computer, open Settings → Remote control → Pair a phone, and scan the QR code with this phone's camera.</p>
+    </section>
+
+    <section id="app" hidden>
+      <form id="addForm" class="row">
+        <input id="magnet" placeholder="Paste a magnet link…" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <button type="submit" class="primary">Add</button>
+      </form>
+      <div class="row">
+        <label class="button">Upload .torrent<input id="file" type="file" accept=".torrent,application/x-bittorrent" hidden></label>
+        <button id="searchToggle" type="button">Search</button>
+      </div>
+
+      <div id="searchBox" hidden>
+        <form id="searchForm" class="row">
+          <input id="query" placeholder="Search your indexers…" autocomplete="off" spellcheck="false">
+          <select id="cat" aria-label="Category">
+            <option value="">All</option>
+            <option value="movies">Movies</option>
+            <option value="tv">TV</option>
+            <option value="music">Music</option>
+            <option value="software">Software</option>
+            <option value="books">Books</option>
+          </select>
+          <button type="submit" class="primary">Go</button>
+        </form>
+        <div id="results"></div>
+      </div>
+
+      <div id="message" class="message" hidden></div>
+      <ul id="torrents" class="list"></ul>
+      <p id="empty" class="muted" hidden>No torrents yet.</p>
+    </section>
+  </main>
+</body>
+</html>

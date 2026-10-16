@@ -7,6 +7,7 @@
   import { main, type platform } from '../wailsjs/go/models'
   import VpnSettings from './VpnSettings.svelte'
   import SearchSettings from './SearchSettings.svelte'
+  import RemoteSettings from './RemoteSettings.svelte'
   import ReleaseNotes from './ReleaseNotes.svelte'
 
   let { onClose }: { onClose: () => void } = $props()
@@ -148,6 +149,11 @@
         <fieldset>
           <legend>Search</legend>
           <SearchSettings onError={e => (error = e)} />
+        </fieldset>
+
+        <fieldset>
+          <legend>Remote control</legend>
+          <RemoteSettings onError={e => (error = e)} />
         </fieldset>
 
         <fieldset>

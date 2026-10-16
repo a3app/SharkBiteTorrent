@@ -10,6 +10,7 @@ require (
 	github.com/ViRb3/wgcf/v2 v2.3.1
 	github.com/anacrolix/dht/v2 v2.23.0
 	github.com/anacrolix/torrent v1.61.0
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/wailsapp/wails/v2 v2.16.0
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/sys v0.49.0

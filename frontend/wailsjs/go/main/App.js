@@ -58,6 +58,10 @@ export function GetReleaseNotes() {
   return window['go']['main']['App']['GetReleaseNotes']();
 }
 
+export function GetRemoteStatus() {
+  return window['go']['main']['App']['GetRemoteStatus']();
+}
+
 export function GetSearchStatus() {
   return window['go']['main']['App']['GetSearchStatus']();
 }
@@ -134,6 +138,10 @@ export function Remove(arg1, arg2) {
   return window['go']['main']['App']['Remove'](arg1, arg2);
 }
 
+export function RemoveRemoteDevice(arg1) {
+  return window['go']['main']['App']['RemoveRemoteDevice'](arg1);
+}
+
 export function Resume(arg1) {
   return window['go']['main']['App']['Resume'](arg1);
 }
@@ -154,12 +162,20 @@ export function SetFilesWanted(arg1, arg2, arg3) {
   return window['go']['main']['App']['SetFilesWanted'](arg1, arg2, arg3);
 }
 
+export function SetRemote(arg1, arg2) {
+  return window['go']['main']['App']['SetRemote'](arg1, arg2);
+}
+
 export function SetSearchProxy(arg1) {
   return window['go']['main']['App']['SetSearchProxy'](arg1);
 }
 
 export function SkipUpdate(arg1) {
   return window['go']['main']['App']['SkipUpdate'](arg1);
+}
+
+export function StartRemotePairing() {
+  return window['go']['main']['App']['StartRemotePairing']();
 }
 
 export function VerifyTorrent(arg1) {

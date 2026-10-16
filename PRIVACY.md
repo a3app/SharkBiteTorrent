@@ -29,6 +29,8 @@ Normally everything below goes through the VPN. The exceptions are spelled out: 
 
 On Windows, the app's window is drawn by Microsoft WebView2 (the engine of Microsoft Edge), which on its own would contact Microsoft: looking up your Windows account and signing in to it, text prediction and Microsoft Editor (which send what you type), proxy auto-discovery, Edge configuration and component updates. The app turns those features off and blocks the window's own network layer (it never needs the network). The release leak test checks the app and every process it starts; Windows' own sign-in broker runs separately, so the test reports its activity rather than counting it. Windows may also update the WebView2 runtime through its own update service, outside the app. On macOS and Linux the window uses the system's own web view, which hasn't been checked the same way yet.
 
+**Remote control** (off unless you turn it on in Settings): the app then also accepts connections from devices on your home network, on the port shown in Settings (8732 by default), and only from private network addresses. Paired phones get a random access key, stored on this computer only as a hash. The page uses plain HTTP, so someone else on your home Wi-Fi could in principle see that traffic. It never accepts connections through the VPN or from the internet.
+
 None of these connections carry information about you to the developers.
 
 ## Links in the app

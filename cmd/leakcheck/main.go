@@ -100,8 +100,9 @@ func run() int {
 		}
 	}
 
-	// The endpoint UDP may go to, from the main process only.
-	var endpoint string
+	// The endpoint UDP may go to, from the main process only; and the remote
+	// control's port, if it's on, for inbound home-network connections.
+	var endpoint, remotePort string
 	var acc *warp.Account
 	if *app {
 		if findProcess(appImage) != 0 {
@@ -113,6 +114,7 @@ func run() int {
 		endpoint = *endpointFlag
 		if endpoint == "" {
 			var err error
+			remotePort = appRemotePort()
 			if endpoint, err = appEndpoint(); err != nil {
 				return fatalCode(err.Error())
 			}
@@ -216,6 +218,10 @@ func run() int {
 	for _, c := range conns {
 		switch {
 		case c.loopback():
+		case remotePort != "" && *app && c.proto == "TCP" && c.pid == root && !c.outbound &&
+			portOf(c.local) == remotePort && privateAddr(c.remote):
+			// The remote control (on in Settings): phones on the home network
+			// connecting in. Only inbound, only that port, only private addresses.
 		case c.proto == "UDP" && c.pid == root && (c.remote == endpoint || c.local == endpoint):
 			seenTunnel = true
 		default:
@@ -393,6 +399,36 @@ func defaultExe() string {
 
 // appEndpoint reads the WireGuard endpoint the app will connect to from its
 // saved settings: the WARP account or the imported WireGuard config.
+// appRemotePort returns the remote control's port if it's turned on.
+func appRemotePort() string {
+	cfgDir, _ := os.UserConfigDir()
+	var set struct {
+		RemoteEnabled bool `json:"remoteEnabled"`
+		RemotePort    int  `json:"remotePort"`
+	}
+	if data, err := os.ReadFile(filepath.Join(cfgDir, "SharkBiteTorrent", "settings.json")); err == nil {
+		json.Unmarshal(data, &set)
+	}
+	if !set.RemoteEnabled {
+		return ""
+	}
+	if set.RemotePort == 0 {
+		return "8732"
+	}
+	return strconv.Itoa(set.RemotePort)
+}
+
+func portOf(hp string) string {
+	_, p, _ := net.SplitHostPort(hp)
+	return p
+}
+
+func privateAddr(hp string) bool {
+	host, _, _ := net.SplitHostPort(hp)
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLoopback())
+}
+
 func appEndpoint() (string, error) {
 	cfgDir, _ := os.UserConfigDir()
 	dir := filepath.Join(cfgDir, "SharkBiteTorrent")
