@@ -272,6 +272,8 @@ go run ./cmd/enginecheck -seconds 30 [-down KB/s] [-delete] <magnet|file.torrent
 
 ### Releases
 
+Changes land on `main` as they're made, so building from source always gets the latest. Each user-visible change is noted under **Unreleased** in [`CHANGELOG.md`](CHANGELOG.md); when it's time to ship, that section is renamed to the new version, and the release notes are generated from it (a tag without a CHANGELOG section fails the release).
+
 Pushing a version tag builds Windows, Linux and macOS on GitHub Actions and creates a **draft** Release. The maintainer then signs its `SHA256SUMS.txt` with the release key and publishes it:
 
 ```sh

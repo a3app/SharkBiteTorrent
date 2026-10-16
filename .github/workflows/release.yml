@@ -188,36 +188,32 @@ jobs:
       - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
         with:
           subject-path: 'artifacts/*'
+      # Release notes: this version's section of CHANGELOG.md, then the
+      # downloads table. A tag without a CHANGELOG section fails here, so
+      # every release says what changed.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: src
+          sparse-checkout: |
+            CHANGELOG.md
+            packaging/release-notes-footer.md
+          sparse-checkout-cone-mode: false
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v h="## [$v]" 'index($0, h) == 1 { f = 1; next } f && /^## \[/ { exit } f' src/CHANGELOG.md > section.md
+          if ! grep -q '[^[:space:]]' section.md; then
+            echo "::error::CHANGELOG.md has no section for $v; add '## [$v] - date' with what changed."
+            exit 1
+          fi
+          { echo "## What's new"; cat section.md; echo; cat src/packaging/release-notes-footer.md; } > notes.md
+          cat notes.md
           # A draft: the maintainer signs SHA256SUMS.txt on their own computer
           # (go run ./cmd/releasekey publish <tag>), which also publishes it.
           # The in-app updater only installs releases with a valid signature.
           gh release create "$GITHUB_REF_NAME" artifacts/* --draft \
             --repo "$GITHUB_REPOSITORY" \
-            --title "Shark BiteTorrent ${GITHUB_REF_NAME#v}" \
-            --notes "$(cat <<'EOF'
-          ## Downloads
-
-          | Platform | File |
-          |---|---|
-          | **Windows** (recommended) | `SharkBiteTorrent-amd64-installer.exe` (registers magnet links and .torrent files) |
-          | Windows (portable) | `SharkBiteTorrent.exe` |
-          | **Linux: Arch / CachyOS** | `sharkbitetorrent-*.pkg.tar.zst`, install with `sudo pacman -U <file>` |
-          | Linux (other) | `SharkBiteTorrent-*-linux-x86_64.tar.gz` (needs GTK3 and WebKitGTK 4.1) |
-          | **macOS** (Intel + Apple Silicon) | `SharkBiteTorrent-macos-universal.zip` |
-
-          The macOS app isn't signed with an Apple developer certificate. The first time you
-          open it, macOS blocks it: go to **System Settings → Privacy & Security** and click
-          **Open Anyway**, or run `xattr -cr "/Applications/Shark BiteTorrent.app"`.
-
-          Linux and macOS builds are new and less tested than Windows.
-
-          **Verify a download:** `SHA256SUMS.txt` is signed with the project's release key,
-          [`release.pub`](https://github.com/trevercomb/SharkBiteTorrent/blob/main/release.pub).
-          With [minisign](https://jedisct1.github.io/minisign/), run
-          `minisign -Vm SHA256SUMS.txt -p release.pub`, then `sha256sum -c --ignore-missing SHA256SUMS.txt`.
-          EOF
-          )"
+            --title "Shark BiteTorrent $v" \
+            --notes-file notes.md
