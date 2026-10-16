@@ -41,11 +41,6 @@ func main() {
 
 	err := wails.Run(&options.App{
 		Title: "Shark BiteTorrent",
-		// Wails otherwise passes its own WebView2 arguments (SmartScreen off),
-		// and WebView2 then ignores WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS. Our
-		// arguments (webview_windows.go) turn SmartScreen off themselves,
-		// along with WebView2's other background traffic.
-		EnableFraudulentWebsiteDetection: true,
 		Width:                            1100,
 		Height:                           700,
 		MinWidth:                         720,

@@ -341,7 +341,7 @@ We'd rather tell you upfront than have you find out later.
 
 **What never happens:**
 - No ads, no bundled software, no "recommended offers" in the installer.
-- **No background traffic from the window.** The UI runs in Microsoft WebView2, which on its own would contact Microsoft (Edge config, proxy auto-discovery, and Microsoft Editor, which sends typed text). The app turns all of that off, using a small patch to go-webview2 (`third_party/go-webview2/PATCHED.md`); the release leak test checks it.
+- **No background traffic from the window (Windows).** The UI runs in Microsoft WebView2, which on its own would contact Microsoft: a Windows-account lookup at startup, text prediction (typed text), Edge config and proxy auto-discovery. The app turns those off and gives the window no network access, using a small patch to go-webview2 (`third_party/go-webview2/PATCHED.md`, checked in CI); the release leak test verifies it.
 - **No telemetry or analytics.** The app never sends data to us; there is no server of ours for it to talk to. Its only connections are the torrent network (through the VPN), your VPN provider's API (through the VPN when one is connected; directly only to the provider you're signing in to or connecting to while no VPN is up), Cloudflare's trace page to check your exit IP, GitHub for update checks and release notes (through the VPN by default; you can turn the daily check off), and your own Prowlarr or Jackett when you search. [PRIVACY.md](PRIVACY.md) lists exactly when each one can use your normal connection.
 - Your data, logins and download history are never sold or shared. See the [privacy policy](PRIVACY.md).
 

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/anacrolix/torrent/metainfo"
@@ -43,9 +46,14 @@ type App struct {
 	scanning    map[string]bool // torrents being scanned right now
 	proxy       *socks.Server   // local SOCKS5 proxy into the tunnel, for Prowlarr/Jackett
 	proxyErr    string
-	sfvChecking map[string]bool              // torrents whose .sfv is being checked
-	sfvResults  map[string]*engine.SFVStatus // .sfv results not yet in a saved scan record
-	verifyCtx   context.Context              // cancelled on disconnect; stops "Verify files"
+	// connMu serializes connecting and reconnecting, so the startup connect
+	// and quick successive Reconnects can't interleave. reconnectGen lets a
+	// queued Reconnect see that a newer one supersedes it.
+	connMu       sync.Mutex
+	reconnectGen atomic.Uint64
+	sfvChecking  map[string]bool              // torrents whose .sfv is being checked
+	sfvResults   map[string]*engine.SFVStatus // .sfv results not yet in a saved scan record
+	verifyCtx    context.Context              // cancelled on disconnect; stops "Verify files"
 }
 
 type VpnStatus struct {
@@ -189,13 +197,18 @@ func (a *App) setVpn(s VpnStatus) {
 
 // connect starts the configured VPN, verifies it, then starts the torrent
 // engine. Nothing is downloaded until this succeeds.
-func (a *App) connect() { a.connectPrepared(nil) }
+func (a *App) connect() {
+	a.connMu.Lock()
+	defer a.connMu.Unlock()
+	a.connectPrepared(nil)
+}
 
 // preparedConn is what connecting needs from outside the tunnel being
 // built: the real IP (to confirm the new tunnel's exit differs) and, for
 // VPN accounts, the provider's connection details.
 type preparedConn struct {
 	set          Settings // what it was prepared for
+	account      string   // and with which account (see accountKey)
 	realIP, home string
 	conn         *vpnprov.Connection
 }
@@ -205,7 +218,7 @@ type preparedConn struct {
 // through whatever tunnel is up at the time (vpnprov.SetTunnel), so
 // Reconnect runs this before closing the old tunnel.
 func (a *App) prepareConn(set Settings) (*preparedConn, error) {
-	p := &preparedConn{set: set}
+	p := &preparedConn{set: set, account: accountKey(a.account(set.AccountProvider))}
 	// Only WARP reports warp=on, so for other providers we confirm the tunnel
 	// by checking that the exit IP differs from the real one. The real
 	// connection's country also picks the automatic server location.
@@ -233,10 +246,22 @@ func (a *App) prepareConn(set Settings) (*preparedConn, error) {
 	return p, nil
 }
 
+// accountKey identifies a signed-in account, so a connection prepared with
+// one account isn't used after the user signed in to another.
+func accountKey(acc *vpnprov.Account) string {
+	if acc == nil {
+		return ""
+	}
+	data, _ := json.Marshal(acc.Data)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:8])
+}
+
 // connectPrepared is connect, optionally with prepareConn already done.
+// Callers hold connMu.
 func (a *App) connectPrepared(prep *preparedConn) {
 	a.mu.Lock()
-	if a.vpn.State == "connecting" || a.eng != nil {
+	if a.eng != nil {
 		a.mu.Unlock()
 		return
 	}
@@ -264,7 +289,8 @@ func (a *App) connectPrepared(prep *preparedConn) {
 	}
 
 	if prep != nil && (prep.set.VpnProvider != set.VpnProvider ||
-		prep.set.AccountProvider != set.AccountProvider || prep.set.AccountRegion != set.AccountRegion) {
+		prep.set.AccountProvider != set.AccountProvider || prep.set.AccountRegion != set.AccountRegion ||
+		prep.account != accountKey(a.account(set.AccountProvider))) {
 		prep = nil // settings changed meanwhile
 	}
 	if prep == nil {
@@ -538,7 +564,14 @@ func (a *App) GetVpnStatus() VpnStatus {
 // Reconnect tears down the VPN and engine and starts them again with the
 // current settings. Torrents resume where they left off.
 func (a *App) Reconnect() {
+	gen := a.reconnectGen.Add(1)
 	go func() {
+		a.connMu.Lock()
+		defer a.connMu.Unlock()
+		superseded := func() bool { return a.reconnectGen.Load() != gen }
+		if superseded() {
+			return // a newer Reconnect is queued and will do it
+		}
 		// Talk to the (new) provider's API through the current tunnel while
 		// it's still up, instead of over the normal connection after closing
 		// it. If that fails (the old tunnel may be why we're reconnecting),
@@ -548,7 +581,15 @@ func (a *App) Reconnect() {
 		a.mu.Unlock()
 		var prep *preparedConn
 		if hadTunnel && set.VpnProvider != "none" {
+			a.mu.Lock()
+			a.vpn.State, a.vpn.Error = "connecting", "" // switching; torrents keep running meanwhile
+			a.mu.Unlock()
 			prep, _ = a.prepareConn(set)
+			if superseded() {
+				// The settings changed again while preparing. Leave the old
+				// tunnel up so the newer Reconnect prepares through it too.
+				return
+			}
 		}
 		a.disconnect()
 		a.connectPrepared(prep)

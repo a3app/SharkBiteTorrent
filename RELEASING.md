@@ -7,11 +7,11 @@ Changes go to `main` as they're made (each user-visible one noted under **Unrele
 1. **Checks and CodeQL are green** on the commit being released, and **Security → Code scanning** has no open alerts (fix them, or dismiss them with a written reason).
 2. **Leak test (engine)**, on Windows, from an **administrator** terminal (it turns on Windows' connection and DNS auditing for the run and restores the previous settings afterwards):
    ```sh
-   go run ./cmd/leakcheck -selftest -seconds 10 path/to/legal.torrent   # must FAIL, naming the planted connection and DNS lookup
-   go run ./cmd/leakcheck -seconds 60 path/to/legal.torrent             # must PASS
+   go run ./cmd/leakcheck -selftest path/to/legal.torrent    # must print "selftest OK" (it caught both planted leaks)
+   go run ./cmd/leakcheck -seconds 60 path/to/legal.torrent  # must PASS
    ```
-   Every connection the OS sees from the process is checked (Windows Filtering Platform events 5156/5157), however short, plus every lookup through the system DNS resolver (DNS Client event 3006). A run that records no events at all fails instead of passing.
-3. **Leak test (real app)**: install the build, start it on WARP, then from an administrator terminal run `go run ./cmd/leakcheck -app -seconds 120` and meanwhile use the app: add a torrent, search, open every Settings section, check for updates. Don't switch VPNs during the run (connecting talks to the new provider directly, by design). Must PASS.
+   Every connection the OS sees from the process and everything it starts is checked (Windows Filtering Platform events 5156/5157, process creation 4688), however short, plus every lookup through the system DNS resolver (DNS Client event 3006). UDP is only allowed from the main process to the VPN server. A run whose own test connection or tunnel traffic isn't recorded fails instead of passing.
+3. **Leak test (real app)**: install the build, set it to WARP, **quit it**, then from an administrator terminal run `go run ./cmd/leakcheck -app`. It launches the app itself (so startup is covered) and watches it for 150 s. The person running it: leave the window alone for the first minute, then type in the search box and search, type in the magnet box, open every Settings section (type in a text field, click through providers without saving) and check for updates. Must PASS.
 4. **Fresh-eyes audit of the changes**: a reviewer that hasn't seen the work (a new Claude session or agent, or a person) reviews `git diff <last-tag>..HEAD` with the brief below. Its report goes to the maintainer unedited. Required when the release touches networking, the VPN/tunnel, the updater, signing, the installer, secrets or file handling; otherwise every few releases. Every few releases, audit the whole repository instead of the diff.
 5. **CHANGELOG**: rename **Unreleased** to `## [x.y.z] - YYYY-MM-DD` and make sure it says what users will notice.
 

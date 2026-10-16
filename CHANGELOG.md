@@ -10,9 +10,9 @@ What changed in each release of Shark BiteTorrent. The release notes on GitHub a
 ### Fixed
 - **Privacy:** opening Settings or browsing VPN providers no longer contacts any provider over your normal connection. Found by an independent audit.
   - A provider's server list only loads once you've chosen *VPN account* and signed in to that provider.
-  - While a VPN is connected, requests to VPN providers (server lists, sign-in, sign-out) go through it. That includes switching providers: the new provider is set up through the old VPN before it's closed.
-  - With no VPN connected (the first connection, after a failed connection, or in *No VPN* mode), the only provider contacted directly is the one you're signing in to or connecting to, which sees your IP when you connect anyway. These direct connections now close right away instead of lingering.
-- **Privacy:** the app's window (Microsoft WebView2) no longer makes its own connections outside the VPN. Unpatched, it looked up `wpad` (proxy auto-discovery), contacted `edge.microsoft.com`, and, worst, sent text typed into the app's boxes to Microsoft Editor / text prediction (`substrate.office.com`). Writing suggestions and spellcheck are now off, and WebView2's background networking is turned off. Found by the new leak test.
+  - While a VPN is connected, requests to VPN providers (server lists, sign-in, sign-out) go through it. That includes switching providers: the new provider is set up through the old VPN before it's closed, even if you switch several times in a row.
+  - With no VPN connected (the first connection, after a failed connection, or in *No VPN* mode), providers are contacted directly only for what you do with them (signing in, connecting, signing out, or listing locations for one you're signed in to). These direct connections now close right away instead of lingering.
+- **Privacy (Windows):** the app's window (Microsoft WebView2) no longer contacts Microsoft outside the VPN. Unpatched, at startup it looked up your Windows account at `substrate.office.com` and contacted `edge.microsoft.com`, did proxy auto-discovery (`wpad`), and when you typed in the app's boxes it called Microsoft's text prediction service. All of that is now off, and the window has no network access at all (it never needs any). Found by the new leak test.
 - Error messages from PIA no longer include its temporary access token.
 
 ## [0.2.30] - 2026-10-16
