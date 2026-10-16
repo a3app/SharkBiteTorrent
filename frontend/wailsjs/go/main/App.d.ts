@@ -32,6 +32,8 @@ export function GetPieceMap(arg1:string):Promise<Array<engine.PieceRun>>;
 
 export function GetProxyStatus():Promise<main.ProxyStatus>;
 
+export function GetReleaseNotes():Promise<Array<main.ReleaseNote>>;
+
 export function GetSearchStatus():Promise<main.SearchStatus>;
 
 export function GetSettings():Promise<main.SettingsView>;

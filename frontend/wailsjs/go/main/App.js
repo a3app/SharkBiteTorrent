@@ -54,6 +54,10 @@ export function GetProxyStatus() {
   return window['go']['main']['App']['GetProxyStatus']();
 }
 
+export function GetReleaseNotes() {
+  return window['go']['main']['App']['GetReleaseNotes']();
+}
+
 export function GetSearchStatus() {
   return window['go']['main']['App']['GetSearchStatus']();
 }

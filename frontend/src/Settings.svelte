@@ -2,11 +2,12 @@
   import {
     GetSettings, SaveSettings, ChooseDirectory,
     RegisterAssociations, OpenDefaultAppsSettings, GetAbout, OpenURL,
-    CheckForUpdates, InstallUpdate,
+    CheckForUpdates, InstallUpdate, GetReleaseNotes,
   } from '../wailsjs/go/main/App.js'
   import { main, type platform } from '../wailsjs/go/models'
   import VpnSettings from './VpnSettings.svelte'
   import SearchSettings from './SearchSettings.svelte'
+  import ReleaseNotes from './ReleaseNotes.svelte'
 
   let { onClose }: { onClose: () => void } = $props()
 
@@ -30,6 +31,9 @@
   const referralNames = $derived(referralIds.map(id => providerNames[id] ?? id).join(' and '))
 
   GetAbout().then(a => (about = a))
+  let currentNotes = $state<main.ReleaseNote[]>([])
+  let showCurrentNotes = $state(false)
+  GetReleaseNotes().then(n => (currentNotes = n ?? []))
 
   let checking = $state(false)
   let installing = $state(false)
@@ -202,8 +206,16 @@
             <div class="row">
               <span>Shark BiteTorrent {about.version}</span>
               <span class="muted">· free software ({about.license})</span>
+              {#if currentNotes.length > 0}
+                <button class="link" onclick={() => (showCurrentNotes = !showCurrentNotes)}>
+                  {showCurrentNotes ? 'Hide' : "What's new"}
+                </button>
+              {/if}
               <button class="link" onclick={() => OpenURL(about!.links.repo)}>Source code ↗</button>
             </div>
+            {#if showCurrentNotes}
+              <div class="notes-box"><ReleaseNotes notes={currentNotes} /></div>
+            {/if}
             {#if about.store}
               <p class="muted small">Updates are installed by the Microsoft Store.</p>
             {:else}
@@ -221,12 +233,15 @@
                   {:else}
                     <button class="primary" onclick={() => OpenURL(updateResult!.notesURL)}>Download</button>
                   {/if}
-                  <button class="link" onclick={() => OpenURL(updateResult!.notesURL)}>What's new ↗</button>
+                  <button class="link" onclick={() => OpenURL(updateResult!.notesURL)}>Release page ↗</button>
                 {:else}
                   <span class="ok">You're up to date.</span>
                 {/if}
               {/if}
             </div>
+            {#if updateResult?.available && (updateResult.notes ?? []).length > 0}
+              <div class="notes-box"><ReleaseNotes notes={updateResult.notes} /></div>
+            {/if}
             {#if updateResult?.direct}
               <p class="muted small">The VPN was off, so this check used your normal connection.</p>
             {/if}
@@ -306,4 +321,5 @@
     background: rgba(248, 81, 73, 0.12); border: 1px solid rgba(248, 81, 73, 0.4);
   }
   .actions { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--border); }
+  .notes-box { margin: 8px 0 4px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; }
 </style>

@@ -46,6 +46,9 @@ type UpdateInfo struct {
 	// Direct is true if the check went over the normal connection because
 	// the VPN wasn't up.
 	Direct bool `json:"direct"`
+	// Notes are the release notes for every version after Current up to
+	// Latest, newest first (empty if they couldn't be fetched).
+	Notes []ReleaseNote `json:"notes"`
 }
 
 func (a *App) currentVersion() string { return a.GetAbout().Version }
@@ -97,6 +100,9 @@ func (a *App) checkUpdate(ctx context.Context, allowDirect bool) (UpdateInfo, er
 	info.Latest = strings.TrimPrefix(tag, "v")
 	info.NotesURL = releasesURL + "/tag/" + tag
 	info.Available = newerVersion(info.Latest, info.Current)
+	if info.Available {
+		info.Notes = updateNotes(ctx, hc, info.Current, info.Latest)
+	}
 	return info, nil
 }
 

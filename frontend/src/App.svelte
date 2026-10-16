@@ -8,6 +8,7 @@
   import { EventsOn, OnFileDrop } from '../wailsjs/runtime/runtime.js'
   import type { engine, main } from '../wailsjs/go/models'
   import FilesPanel from './FilesPanel.svelte'
+  import ReleaseNotes from './ReleaseNotes.svelte'
   import SearchView from './SearchView.svelte'
   import Settings from './Settings.svelte'
   import { bytes, rate, duration } from './format'
@@ -117,6 +118,7 @@
 
   // Update offered by the launch-time check (or Settings → Check for updates).
   let update = $state<main.UpdateInfo | null>(null)
+  let showNotes = $state(false)
   let installing = $state(false)
 
   async function installUpdate() {
@@ -252,9 +254,19 @@
         {:else}
           <button class="primary" onclick={() => OpenURL(update!.notesURL)}>Download</button>
         {/if}
-        <button onclick={() => OpenURL(update!.notesURL)}>What's new</button>
+        {#if (update.notes ?? []).length > 0}
+          <button onclick={() => (showNotes = !showNotes)}>{showNotes ? 'Hide' : "What's new"}</button>
+        {:else}
+          <button onclick={() => OpenURL(update!.notesURL)}>What's new ↗</button>
+        {/if}
         <button onclick={() => { SkipUpdate(update!.latest); update = null }}>Skip this version</button>
         <button class="close" onclick={() => (update = null)} aria-label="Later">✕</button>
+      {/if}
+      {#if showNotes && (update.notes ?? []).length > 0}
+        <div class="update-notes">
+          <ReleaseNotes notes={update.notes} />
+          <button class="link" onclick={() => OpenURL(update!.notesURL)}>Release page ↗</button>
+        </div>
       {/if}
     </div>
   {/if}
@@ -433,6 +445,8 @@
   .update > span:first-child { flex: 1; min-width: 240px; }
   .update button { padding: 3px 10px; }
   .update .close { background: none; border: none; }
+  .update-notes { flex-basis: 100%; border-top: 1px solid rgba(79, 140, 255, 0.3); padding-top: 8px; }
+  .update-notes .link { background: none; border: none; padding: 4px 0 0; color: var(--accent); text-decoration: underline; }
   .muted { color: var(--muted); }
 
   .error {
