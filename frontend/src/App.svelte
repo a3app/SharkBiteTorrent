@@ -209,7 +209,12 @@
           {#if vpn.port}· port {vpn.port} open{/if}
         </span>
         {#if vpn.error}<span class="warn" title={vpn.error}>⚠ check failed</span>{/if}
-        {#if vpn.warning}<span class="warn" title={vpn.warning}>⚠ no port forwarding</span>{/if}
+        {#if vpn.warning?.startsWith("couldn't switch")}
+          <span class="warn" title={vpn.warning}>⚠ VPN switch failed</span>
+          <button onclick={() => run(Reconnect)}>Retry</button>
+        {:else if vpn.warning}
+          <span class="warn" title={vpn.warning}>⚠ no port forwarding</span>
+        {/if}
       {:else if vpn.state === 'off'}
         <span class="text" title="Chosen in Settings → VPN. Peers and trackers see your real IP address.">
           <b>VPN off</b> · torrents use your normal connection

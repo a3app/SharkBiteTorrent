@@ -46,6 +46,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -140,13 +141,25 @@ func run() int {
 		return fatalCode("turning on auditing: " + err.Error())
 	}
 	defer restore()
+	// Ctrl+C mustn't leave system-wide auditing on.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	go func() {
+		<-sig
+		fmt.Println("\ninterrupted")
+		restore()
+		os.Exit(130)
+	}()
 	time.Sleep(time.Second) // let the audit policy take effect
 	start := time.Now().UTC()
 
-	// Control: a connection of our own (to this computer) that the audit log
-	// must record. It proves auditing works, so silence from the watched
+	// Controls: a connection and a DNS lookup of our own, at the start and
+	// again just before the logs are read, which the logs must contain. They
+	// prove auditing worked for the whole run (it wasn't switched off, the
+	// logs didn't drop or overwrite events), so silence from the watched
 	// processes means clean rather than "not logged".
-	control := controlConnection()
+	controlStart := controlConnection()
+	controlLookup()
 
 	var root int
 	var polled *pidSet
@@ -159,6 +172,9 @@ func run() int {
 	if err != nil {
 		return fatalCode(err.Error())
 	}
+	endControls := time.Now().UTC()
+	controlEnd := controlConnection()
+	controlLookup()
 	time.Sleep(3 * time.Second) // let the last events reach the logs
 
 	watched, err := descendants(start, root)
@@ -172,12 +188,25 @@ func run() int {
 	if err != nil {
 		return fatalCode("reading the connection log: " + err.Error())
 	}
-	lookups, dnsErr := dnsEvents(start, watched)
-	controlSeen := false
-	if own, err := connectionEvents(start, newPIDSet(os.Getpid())); err == nil {
+	allLookups, dnsErr := dnsEvents(start)
+	var lookups []string
+	ownPID := os.Getpid()
+	dnsControls := map[bool]bool{} // start, end
+	for _, l := range allLookups {
+		if l.pid == ownPID && strings.EqualFold(l.name, "localhost") {
+			dnsControls[!l.at.Before(endControls)] = true
+		}
+		if watched.has(l.pid) {
+			lookups = append(lookups, l.name)
+		}
+	}
+	controlsSeen := map[string]bool{}
+	if own, err := connectionEvents(start, newPIDSet(ownPID)); err == nil {
 		for _, c := range own {
-			if c.remote == control || c.local == control {
-				controlSeen = true
+			for _, ctl := range []string{controlStart, controlEnd} {
+				if c.remote == ctl || c.local == ctl {
+					controlsSeen[ctl] = true
+				}
 			}
 		}
 	}
@@ -187,7 +216,7 @@ func run() int {
 	for _, c := range conns {
 		switch {
 		case c.loopback():
-		case c.proto == "UDP" && c.pid == root && c.remote == endpoint:
+		case c.proto == "UDP" && c.pid == root && (c.remote == endpoint || c.local == endpoint):
 			seenTunnel = true
 		default:
 			l := c.String() + fmt.Sprintf(" at +%ds", int(c.at.Sub(start).Seconds()))
@@ -205,13 +234,24 @@ func run() int {
 	leaks = dedupe(leaks)
 
 	fmt.Printf("\nwatched %d processes; connection events: %d; system DNS lookups: %v\n", watched.len(), len(conns), dedupe(lookups))
-	if !controlSeen {
-		fmt.Println("FAIL: the audit log didn't record the check's own test connection, so nothing was verified")
+	if !controlsSeen[controlStart] || !controlsSeen[controlEnd] {
+		fmt.Println("FAIL: the connection log didn't record both of the check's own test connections (start and end), so the run wasn't fully covered")
 		return 1
 	}
 	if dnsErr != nil {
 		fmt.Println("FAIL: couldn't read the DNS log, so DNS lookups weren't checked:", dnsErr)
 		return 1
+	}
+	if !dnsControls[false] || !dnsControls[true] {
+		fmt.Println("FAIL: the DNS log didn't record both of the check's own test lookups (start and end), so DNS wasn't fully covered")
+		return 1
+	}
+	if msg := checkBrowserArgs(watched); *app && msg != "" {
+		fmt.Println("FAIL: " + msg)
+		return 1
+	}
+	for _, w := range brokerActivity(start) {
+		fmt.Println("note (not necessarily caused by the app):", w)
 	}
 	if !seenTunnel {
 		// Both the engine run and -app start their tunnel during the check,
@@ -337,7 +377,7 @@ func runApp(exe string, secs int) (int, *pidSet, error) {
 		return 0, nil, errors.New("the app didn't start")
 	}
 	set := newPIDSet(pid)
-	fmt.Printf("Started Shark BiteTorrent (PID %d). For the next %d seconds, YOU use it: type in the search box and search, type or paste in the magnet box, open every Settings section (type in a text field, click through VPN providers without saving), and click Check for updates.\n", pid, secs)
+	fmt.Printf("Started Shark BiteTorrent (PID %d); watching it for %d seconds.\nYOU: leave the window alone for the first minute (that covers startup), then type in the search box and search, type or paste in the magnet box, open every Settings section (type in a text field, click through VPN providers without saving), and click Check for updates.\n", pid, secs)
 	deadline := time.Now().Add(time.Duration(secs) * time.Second)
 	for time.Now().Before(deadline) {
 		set.addChildren() // backup to the process-creation log
@@ -411,13 +451,55 @@ func controlConnection() string {
 
 // --- auditing on/off ---
 
+// dnsLogSize is the DNS Client log's size during the run. At the default
+// (about 1 MB, oldest events overwritten) a busy machine can overwrite the
+// app's startup lookups before they're read.
+const dnsLogSize = 64 << 20
+
 func startAuditing() (restore func(), err error) {
 	type prev struct{ name, success, failure string }
 	var saved []prev
+	var dnsWasEnabled bool
+	dnsPrevSize := ""
+	var once sync.Once
+	restore = func() {
+		once.Do(func() {
+			var failed []string
+			for _, p := range saved {
+				if out, err := exec.Command("auditpol", "/set", "/subcategory:"+p.name, "/success:"+p.success, "/failure:"+p.failure).CombinedOutput(); err != nil {
+					failed = append(failed, fmt.Sprintf("%s (%v: %s)", p.name, err, strings.TrimSpace(string(out))))
+				}
+			}
+			if dnsPrevSize != "" {
+				// The size can only be changed while the log is off.
+				exec.Command("wevtutil", "sl", dnsLog, "/e:false").Run()
+				if err := exec.Command("wevtutil", "sl", dnsLog, "/ms:"+dnsPrevSize).Run(); err != nil {
+					failed = append(failed, "DNS log size (was "+dnsPrevSize+" bytes)")
+				}
+			}
+			if dnsWasEnabled {
+				if err := exec.Command("wevtutil", "sl", dnsLog, "/e:true").Run(); err != nil {
+					failed = append(failed, "DNS log on")
+				}
+			} else if err := exec.Command("wevtutil", "sl", dnsLog, "/e:false").Run(); err != nil {
+				failed = append(failed, "DNS log off")
+			}
+			if len(failed) > 0 {
+				fmt.Println("WARNING: couldn't restore these auditing settings; set them back by hand:", strings.Join(failed, "; "))
+			} else {
+				fmt.Println("(auditing settings restored)")
+			}
+		})
+	}
+	// Any failure part-way undoes what was already changed.
+	fail := func(err error) (func(), error) {
+		restore()
+		return nil, err
+	}
 	for _, sub := range []string{wfpSubcategory, processSubcategory} {
 		out, err := exec.Command("auditpol", "/get", "/subcategory:"+sub, "/r").Output()
 		if err != nil {
-			return nil, fmt.Errorf("auditpol: %w", err)
+			return fail(fmt.Errorf("auditpol: %w", err))
 		}
 		// The CSV's Inclusion Setting: "No Auditing", "Success", "Failure" or
 		// "Success and Failure".
@@ -425,26 +507,32 @@ func startAuditing() (restore func(), err error) {
 		setting := lines[len(lines)-1]
 		saved = append(saved, prev{sub, onOff(strings.Contains(setting, "Success")), onOff(strings.Contains(setting, "Failure"))})
 		if out, err := exec.Command("auditpol", "/set", "/subcategory:"+sub, "/success:enable", "/failure:enable").CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("auditpol: %v: %s", err, out)
+			return fail(fmt.Errorf("auditpol: %v: %s", err, out))
 		}
 	}
-	prevDNS, _ := exec.Command("wevtutil", "gl", dnsLog).Output()
-	dnsWasEnabled := strings.Contains(string(prevDNS), "enabled: true")
-	if !dnsWasEnabled {
-		exec.Command("wevtutil", "sl", dnsLog, "/e:true").Run()
+	prevDNS, err := exec.Command("wevtutil", "gl", dnsLog).Output()
+	if err != nil {
+		return fail(fmt.Errorf("reading the DNS log settings: %w", err))
 	}
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			for _, p := range saved {
-				exec.Command("auditpol", "/set", "/subcategory:"+p.name, "/success:"+p.success, "/failure:"+p.failure).Run()
-			}
-			if !dnsWasEnabled {
-				exec.Command("wevtutil", "sl", dnsLog, "/e:false").Run()
-			}
-			fmt.Println("(auditing settings restored)")
-		})
-	}, nil
+	dnsWasEnabled = strings.Contains(string(prevDNS), "enabled: true")
+	for _, line := range strings.Split(string(prevDNS), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "maxSize: "); ok {
+			dnsPrevSize = strings.TrimSpace(v)
+		}
+	}
+	if dnsPrevSize == "" {
+		dnsWasEnabled = true // don't touch what we couldn't read
+		return fail(errors.New("couldn't read the DNS log's size"))
+	}
+	// The size can only be changed while the log is off.
+	exec.Command("wevtutil", "sl", dnsLog, "/e:false").Run()
+	if err := exec.Command("wevtutil", "sl", dnsLog, "/ms:"+strconv.Itoa(dnsLogSize)).Run(); err != nil {
+		return fail(fmt.Errorf("enlarging the DNS log: %w", err))
+	}
+	if err := exec.Command("wevtutil", "sl", dnsLog, "/e:true").Run(); err != nil {
+		return fail(fmt.Errorf("turning on the DNS log: %w", err))
+	}
+	return restore, nil
 }
 
 func onOff(b bool) string {
@@ -466,10 +554,15 @@ type conn struct {
 	permitted     bool
 }
 
+// loopback is traffic that stays on this computer: both ends loopback,
+// whichever side Windows logged as source or destination.
 func (c conn) loopback() bool {
-	host, _, _ := net.SplitHostPort(c.remote)
-	ip := net.ParseIP(host)
-	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
+	isLoop := func(hp string) bool {
+		host, _, _ := net.SplitHostPort(hp)
+		ip := net.ParseIP(host)
+		return ip != nil && ip.IsLoopback()
+	}
+	return isLoop(c.local) && isLoop(c.remote)
 }
 
 func (c conn) String() string {
@@ -596,18 +689,95 @@ func connectionEvents(start time.Time, pids *pidSet) ([]conn, error) {
 	return out, nil
 }
 
-func dnsEvents(start time.Time, pids *pidSet) ([]string, error) {
+type lookup struct {
+	at   time.Time
+	pid  int
+	name string
+}
+
+// dnsEvents returns every system-resolver lookup since start, by any process.
+func dnsEvents(start time.Time) ([]lookup, error) {
 	evs, err := queryLog(dnsLog, "*[System[EventID=3006 and "+since(start)+"]]")
 	if err != nil {
 		return nil, err
 	}
-	var out []string
+	var out []lookup
 	for _, e := range evs {
-		if pids.has(e.System.Execution.ProcessID) {
-			out = append(out, e.field("QueryName"))
-		}
+		at, _ := time.Parse(time.RFC3339Nano, e.System.TimeCreated.SystemTime)
+		out = append(out, lookup{at: at, pid: e.System.Execution.ProcessID, name: e.field("QueryName")})
 	}
 	return out, nil
+}
+
+// controlLookup is a system-resolver lookup of our own that the DNS log
+// must record (see the controls in run).
+func controlLookup() {
+	(&net.Resolver{}).LookupHost(context.Background(), "localhost")
+}
+
+// checkBrowserArgs confirms WebView2's browser process got the app's
+// arguments. Chromium uses only the last --disable-features, so if anything
+// adds one after ours, all of ours are silently dropped.
+func checkBrowserArgs(s *pidSet) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	found := false
+	for pid, cmd := range s.cmd {
+		if !strings.Contains(strings.ToLower(s.kind[pid]), "msedgewebview2.exe") || strings.Contains(cmd, "--type=") {
+			continue
+		}
+		found = true
+		last := ""
+		for _, f := range strings.Fields(cmd) {
+			if v, ok := strings.CutPrefix(f, "--disable-features="); ok {
+				last = v
+			}
+		}
+		for _, need := range []string{"msImplicitSignin", "msEdgeOSAccountInfoSubstrate", "TextPrediction", "msSmartScreenProtection"} {
+			if !strings.Contains(","+last+",", ","+need+",") {
+				return "WebView2 (PID " + strconv.Itoa(pid) + ") didn't get the app's --disable-features (missing " + need + "); its background features are on"
+			}
+		}
+		for _, need := range []string{"--proxy-server=127.0.0.1:9", "--host-resolver-rules="} {
+			if !strings.Contains(cmd, need) {
+				return "WebView2 (PID " + strconv.Itoa(pid) + ") didn't get " + need
+			}
+		}
+	}
+	if !found {
+		return "didn't see WebView2's browser process, so its settings weren't checked"
+	}
+	return ""
+}
+
+// brokerActivity lists connections made during the run by Windows' account
+// broker and proxy auto-discovery services. They run outside the app's
+// process tree, so the app's WebView2 could use them without the check
+// seeing it; this only reports them (the rest of Windows uses them too).
+func brokerActivity(start time.Time) []string {
+	set := &pidSet{pids: map[int]bool{}}
+	for _, svc := range []string{"TokenBroker", "WinHttpAutoProxySvc"} {
+		out, _ := exec.Command("tasklist", "/SVC", "/FI", "SERVICES eq "+svc, "/FO", "CSV", "/NH").Output()
+		if f := strings.Split(strings.TrimSpace(string(out)), "\",\""); len(f) > 1 {
+			if pid, err := strconv.Atoi(f[1]); err == nil {
+				set.pids[pid] = true
+			}
+		}
+	}
+	if pid := findProcess("Microsoft.AAD.BrokerPlugin.exe"); pid != 0 {
+		set.pids[pid] = true
+	}
+	conns, err := connectionEvents(start, set)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, c := range conns {
+		if !c.loopback() {
+			out = append(out, c.String())
+		}
+	}
+	return dedupe(out)
 }
 
 // normalizeHostPort makes "ip:port" comparable however Windows or the app
@@ -629,6 +799,7 @@ type pidSet struct {
 	mu   sync.Mutex
 	pids map[int]bool
 	kind map[int]string // e.g. "msedgewebview2.exe --type=utility --utility-sub-type=…"
+	cmd  map[int]string // full command line
 }
 
 func newPIDSet(pid int) *pidSet {
@@ -655,12 +826,12 @@ func (s *pidSet) merge(o *pidSet) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.kind == nil {
-		s.kind = map[int]string{}
+		s.kind, s.cmd = map[int]string{}, map[int]string{}
 	}
 	for p := range o.pids {
 		s.pids[p] = true
 		if k := o.kind[p]; k != "" {
-			s.kind[p] = k
+			s.kind[p], s.cmd[p] = k, o.cmd[p]
 		}
 	}
 }
@@ -674,6 +845,7 @@ func (s *pidSet) addChildren() {
 	}
 	parent := map[int][]int{}
 	kinds := map[int]string{}
+	cmds := map[int]string{}
 	for _, line := range strings.Split(string(out), "\n") {
 		f := strings.Fields(line)
 		if len(f) >= 2 {
@@ -682,17 +854,18 @@ func (s *pidSet) addChildren() {
 			parent[pp] = append(parent[pp], p)
 			if len(f) >= 3 {
 				kinds[p] = processKind(f[2], strings.Join(f[3:], " "))
+				cmds[p] = strings.Join(f[3:], " ")
 			}
 		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.kind == nil {
-		s.kind = map[int]string{}
+		s.kind, s.cmd = map[int]string{}, map[int]string{}
 	}
 	for p := range s.pids {
 		if k, ok := kinds[p]; ok {
-			s.kind[p] = k
+			s.kind[p], s.cmd[p] = k, cmds[p]
 		}
 	}
 	for changed := true; changed; {
@@ -701,7 +874,7 @@ func (s *pidSet) addChildren() {
 			for _, c := range parent[p] {
 				if !s.pids[c] {
 					s.pids[c], changed = true, true
-					s.kind[c] = kinds[c]
+					s.kind[c], s.cmd[c] = kinds[c], cmds[c]
 				}
 			}
 		}

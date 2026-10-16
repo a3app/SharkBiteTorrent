@@ -17,7 +17,8 @@ func TestWebViewArgsPatched(t *testing.T) {
 		t.Fatal("edge.ExtraBrowserArgs not set")
 	}
 	src, err := os.ReadFile("third_party/go-webview2/pkg/edge/chromium.go")
-	if err != nil || !strings.Contains(string(src), "ExtraBrowserArgs") {
+	const patch = `browserArgs := strings.Join(append(append([]string{}, e.AdditionalBrowserArgs...), ExtraBrowserArgs...), " ")`
+	if err != nil || !strings.Contains(string(src), patch) {
 		t.Fatal("the go-webview2 patch is missing from chromium.go (see third_party/go-webview2/PATCHED.md)")
 	}
 	mod, _ := os.ReadFile("go.mod")

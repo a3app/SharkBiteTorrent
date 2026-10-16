@@ -25,11 +25,20 @@ while IFS= read -r line; do
   esac
 done < <(diff -rq --strip-trailing-cr "$upstream" third_party/go-webview2 || true)
 
-# chromium.go: exactly one changed line, and it's the ExtraBrowserArgs one.
+# extra_args.go: exactly the reviewed content (line endings ignored).
+want_extra=901c2c2139bf769ed4990d6871a8eed55d1b6ac4811c27f0a80e3d24ffd14c71
+got_extra=$(tr -d '\r' < third_party/go-webview2/pkg/edge/extra_args.go | sha256sum | cut -c1-64)
+if [ "$got_extra" != "$want_extra" ]; then
+  echo "pkg/edge/extra_args.go isn't the reviewed version (sha256 $got_extra); if you changed it on purpose, review it and update want_extra" >&2
+  problems=1
+fi
+
+# chromium.go: exactly one changed line, and it's exactly the patch line.
+want_line='> 	browserArgs := strings.Join(append(append([]string{}, e.AdditionalBrowserArgs...), ExtraBrowserArgs...), " ") // SharkBite patch, see extra_args.go'
 cdiff=$(diff --strip-trailing-cr "$upstream/pkg/edge/chromium.go" third_party/go-webview2/pkg/edge/chromium.go || true)
 added=$(printf '%s\n' "$cdiff" | grep -c '^>' || true)
 removed=$(printf '%s\n' "$cdiff" | grep -c '^<' || true)
-if [ "$added" != "1" ] || [ "$removed" != "1" ] || ! printf '%s\n' "$cdiff" | grep -q '^>.*ExtraBrowserArgs'; then
+if [ "$added" != "1" ] || [ "$removed" != "1" ] || [ "$(printf '%s\n' "$cdiff" | grep '^>')" != "$want_line" ]; then
   echo "pkg/edge/chromium.go differs from upstream by more than the documented one-line patch" >&2
   problems=1
 fi

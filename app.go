@@ -49,6 +49,7 @@ type App struct {
 	// connMu serializes connecting and reconnecting, so the startup connect
 	// and quick successive Reconnects can't interleave. reconnectGen lets a
 	// queued Reconnect see that a newer one supersedes it.
+	shuttingDown bool
 	connMu       sync.Mutex
 	reconnectGen atomic.Uint64
 	sfvChecking  map[string]bool              // torrents whose .sfv is being checked
@@ -122,7 +123,16 @@ func (a *App) startup(ctx context.Context) {
 	a.startProxy()
 }
 
+func (a *App) isShuttingDown() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.quitting || a.shuttingDown
+}
+
 func (a *App) shutdown(ctx context.Context) {
+	a.mu.Lock()
+	a.shuttingDown = true // a Reconnect in progress must not start anything new
+	a.mu.Unlock()
 	a.stopProxy()
 	a.disconnect()
 	quitTray()
@@ -261,7 +271,7 @@ func accountKey(acc *vpnprov.Account) string {
 // Callers hold connMu.
 func (a *App) connectPrepared(prep *preparedConn) {
 	a.mu.Lock()
-	if a.eng != nil {
+	if a.eng != nil || a.shuttingDown {
 		a.mu.Unlock()
 		return
 	}
@@ -582,14 +592,29 @@ func (a *App) Reconnect() {
 		var prep *preparedConn
 		if hadTunnel && set.VpnProvider != "none" {
 			a.mu.Lock()
+			before := a.vpn
 			a.vpn.State, a.vpn.Error = "connecting", "" // switching; torrents keep running meanwhile
 			a.mu.Unlock()
-			prep, _ = a.prepareConn(set)
-			if superseded() {
-				// The settings changed again while preparing. Leave the old
-				// tunnel up so the newer Reconnect prepares through it too.
+			var err error
+			prep, err = a.prepareConn(set)
+			if superseded() || a.isShuttingDown() {
+				// The settings changed again while preparing (leave the old
+				// tunnel up so the newer Reconnect prepares through it too),
+				// or the app is quitting.
 				return
 			}
+			if err != nil {
+				// Don't close the working VPN and then contact the new
+				// provider over the normal connection instead: stay on the
+				// current VPN and say why the switch didn't happen.
+				a.mu.Lock()
+				a.vpn = before
+				a.vpn.Warning = "couldn't switch VPN through the current connection: " + err.Error() + " (still connected as before; Retry, or restart the app to connect directly)"
+				a.mu.Unlock()
+				return
+			}
+		} else if a.isShuttingDown() {
+			return
 		}
 		a.disconnect()
 		a.connectPrepared(prep)
