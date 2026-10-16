@@ -100,15 +100,26 @@ function renderTorrents(list) {
     const pr = el('button', '', paused ? 'Resume' : 'Pause')
     pr.onclick = () => act(() => api('POST', `/api/torrents/${t.hash}/${paused ? 'resume' : 'pause'}`))
     const rm = el('button', 'danger', 'Remove…')
-    rm.onclick = () => {
-      if (!confirm(`Remove “${t.name || t.hash}”?`)) return
-      const files = confirm('Also delete its downloaded files?\n\nOK = delete the files too\nCancel = keep the files')
-      act(() => api('POST', `/api/torrents/${t.hash}/remove?files=${files ? 1 : 0}`), files ? 'Removed, with its files.' : 'Removed.')
-    }
+    rm.onclick = () => askRemove(t)
     actions.append(pr, rm)
     li.append(actions)
     ul.append(li)
   }
+}
+
+// One dialog, like the desktop app: the torrent's name, a "delete files"
+// checkbox (off by default), Cancel and Remove.
+function askRemove(t) {
+  const d = $('removeDialog')
+  $('removeName').textContent = t.name || t.hash
+  $('removeFiles').checked = false
+  d.returnValue = ''
+  d.onclose = () => {
+    if (d.returnValue !== 'remove') return
+    const files = $('removeFiles').checked
+    act(() => api('POST', `/api/torrents/${t.hash}/remove?files=${files ? 1 : 0}`), files ? 'Removed, with its files.' : 'Removed.')
+  }
+  d.showModal()
 }
 
 async function refresh() {

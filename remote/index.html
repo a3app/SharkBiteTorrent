@@ -51,5 +51,17 @@
       <p id="empty" class="muted" hidden>No torrents yet.</p>
     </section>
   </main>
+
+  <dialog id="removeDialog">
+    <form method="dialog">
+      <h2>Remove torrent?</h2>
+      <p id="removeName" class="name"></p>
+      <label class="check"><input id="removeFiles" type="checkbox"> Also delete its downloaded files</label>
+      <div class="actions">
+        <button value="cancel" type="submit">Cancel</button>
+        <button value="remove" type="submit" class="primary danger-fill">Remove</button>
+      </div>
+    </form>
+  </dialog>
 </body>
 </html>
