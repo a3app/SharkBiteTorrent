@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sharkbite/internal/search"
@@ -189,5 +191,33 @@ func TestRemoteSearchResultsHideLinks(t *testing.T) {
 		`{"id":"nope","download":"http://evil.example/x"}`)
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "expired") {
 		t.Errorf("unknown id: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRemoteTailscaleClients(t *testing.T) {
+	rs := &remoteServer{tsAddr: "100.101.102.103"}
+	req := func(local, remote string) *http.Request {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = remote
+		return r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, &net.TCPAddr{IP: net.ParseIP(local), Port: 8732}))
+	}
+	cases := []struct {
+		local, remote string
+		want          bool
+	}{
+		{"100.101.102.103", "100.90.1.2:5000", true},    // Tailscale phone on the Tailscale address
+		{"100.101.102.103", "192.168.4.39:5000", false}, // home device on the Tailscale address
+		{"100.101.102.103", "203.0.113.5:5000", false},  // internet
+		{"192.168.4.111", "192.168.4.39:5000", true},    // home phone at home
+		{"192.168.4.111", "100.90.1.2:5000", false},     // 100.64/10 on the home address (e.g. ISP CGNAT)
+	}
+	for _, c := range cases {
+		if got := rs.allowedClient(req(c.local, c.remote)); got != c.want {
+			t.Errorf("local %s from %s: got %v", c.local, c.remote, got)
+		}
+	}
+	// Without Tailscale access, a Tailscale address is just not private.
+	if (&remoteServer{}).allowedClient(req("100.101.102.103", "100.90.1.2:5000")) {
+		t.Error("Tailscale client allowed with Tailscale access off")
 	}
 }

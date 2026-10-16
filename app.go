@@ -96,8 +96,9 @@ type Settings struct {
 	ScanDownloads bool `json:"scanDownloads"`
 	// Remote control from phones on the home network (remote.go); changed
 	// through SetRemote, not SaveSettings.
-	RemoteEnabled bool `json:"remoteEnabled"`
-	RemotePort    int  `json:"remotePort"`
+	RemoteEnabled   bool `json:"remoteEnabled"`
+	RemotePort      int  `json:"remotePort"`
+	RemoteTailscale bool `json:"remoteTailscale"` // also listen on the Tailscale address
 }
 
 // savedTorrent is persisted so torrents survive restarts. Source is a magnet
@@ -909,7 +910,7 @@ func (a *App) SaveSettings(s Settings) error {
 	old := a.settings
 	// The remote control has its own controls (SetRemote); the Settings
 	// form's copy may be stale.
-	s.RemoteEnabled, s.RemotePort = old.RemoteEnabled, old.RemotePort
+	s.RemoteEnabled, s.RemotePort, s.RemoteTailscale = old.RemoteEnabled, old.RemotePort, old.RemoteTailscale
 	a.settings = s
 	eng := a.eng
 	a.mu.Unlock()

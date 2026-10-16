@@ -170,6 +170,10 @@ export function SetRemote(arg1, arg2) {
   return window['go']['main']['App']['SetRemote'](arg1, arg2);
 }
 
+export function SetRemoteTailscale(arg1) {
+  return window['go']['main']['App']['SetRemoteTailscale'](arg1);
+}
+
 export function SetSearchProxy(arg1) {
   return window['go']['main']['App']['SetSearchProxy'](arg1);
 }
@@ -178,8 +182,8 @@ export function SkipUpdate(arg1) {
   return window['go']['main']['App']['SkipUpdate'](arg1);
 }
 
-export function StartRemotePairing() {
-  return window['go']['main']['App']['StartRemotePairing']();
+export function StartRemotePairing(arg1) {
+  return window['go']['main']['App']['StartRemotePairing'](arg1);
 }
 
 export function VerifyTorrent(arg1) {

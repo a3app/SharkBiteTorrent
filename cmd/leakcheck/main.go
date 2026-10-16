@@ -103,6 +103,7 @@ func run() int {
 	// The endpoint UDP may go to, from the main process only; and the remote
 	// control's port, if it's on, for inbound home-network connections.
 	var endpoint, remotePort string
+	var remoteTailscale bool // Tailscale access on: Tailscale devices may connect in too
 	var acc *warp.Account
 	if *app {
 		if findProcess(appImage) != 0 {
@@ -114,7 +115,7 @@ func run() int {
 		endpoint = *endpointFlag
 		if endpoint == "" {
 			var err error
-			remotePort = appRemotePort()
+			remotePort, remoteTailscale = appRemotePort()
 			if endpoint, err = appEndpoint(); err != nil {
 				return fatalCode(err.Error())
 			}
@@ -219,7 +220,7 @@ func run() int {
 		switch {
 		case c.loopback():
 		case remotePort != "" && *app && c.proto == "TCP" && c.pid == root && !c.outbound &&
-			portOf(c.local) == remotePort && privateAddr(c.remote):
+			portOf(c.local) == remotePort && (privateAddr(c.remote) || remoteTailscale && tailscaleAddr(c.remote)):
 			// The remote control (on in Settings): phones on the home network
 			// connecting in. Only inbound, only that port, only private addresses.
 		case c.proto == "UDP" && c.pid == root && (c.remote == endpoint || c.local == endpoint):
@@ -397,23 +398,32 @@ func defaultExe() string {
 	return filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "Shark BiteTorrent", appImage)
 }
 
-// appRemotePort returns the remote control's port if it's turned on.
-func appRemotePort() string {
+// appRemotePort returns the remote control's port if it's turned on, and
+// whether Tailscale access is on.
+func appRemotePort() (string, bool) {
 	cfgDir, _ := os.UserConfigDir()
 	var set struct {
-		RemoteEnabled bool `json:"remoteEnabled"`
-		RemotePort    int  `json:"remotePort"`
+		RemoteEnabled   bool `json:"remoteEnabled"`
+		RemotePort      int  `json:"remotePort"`
+		RemoteTailscale bool `json:"remoteTailscale"`
 	}
 	if data, err := os.ReadFile(filepath.Join(cfgDir, "SharkBiteTorrent", "settings.json")); err == nil {
 		json.Unmarshal(data, &set)
 	}
 	if !set.RemoteEnabled {
-		return ""
+		return "", false
 	}
 	if set.RemotePort == 0 {
-		return "8732"
+		set.RemotePort = 8732
 	}
-	return strconv.Itoa(set.RemotePort)
+	return strconv.Itoa(set.RemotePort), set.RemoteTailscale
+}
+
+// tailscaleAddr reports whether hp is in Tailscale's range (100.64/10).
+func tailscaleAddr(hp string) bool {
+	host, _, _ := net.SplitHostPort(hp)
+	_, cgnat, _ := net.ParseCIDR("100.64.0.0/10")
+	return cgnat.Contains(net.ParseIP(host))
 }
 
 func portOf(hp string) string {

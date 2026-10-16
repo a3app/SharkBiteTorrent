@@ -90,10 +90,12 @@ export function SetFilesWanted(arg1:string,arg2:Array<number>,arg3:boolean):Prom
 
 export function SetRemote(arg1:boolean,arg2:number):Promise<main.RemoteStatus>;
 
+export function SetRemoteTailscale(arg1:boolean):Promise<main.RemoteStatus>;
+
 export function SetSearchProxy(arg1:boolean):Promise<main.ProxyStatus>;
 
 export function SkipUpdate(arg1:string):Promise<void>;
 
-export function StartRemotePairing():Promise<main.RemotePairing>;
+export function StartRemotePairing(arg1:boolean):Promise<main.RemotePairing>;
 
 export function VerifyTorrent(arg1:string):Promise<void>;

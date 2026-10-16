@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { GetRemoteStatus, SetRemote, StartRemotePairing, RemoveRemoteDevice, ForgetRemoteHome } from '../wailsjs/go/main/App.js'
+  import { GetRemoteStatus, SetRemote, StartRemotePairing, RemoveRemoteDevice, ForgetRemoteHome, SetRemoteTailscale, OpenURL } from '../wailsjs/go/main/App.js'
   import { EventsOn } from '../wailsjs/runtime/runtime.js'
   import type { main } from '../wailsjs/go/models'
 
@@ -38,13 +38,26 @@
     busy = false
   }
 
-  async function pair() {
+  async function pair(viaTailscale: boolean) {
     onError('')
     try {
-      pairing = await StartRemotePairing()
+      pairing = await StartRemotePairing(viaTailscale)
     } catch (e) {
       onError(String(e))
     }
+  }
+
+  async function setTailscale(on: boolean) {
+    busy = true
+    onError('')
+    try {
+      status = await SetRemoteTailscale(on)
+      pairing = null
+    } catch (e) {
+      onError(String(e))
+      await load()
+    }
+    busy = false
   }
 
   async function forgetHome() {
@@ -80,7 +93,10 @@
       <p class="warn small">{status.error}</p>
     {/if}
     {#if status.paused}
-      <p class="warn small">The remote control is {status.paused}. It starts again by itself when you're back.</p>
+      <p class="warn small">
+        The remote control is {status.paused}.
+        {status.tailscaleURL ? 'It still works over Tailscale.' : "It starts again by itself when you're back."}
+      </p>
     {/if}
     <label class="row">
       <span class="lbl">Port</span>
@@ -89,11 +105,43 @@
         <button onclick={() => apply(true)} disabled={busy}>Apply</button>
       {/if}
     </label>
+    <label class="row">
+      <input type="checkbox" checked={status.tailscale} disabled={busy} onchange={e => setTailscale(e.currentTarget.checked)} />
+      Also allow my Tailscale devices (works away from home)
+    </label>
+    {#if status.tailscale && !status.tailscaleFound}
+      <p class="warn small">
+        Tailscale isn't running on this computer. Install it from
+        <button class="link" onclick={() => OpenURL('https://tailscale.com/download')}>tailscale.com</button>,
+        sign in here and on your phone with the same account, then come back.
+      </p>
+    {/if}
     {#if status.running}
-      <p class="muted small">Open on a phone on the same Wi-Fi: {(status.urls ?? []).join(' or ')}</p>
+      {#if (status.urls ?? []).length}
+        <p class="muted small">On the home Wi-Fi: {status.urls.join(' or ')}</p>
+      {/if}
+      {#if status.tailscaleURL}
+        <p class="muted small">
+          Over Tailscale, at home or away: {status.tailscaleURL}. Only your Tailscale devices can reach it, and
+          Tailscale encrypts the traffic.
+        </p>
+      {/if}
       <div class="row">
-        <button class="primary" onclick={pair}>Pair a phone</button>
+        {#if status.tailscaleURL}
+          <button class="primary" onclick={() => pair(true)}>Pair a phone (Tailscale, home and away)</button>
+          {#if (status.urls ?? []).length}
+            <button onclick={() => pair(false)}>Pair for home Wi-Fi only</button>
+          {/if}
+        {:else}
+          <button class="primary" onclick={() => pair(false)}>Pair a phone</button>
+        {/if}
       </div>
+      {#if status.tailscaleURL}
+        <p class="muted small">
+          A phone keeps one pairing per address: pair it over Tailscale if you'll use it away from home (it then
+          works at home too, with Tailscale on). The phone needs the Tailscale app, signed in to your account.
+        </p>
+      {/if}
       {#if pairing}
         <div class="pair">
           <img src={pairing.qr} alt="QR code to pair a phone" width="200" height="200" />

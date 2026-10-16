@@ -82,9 +82,10 @@ type remoteStore struct {
 }
 
 type remoteServer struct {
-	srv   *http.Server
-	port  int
-	addrs []string // local addresses it listens on
+	srv    *http.Server
+	port   int
+	addrs  []string // local addresses it listens on
+	tsAddr string   // the Tailscale one among them, if Tailscale access is on
 
 	mu           sync.Mutex
 	pairCode     string
@@ -152,14 +153,20 @@ func (rs *remoteServer) result(id string) (search.Result, bool) {
 
 // RemoteStatus is what Settings shows.
 type RemoteStatus struct {
-	Enabled bool               `json:"enabled"`
-	Running bool               `json:"running"`
-	Paused  string             `json:"paused"` // why it isn't running although enabled
-	Home    string             `json:"home"`   // the home network's router, if paired
-	Port    int                `json:"port"`
-	URLs    []string           `json:"urls"`
-	Error   string             `json:"error"`
-	Devices []RemoteDeviceView `json:"devices"`
+	Enabled bool   `json:"enabled"`
+	Running bool   `json:"running"`
+	Paused  string `json:"paused"` // why it isn't running (on the home network) although enabled
+	// Tailscale access (opt-in): Tailscale is the setting; TailscaleURL is
+	// set while it's listening there; TailscaleFound says whether Tailscale
+	// is installed and connected on this computer.
+	Tailscale      bool               `json:"tailscale"`
+	TailscaleURL   string             `json:"tailscaleURL"`
+	TailscaleFound bool               `json:"tailscaleFound"`
+	Home           string             `json:"home"` // the home network's router, if paired
+	Port           int                `json:"port"`
+	URLs           []string           `json:"urls"`
+	Error          string             `json:"error"`
+	Devices        []RemoteDeviceView `json:"devices"`
 }
 
 type RemoteDeviceView struct {
@@ -226,7 +233,9 @@ func (a *App) remotePort() int {
 // remoteAddrs picks the local addresses to listen on now: the home network
 // once one is set, otherwise every real local network. reason says why
 // there are none.
-func (a *App) remoteAddrs() (addrs []string, reason string) {
+// With Tailscale access on, the Tailscale address is added (tsAddr): it
+// works wherever the computer is, so it isn't tied to the home network.
+func (a *App) remoteAddrs() (addrs []string, tsAddr, reason string) {
 	lans := lanNetworks()
 	a.remoteMu.Lock()
 	home := a.store.Home
@@ -236,14 +245,24 @@ func (a *App) remoteAddrs() (addrs []string, reason string) {
 			addrs = append(addrs, l.LocalIP)
 		}
 	}
+	lanReason := ""
 	switch {
 	case len(addrs) > 0:
 	case home != nil:
-		reason = "paused: this computer isn't on the home network the phones were paired on (router " + home.Gateway + ")"
+		lanReason = "paused on this network: it isn't the home network the phones were paired on (router " + home.Gateway + ")"
 	default:
-		reason = "paused: no home network (Wi-Fi or Ethernet with a router) found"
+		lanReason = "paused: no home network (Wi-Fi or Ethernet with a router) found"
 	}
-	return addrs, reason
+	a.mu.Lock()
+	useTS := a.settings.RemoteTailscale
+	a.mu.Unlock()
+	if useTS {
+		if tsAddr = tailscaleIP(); tsAddr != "" {
+			addrs = append(addrs, tsAddr)
+		}
+	}
+	// Said even while Tailscale keeps it running away from home.
+	return addrs, tsAddr, lanReason
 }
 
 // startRemote starts the remote-control server if it's turned on and the
@@ -278,13 +297,13 @@ func (a *App) startRemote() {
 		}
 	}
 	a.remoteMu.Unlock()
-	addrs, reason := a.remoteAddrs()
+	addrs, tsAddr, reason := a.remoteAddrs()
 	if len(addrs) == 0 {
 		setState("", reason)
 		return
 	}
 	port := a.remotePort()
-	rs := &remoteServer{port: port, addrs: addrs, keyFails: map[string][]time.Time{}, codeFails: map[string][]time.Time{}}
+	rs := &remoteServer{port: port, addrs: addrs, tsAddr: tsAddr, keyFails: map[string][]time.Time{}, codeFails: map[string][]time.Time{}}
 	rs.srv = &http.Server{
 		Handler:           a.remoteHandler(rs),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -309,7 +328,7 @@ func (a *App) startRemote() {
 		lns = append(lns, netutil.LimitListener(ln, maxRemoteConns))
 	}
 	a.mu.Lock()
-	a.remote, a.remoteErr, a.remotePaused = rs, "", ""
+	a.remote, a.remoteErr, a.remotePaused = rs, "", reason
 	a.mu.Unlock()
 	for _, ln := range lns {
 		go func(ln net.Listener) {
@@ -349,7 +368,7 @@ func (a *App) watchRemoteNetwork() {
 		if !enabled {
 			continue
 		}
-		want, _ := a.remoteAddrs()
+		want, _, _ := a.remoteAddrs()
 		var have []string
 		if rs != nil {
 			have = rs.addrs
@@ -376,6 +395,21 @@ func privateClient(remoteAddr string) (string, bool) {
 		return host, false
 	}
 	return ip.String(), ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+}
+
+// allowedClient: on the Tailscale address only Tailscale devices; on the
+// home network address only private addresses (as privateClient).
+func (rs *remoteServer) allowedClient(r *http.Request) bool {
+	local := ""
+	if la, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
+		local, _, _ = net.SplitHostPort(la.String())
+	}
+	if rs.tsAddr != "" && local == rs.tsAddr {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		return err == nil && isTailscaleAddr(net.ParseIP(host))
+	}
+	_, ok := privateClient(r.RemoteAddr)
+	return ok
 }
 
 // limitKey groups addresses for rate limiting: IPv6 per /64, since one
@@ -716,7 +750,7 @@ func (a *App) remoteHandler(rs *remoteServer) http.Handler {
 	})
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := privateClient(r.RemoteAddr); !ok {
+		if !rs.allowedClient(r) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -742,16 +776,23 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 func (a *App) GetRemoteStatus() RemoteStatus {
 	a.mu.Lock()
-	st := RemoteStatus{Enabled: a.settings.RemoteEnabled, Running: a.remote != nil, Error: a.remoteErr, Paused: a.remotePaused}
+	st := RemoteStatus{Enabled: a.settings.RemoteEnabled, Running: a.remote != nil, Error: a.remoteErr, Paused: a.remotePaused, Tailscale: a.settings.RemoteTailscale}
 	var addrs []string
+	tsAddr := ""
 	if a.remote != nil {
-		addrs = a.remote.addrs
+		addrs, tsAddr = a.remote.addrs, a.remote.tsAddr
 	}
 	a.mu.Unlock()
 	st.Port = a.remotePort()
 	for _, ip := range addrs {
-		st.URLs = append(st.URLs, "http://"+net.JoinHostPort(ip, strconv.Itoa(st.Port))+"/")
+		u := "http://" + net.JoinHostPort(ip, strconv.Itoa(st.Port)) + "/"
+		if ip == tsAddr {
+			st.TailscaleURL = u
+		} else {
+			st.URLs = append(st.URLs, u)
+		}
 	}
+	st.TailscaleFound = tsAddr != "" || tailscaleIP() != ""
 	a.remoteMu.Lock()
 	if a.store.Home != nil {
 		st.Home = a.store.Home.Gateway
@@ -789,7 +830,10 @@ func (a *App) SetRemote(enabled bool, port int) (RemoteStatus, error) {
 }
 
 // StartRemotePairing makes a one-time pairing code and its QR code.
-func (a *App) StartRemotePairing() (RemotePairing, error) {
+// viaTailscale pairs on the Tailscale address (works at home and away; a
+// phone keeps one key per address, so this is the one to use if it'll be
+// used from outside).
+func (a *App) StartRemotePairing(viaTailscale bool) (RemotePairing, error) {
 	a.mu.Lock()
 	rs := a.remote
 	paused := a.remotePaused
@@ -807,7 +851,20 @@ func (a *App) StartRemotePairing() (RemotePairing, error) {
 	rs.mu.Unlock()
 	// The code is in the #fragment: the browser doesn't send that to any
 	// server or put it in logs; the page reads it and posts it once.
-	u := "http://" + net.JoinHostPort(rs.addrs[0], strconv.Itoa(rs.port)) + "/#pair=" + code
+	host := ""
+	for _, ip := range rs.addrs {
+		if (ip == rs.tsAddr) == viaTailscale {
+			host = ip
+			break
+		}
+	}
+	if host == "" {
+		if viaTailscale {
+			return RemotePairing{}, errors.New("Tailscale isn't connected on this computer")
+		}
+		return RemotePairing{}, errors.New("this computer isn't on its home network right now; pair over Tailscale instead")
+	}
+	u := "http://" + net.JoinHostPort(host, strconv.Itoa(rs.port)) + "/#pair=" + code
 	png, err := qrcode.Encode(u, qrcode.Medium, 320)
 	if err != nil {
 		return RemotePairing{}, err
@@ -826,6 +883,21 @@ func (a *App) RemoveRemoteDevice(id string) error {
 	}
 	a.store.Devices = out
 	return a.saveRemoteStore()
+}
+
+// SetRemoteTailscale turns Tailscale access on or off.
+func (a *App) SetRemoteTailscale(on bool) (RemoteStatus, error) {
+	a.remoteOpMu.Lock()
+	defer a.remoteOpMu.Unlock()
+	a.stopRemote()
+	a.mu.Lock()
+	a.settings.RemoteTailscale = on
+	a.mu.Unlock()
+	if err := a.writeSettings(); err != nil {
+		return a.GetRemoteStatus(), err
+	}
+	a.startRemote()
+	return a.GetRemoteStatus(), nil
 }
 
 // ForgetRemoteHome clears the home network: the remote control then runs on

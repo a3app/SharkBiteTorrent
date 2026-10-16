@@ -401,6 +401,9 @@ export namespace main {
 	    enabled: boolean;
 	    running: boolean;
 	    paused: string;
+	    tailscale: boolean;
+	    tailscaleURL: string;
+	    tailscaleFound: boolean;
 	    home: string;
 	    port: number;
 	    urls: string[];
@@ -416,6 +419,9 @@ export namespace main {
 	        this.enabled = source["enabled"];
 	        this.running = source["running"];
 	        this.paused = source["paused"];
+	        this.tailscale = source["tailscale"];
+	        this.tailscaleURL = source["tailscaleURL"];
+	        this.tailscaleFound = source["tailscaleFound"];
 	        this.home = source["home"];
 	        this.port = source["port"];
 	        this.urls = source["urls"];
@@ -472,6 +478,7 @@ export namespace main {
 	    scanDownloads: boolean;
 	    remoteEnabled: boolean;
 	    remotePort: number;
+	    remoteTailscale: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -493,6 +500,7 @@ export namespace main {
 	        this.scanDownloads = source["scanDownloads"];
 	        this.remoteEnabled = source["remoteEnabled"];
 	        this.remotePort = source["remotePort"];
+	        this.remoteTailscale = source["remoteTailscale"];
 	    }
 	}
 	export class SettingsView {
