@@ -4,6 +4,8 @@ What changed in each release of Shark BiteTorrent. The release notes on GitHub a
 
 ## [Unreleased]
 
+## [0.2.31] - 2026-10-16
+
 ### Added
 - **Release notes in the app.** When an update is available, *What's new* in the update banner (and in Settings → About) lists every change since your version, right in the app. Settings → About also has *What's new* for the version you're running.
 
