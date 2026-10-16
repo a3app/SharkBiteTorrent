@@ -210,6 +210,12 @@ function stopRefreshing() {
 function wire() {
   // Typed pairing code: for when scanning isn't handy, and for an iPhone
   // home-screen app, which may not share Safari's storage.
+  // Format as it's typed: upper case, only characters a code can have
+  // (no 0/O, 1/I/L), and the dash after the first four.
+  $('code').oninput = () => {
+    const raw = $('code').value.toUpperCase().replace(/[^23456789ABCDEFGHJKMNPQRSTUVWXYZ]/g, '').slice(0, 8)
+    $('code').value = raw.length > 4 ? raw.slice(0, 4) + '-' + raw.slice(4) : raw
+  }
   $('codeForm').onsubmit = async e => {
     e.preventDefault()
     const code = $('code').value.toUpperCase().replace(/[^A-Z0-9]/g, '')
