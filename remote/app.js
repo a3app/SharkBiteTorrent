@@ -132,25 +132,74 @@ async function refresh() {
   }
 }
 
-async function pairIfNeeded() {
-  const m = location.hash.match(/^#pair=([A-Za-z0-9_-]+)$/)
-  if (!m) return
-  history.replaceState(null, '', location.pathname) // drop the code from the address bar
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent)
+const isAndroid = /Android/.test(navigator.userAgent)
+const standalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true
+
+// pair exchanges a one-time code (from the QR code, or typed) for this
+// phone's own access key.
+async function pair(code) {
   const ua = navigator.userAgent
-  const name = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android phone' : 'Browser'
+  let name = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : isAndroid ? 'Android phone' : 'Browser'
+  if (standalone()) name += ' (home screen)'
   const res = await fetch('/api/pair', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: m[1], name }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, name }),
   })
   if (!res.ok) {
     message((await res.text()).trim())
-    return
+    return false
   }
   token = (await res.json()).token
   localStorage.setItem(TOKEN_KEY, token)
   message('Paired. This phone can now control Shark BiteTorrent.', true)
+  return true
+}
+
+async function pairIfNeeded() {
+  const m = location.hash.match(/^#pair=([A-Za-z0-9_-]+)$/)
+  if (!m) return
+  history.replaceState(null, '', location.pathname) // drop the code from the address bar
+  await pair(m[1])
+}
+
+function showApp() {
+  $('unpaired').hidden = true
+  $('app').hidden = false
+  $('installBtn').hidden = standalone() // already opened from the home screen
+}
+
+let refreshing = false
+function startRefreshing() {
+  if (refreshing) return
+  refreshing = true
+  refresh()
+  setInterval(refresh, 2000)
 }
 
 function wire() {
+  // Typed pairing code: for when scanning isn't handy, and for an iPhone
+  // home-screen app, which may not share Safari's storage.
+  $('codeForm').onsubmit = async e => {
+    e.preventDefault()
+    const code = $('code').value.toUpperCase().replace(/[^A-Z0-9]/g, '')
+    if (!code) return
+    if (await pair(code)) {
+      $('code').value = ''
+      showApp()
+      startRefreshing()
+    }
+  }
+  // Browsers only let a page add itself to the home screen on HTTPS
+  // (Android) or not at all (iPhone), so this explains the two taps.
+  $('installBtn').onclick = () => {
+    const steps = isIOS
+      ? 'In Safari, tap the Share button (the square with an arrow), then “Add to Home Screen”.'
+      : isAndroid
+        ? 'In Chrome, tap the ⋮ menu at the top right, then “Add to Home screen”.'
+        : 'Use your browser’s menu to add this page to your home screen, or bookmark it.'
+    $('installSteps').textContent = steps
+    $('installDialog').showModal()
+  }
   $('addForm').onsubmit = e => {
     e.preventDefault()
     const link = $('magnet').value.trim()
@@ -208,10 +257,8 @@ async function start() {
     showUnpaired()
     return
   }
-  $('unpaired').hidden = true
-  $('app').hidden = false
-  await refresh()
-  setInterval(refresh, 2000)
+  showApp()
+  startRefreshing()
 }
 
 start()

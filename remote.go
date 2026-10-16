@@ -72,10 +72,11 @@ type remoteServer struct {
 	srv  *http.Server
 	port int
 
-	mu        sync.Mutex
-	pairCode  string
-	pairUntil time.Time
-	failures  map[string][]time.Time // by client IP
+	mu           sync.Mutex
+	pairCode     string
+	pairUntil    time.Time
+	pairFailures int                    // wrong codes against the current one, from anywhere
+	failures     map[string][]time.Time // by client IP
 }
 
 // RemoteStatus is what Settings shows.
@@ -98,7 +99,8 @@ type RemoteDeviceView struct {
 // RemotePairing is shown as a QR code in Settings.
 type RemotePairing struct {
 	URL     string `json:"url"`
-	QR      string `json:"qr"` // data: URL of a PNG
+	Code    string `json:"code"` // to type on the phone instead of scanning, e.g. "K7QM-4XRP"
+	QR      string `json:"qr"`   // data: URL of a PNG
 	Expires int64  `json:"expires"`
 }
 
@@ -223,6 +225,31 @@ func (rs *remoteServer) recordFailure(ip string) {
 	rs.mu.Unlock()
 }
 
+// Pairing codes are 8 characters a person can type: no 0/O, 1/I/L.
+// 31^8 ≈ 8.5e11 possibilities against at most 10 guesses per address and 20
+// in total before the code (valid 5 minutes) is cancelled.
+const pairAlphabet = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+
+func newPairCode() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	for i := range b {
+		b[i] = pairAlphabet[int(b[i])%len(pairAlphabet)]
+	}
+	return string(b)
+}
+
+// normalizePairCode accepts what people type: lower case, spaces, dashes.
+func normalizePairCode(s string) string {
+	var out []byte
+	for _, c := range strings.ToUpper(s) {
+		if c < 128 && strings.ContainsRune(pairAlphabet, c) {
+			out = append(out, byte(c))
+		}
+	}
+	return string(out)
+}
+
 func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
@@ -273,11 +300,18 @@ func (a *App) remoteHandler(rs *remoteServer) http.Handler {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
+		code := normalizePairCode(req.Code)
 		rs.mu.Lock()
 		ok := rs.pairCode != "" && time.Now().Before(rs.pairUntil) &&
-			subtle.ConstantTimeCompare([]byte(req.Code), []byte(rs.pairCode)) == 1
+			subtle.ConstantTimeCompare([]byte(code), []byte(rs.pairCode)) == 1
 		if ok {
 			rs.pairCode = "" // one use only
+		} else if rs.pairCode != "" {
+			// Besides the per-address limit: too many wrong guesses from
+			// anywhere (e.g. many addresses) cancel the code altogether.
+			if rs.pairFailures++; rs.pairFailures >= 20 {
+				rs.pairCode = ""
+			}
 		}
 		rs.mu.Unlock()
 		if !ok {
@@ -397,7 +431,7 @@ func (a *App) remoteHandler(rs *remoteServer) http.Handler {
 			return
 		}
 		h := w.Header()
-		h.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; form-action 'none'; frame-ancestors 'none'; base-uri 'none'")
+		h.Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; manifest-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Cache-Control", "no-store")
@@ -490,10 +524,10 @@ func (a *App) StartRemotePairing() (RemotePairing, error) {
 	if len(urls) == 0 {
 		return RemotePairing{}, errors.New("this computer doesn't seem to be on a home network")
 	}
-	code := randomString(18)
+	code := newPairCode()
 	until := time.Now().Add(pairCodeLifetime)
 	rs.mu.Lock()
-	rs.pairCode, rs.pairUntil = code, until
+	rs.pairCode, rs.pairUntil, rs.pairFailures = code, until, 0
 	rs.mu.Unlock()
 	// The code is in the #fragment: the browser doesn't send that to any
 	// server or put it in logs; the page reads it and posts it once.
@@ -502,7 +536,7 @@ func (a *App) StartRemotePairing() (RemotePairing, error) {
 	if err != nil {
 		return RemotePairing{}, err
 	}
-	return RemotePairing{URL: u, QR: "data:image/png;base64," + base64.StdEncoding.EncodeToString(png), Expires: until.Unix()}, nil
+	return RemotePairing{URL: u, Code: code[:4] + "-" + code[4:], QR: "data:image/png;base64," + base64.StdEncoding.EncodeToString(png), Expires: until.Unix()}, nil
 }
 
 func (a *App) RemoveRemoteDevice(id string) error {

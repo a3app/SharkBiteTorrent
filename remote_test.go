@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -45,17 +46,18 @@ func TestRemoteSecurity(t *testing.T) {
 	}
 
 	// Pairing: wrong code refused; right code works once.
-	rs.pairCode, rs.pairUntil = "right-code", time.Now().Add(time.Minute)
+	rs.pairCode, rs.pairUntil = "K7QM4XRP", time.Now().Add(time.Minute)
 	if w := remoteRequest(h, "POST", "/api/pair", "192.168.1.30:5000", host, "", `{"code":"wrong","name":"x"}`); w.Code != http.StatusForbidden {
 		t.Errorf("wrong code: %d", w.Code)
 	}
-	w := remoteRequest(h, "POST", "/api/pair", lan, host, "", `{"code":"right-code","name":"Test phone"}`)
+	// Typed the way people type it: lower case, with a dash.
+	w := remoteRequest(h, "POST", "/api/pair", lan, host, "", `{"code":"k7qm-4xrp","name":"Test phone"}`)
 	var got struct{ Token string }
 	json.Unmarshal(w.Body.Bytes(), &got)
 	if w.Code != http.StatusOK || len(got.Token) < 40 {
 		t.Fatalf("pair: %d %q", w.Code, w.Body.String())
 	}
-	if w := remoteRequest(h, "POST", "/api/pair", lan, host, "", `{"code":"right-code","name":"again"}`); w.Code != http.StatusForbidden {
+	if w := remoteRequest(h, "POST", "/api/pair", lan, host, "", `{"code":"K7QM4XRP","name":"again"}`); w.Code != http.StatusForbidden {
 		t.Errorf("pairing code reused: %d", w.Code)
 	}
 	// The key works; a wrong key doesn't.
@@ -85,5 +87,18 @@ func TestRemoteSecurity(t *testing.T) {
 	}
 	if w := remoteRequest(h, "GET", "/", "192.168.1.40:5000", host, "", ""); w.Code != http.StatusTooManyRequests {
 		t.Errorf("not rate limited: %d", w.Code)
+	}
+
+	// 20 wrong guesses in total cancel the code, whatever the addresses.
+	rs.failures = map[string][]time.Time{}
+	rs.pairCode, rs.pairUntil, rs.pairFailures = "ABCDEFGH", time.Now().Add(time.Minute), 0
+	for i := 0; i < 20; i++ {
+		remoteRequest(h, "POST", "/api/pair", "10.0.0."+strconv.Itoa(i+1)+":5000", host, "", `{"code":"WRONGGGG"}`)
+	}
+	if w := remoteRequest(h, "POST", "/api/pair", "10.0.1.1:5000", host, "", `{"code":"ABCDEFGH"}`); w.Code != http.StatusForbidden {
+		t.Errorf("code still valid after 20 wrong guesses: %d", w.Code)
+	}
+	if c := newPairCode(); len(c) != 8 || normalizePairCode(c) != c {
+		t.Errorf("pair code %q", c)
 	}
 }

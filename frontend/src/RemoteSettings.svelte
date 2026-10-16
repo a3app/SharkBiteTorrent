@@ -87,10 +87,17 @@
       {#if pairing}
         <div class="pair">
           <img src={pairing.qr} alt="QR code to pair a phone" width="200" height="200" />
-          <p class="muted small">
-            Scan with the phone's camera. The code works once and expires in 5 minutes.
-            Windows may ask to allow Shark BiteTorrent on <b>private</b> networks: allow it.
-          </p>
+          <div>
+            <p class="muted small">
+              Scan with the phone's camera, or open the address below on the phone and type this code:
+            </p>
+            <p class="code">{pairing.code}</p>
+            <p class="muted small">
+              It works once and expires in 5 minutes. Windows may ask to allow Shark BiteTorrent on
+              <b>private</b> networks: allow it. On the phone, “Add to Home Screen” makes it easy to come back
+              without pairing again.
+            </p>
+          </div>
         </div>
       {/if}
     {/if}
@@ -107,6 +114,7 @@
     <p class="muted small">
       Paired phones can do what this window can: add, pause and remove torrents (including deleting their files), and
       search. It only answers devices on your home network, over plain HTTP. Remove a phone here if you lose it.
+      Tip: reserve this computer's address in your router ("DHCP reservation") so phone shortcuts keep working.
     </p>
   {/if}
 {/if}
@@ -122,4 +130,5 @@
   .pair { display: flex; gap: 12px; align-items: center; margin-top: 8px; }
   .pair img { background: #fff; padding: 6px; border-radius: 6px; image-rendering: pixelated; }
   .devices { margin-top: 6px; }
+  .code { font-size: 22px; font-weight: 600; letter-spacing: 0.12em; margin: 4px 0; font-variant-numeric: tabular-nums; }
 </style>

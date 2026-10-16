@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark light">
   <title>Shark BiteTorrent</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="icon" href="icon-192.png">
+  <meta name="theme-color" content="#0f1115">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="SharkBite">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="stylesheet" href="style.css">
   <script src="app.js" defer></script>
 </head>
@@ -17,7 +25,11 @@
   <main>
     <section id="unpaired" hidden>
       <h2>Not paired</h2>
-      <p class="muted">On the computer, open Settings → Remote control → Pair a phone, and scan the QR code with this phone's camera.</p>
+      <p class="muted">On the computer, open Settings → Remote control → Pair a phone, and scan the QR code with this phone's camera, or type the code shown under it:</p>
+      <form id="codeForm" class="row">
+        <input id="code" placeholder="ABCD-EFGH" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" maxlength="12">
+        <button type="submit" class="primary">Pair</button>
+      </form>
     </section>
 
     <section id="app" hidden>
@@ -29,6 +41,7 @@
         <label id="uploadBtn" class="button">Upload .torrent<input id="file" type="file" accept=".torrent,application/x-bittorrent" hidden></label>
         <button id="searchToggle" type="button">Search</button>
       </div>
+      <button id="installBtn" type="button" class="link" hidden>Add to Home Screen…</button>
 
       <div id="searchBox" hidden>
         <form id="searchForm" class="row">
@@ -51,6 +64,15 @@
       <p id="empty" class="muted" hidden>No torrents yet.</p>
     </section>
   </main>
+
+  <dialog id="installDialog">
+    <form method="dialog">
+      <h2>Add to Home Screen</h2>
+      <p id="installSteps"></p>
+      <p class="muted small">The shortcut opens this computer's address. If it stops working one day, your router may have given the computer a new address: reserve one for it in the router's settings (often called "DHCP reservation"), or pair again.</p>
+      <div class="actions"><button value="ok" type="submit" class="primary">OK</button></div>
+    </form>
+  </dialog>
 
   <dialog id="removeDialog">
     <form method="dialog">

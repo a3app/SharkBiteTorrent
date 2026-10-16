@@ -379,6 +379,7 @@ export namespace main {
 	}
 	export class RemotePairing {
 	    url: string;
+	    code: string;
 	    qr: string;
 	    expires: number;
 	
@@ -389,6 +390,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.url = source["url"];
+	        this.code = source["code"];
 	        this.qr = source["qr"];
 	        this.expires = source["expires"];
 	    }

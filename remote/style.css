@@ -49,6 +49,9 @@ dialog h2 { margin-top: 0; }
 .check { display: flex; align-items: center; gap: 10px; margin: 12px 0 16px; min-height: 44px; }
 .check input { width: 22px; height: 22px; flex: none; min-height: 0; }
 .danger-fill { background: var(--err); border-color: var(--err); }
+.link { background: none; border: none; color: var(--accent); padding: 4px 0; min-height: 0; margin-bottom: 8px; text-decoration: underline; }
+.small { font-size: 13px; }
+#code { text-transform: uppercase; letter-spacing: 0.08em; }
 #results .item { display: flex; align-items: center; gap: 10px; }
 #results .item > div { flex: 1; min-width: 0; }
 #results button { flex: none; }
