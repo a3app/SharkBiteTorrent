@@ -1,0 +1,45 @@
+# Runs on every push and pull request: tests, type checks and the
+# vulnerability scanners. Releases additionally go through RELEASING.md.
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: auto # honour the toolchain line in go.mod (patched Go)
+
+jobs:
+  checks:
+    runs-on: windows-2025 # the main platform; DPAPI and Defender tests run here
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with: { go-version-file: go.mod }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 24 }
+
+      - name: Frontend (build, type check, npm audit)
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+          npx svelte-check --threshold error
+          npm audit --audit-level=high
+
+      # After the frontend build: the Go code embeds frontend/dist.
+      - name: Go vet (all build variants)
+        run: |
+          go vet ./...
+          go vet -tags nofunding .
+          go vet -tags store .
+      - name: Go tests
+        run: |
+          go test -short ./...
+          go test -short -tags nofunding -run TestLinks .
+      - name: govulncheck (known vulnerabilities in code the app calls)
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...

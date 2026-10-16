@@ -272,7 +272,7 @@ go run ./cmd/enginecheck -seconds 30 [-down KB/s] [-delete] <magnet|file.torrent
 
 ### Releases
 
-Changes land on `main` as they're made, so building from source always gets the latest. Each user-visible change is noted under **Unreleased** in [`CHANGELOG.md`](CHANGELOG.md); when it's time to ship, that section is renamed to the new version, and the release notes are generated from it (a tag without a CHANGELOG section fails the release).
+See [`RELEASING.md`](RELEASING.md) for the release checklist (leak tests, CodeQL, a fresh-eyes audit of the changes). Changes land on `main` as they're made, so building from source always gets the latest. Each user-visible change is noted under **Unreleased** in [`CHANGELOG.md`](CHANGELOG.md); when it's time to ship, that section is renamed to the new version, and the release notes are generated from it (a tag without a CHANGELOG section fails the release).
 
 Pushing a version tag builds Windows, Linux and macOS on GitHub Actions and creates a **draft** Release. The maintainer then signs its `SHA256SUMS.txt` with the release key and publishes it:
 
@@ -295,6 +295,8 @@ links*.go                Sponsor and VPN sign-up links (links.go); the nofunding
 tray*.go                 Tray icon (per-OS files)
 updater*.go, release.pub In-app updates, checked against the signed release checksums
 cmd/releasekey           Maintainer tool: create/back up the signing key, sign and publish a release
+cmd/leakcheck            Release check: fails if anything leaves outside the VPN tunnel
+scripts/connlog.sh       Release check: logs the running app's connections outside the tunnel
 internal/tunnel          In-process WireGuard + netstack, .conf parser, exit-IP check
 internal/engine          anacrolix/torrent wired to the tunnel; files, limits, removal
 internal/warp            Cloudflare WARP registration (via wgcf)
