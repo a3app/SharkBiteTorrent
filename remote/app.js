@@ -82,7 +82,7 @@ function renderVPN(v) {
 function renderTorrents(list) {
   const ul = $('torrents')
   ul.replaceChildren()
-  $('empty').hidden = list.length > 0
+  $('empty').hidden = list.length > 0 || !$('searchBox').hidden // not on the search screen
   for (const t of list) {
     const li = el('li', 'item')
     li.append(el('div', 'name', t.name || t.hash))
@@ -165,9 +165,15 @@ function wire() {
     act(() => api('POST', '/api/torrent', fd), 'Added.')
     $('file').value = ''
   }
+  // Search is its own screen, like the desktop app: it replaces the torrent
+  // list, and the button becomes the way back.
   $('searchToggle').onclick = () => {
-    $('searchBox').hidden = !$('searchBox').hidden
-    if (!$('searchBox').hidden) $('query').focus()
+    const searching = $('searchBox').hidden
+    $('searchBox').hidden = !searching
+    for (const id of ['addForm', 'uploadBtn', 'torrents']) $(id).hidden = searching
+    $('empty').hidden = searching || $('torrents').children.length > 0
+    $('searchToggle').textContent = searching ? '← Torrents' : 'Search'
+    if (searching) $('query').focus()
   }
   $('searchForm').onsubmit = async e => {
     e.preventDefault()
@@ -184,7 +190,7 @@ function wire() {
         const info = el('div')
         info.append(el('div', 'name', r.title))
         info.append(el('div', 'meta', [bytes(r.size), `${r.seeders} seeds`, r.indexer].join(' · ')))
-        const btn = el('button', 'primary', 'Get')
+        const btn = el('button', 'primary', 'Download')
         btn.onclick = () => act(async () => { btn.disabled = true; await api('POST', '/api/search/add', r) }, 'Added.')
         item.append(info, btn)
         box.append(item)
