@@ -158,7 +158,8 @@ func piaClient(ip, cn string, dial func(ctx context.Context, network, addr strin
 	return &http.Client{
 		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: piaTLS(cn),
+			TLSClientConfig:   piaTLS(cn),
+			DisableKeepAlives: true, // addKey goes direct (before the tunnel); don't leave it open
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				_, port, _ := net.SplitHostPort(addr)
 				return dial(ctx, network, net.JoinHostPort(ip, port))

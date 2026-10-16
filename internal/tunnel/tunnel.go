@@ -225,7 +225,7 @@ func DirectTrace(ctx context.Context) (*Trace, error) {
 	d := &net.Dialer{Timeout: 10 * time.Second, Resolver: &net.Resolver{}}
 	return fetchTrace(ctx, &http.Client{
 		Timeout:   15 * time.Second,
-		Transport: &http.Transport{DialContext: d.DialContext},
+		Transport: &http.Transport{DialContext: d.DialContext, DisableKeepAlives: true},
 	})
 }
 

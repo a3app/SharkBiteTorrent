@@ -7,6 +7,9 @@ What changed in each release of Shark BiteTorrent. The release notes on GitHub a
 ### Added
 - **Release notes in the app.** When an update is available, *What's new* in the update banner (and in Settings → About) lists every change since your version, right in the app. Settings → About also has *What's new* for the version you're running.
 
+### Fixed
+- **Privacy:** opening Settings → VPN no longer contacts a VPN provider over your normal connection. Server lists load only when *VPN account* is selected, and while any VPN is connected, provider requests (server lists, sign-in, sign-out) go through it. They go direct only when there's no tunnel yet, i.e. while connecting. Those direct connections are also closed right away instead of lingering. Found by an independent audit.
+
 ## [0.2.30] - 2026-10-16
 
 ### Security

@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/curve25519"
@@ -104,19 +105,45 @@ func All() []Info {
 
 // --- helpers shared by providers ---
 
-// directClient talks to provider APIs over the normal connection (logins
-// happen before the tunnel exists). It uses its own resolver because the
-// torrent engine points net.DefaultResolver into the tunnel.
-func directClient() *http.Client {
-	d := &net.Dialer{Timeout: 10 * time.Second, Resolver: &net.Resolver{}}
+var (
+	tunnelMu   sync.Mutex
+	tunnelDial func(ctx context.Context, network, addr string) (net.Conn, error)
+)
+
+// SetTunnel makes provider API calls (server lists, sign-in, sign-out) go
+// through the running VPN tunnel; nil goes back to the normal connection.
+// The app sets it whenever a tunnel is up, so these calls only go out
+// directly while no tunnel exists, i.e. when connecting to a provider.
+func SetTunnel(dial func(ctx context.Context, network, addr string) (net.Conn, error)) {
+	tunnelMu.Lock()
+	tunnelDial = dial
+	tunnelMu.Unlock()
+}
+
+// apiClient talks to provider APIs: through the tunnel if one is up (see
+// SetTunnel), otherwise over the normal connection with its own resolver
+// (the torrent engine points net.DefaultResolver into the tunnel). Each
+// request gets a fresh connection that's closed afterwards, so nothing
+// lingers.
+func apiClient() *http.Client {
+	tunnelMu.Lock()
+	dial := tunnelDial
+	tunnelMu.Unlock()
+	if dial == nil {
+		dial = (&net.Dialer{Timeout: 10 * time.Second, Resolver: &net.Resolver{}}).DialContext
+	}
 	return &http.Client{
-		Timeout:   20 * time.Second,
-		Transport: &http.Transport{DialContext: d.DialContext, TLSHandshakeTimeout: 10 * time.Second},
+		Timeout: 20 * time.Second,
+		Transport: &http.Transport{
+			DialContext:         dial,
+			TLSHandshakeTimeout: 10 * time.Second,
+			DisableKeepAlives:   true,
+		},
 	}
 }
 
 // httpClient is overridable in tests.
-var httpClient = directClient
+var httpClient = apiClient
 
 func newKeypair() (priv, pub string, err error) {
 	var k [32]byte

@@ -346,6 +346,9 @@ func (a *App) startEngine(tun *tunnel.Tunnel, eng *engine.Engine, st VpnStatus) 
 	a.mu.Lock()
 	a.tun, a.eng, a.stopMonitor = tun, eng, stop
 	a.verifyCtx = mctx
+	if tun != nil {
+		vpnprov.SetTunnel(tun.DialContext) // server lists and sign-ins go through the VPN
+	}
 	a.vpn = st
 	saved := append([]savedTorrent(nil), a.saved...)
 	pending := a.pending
@@ -445,6 +448,7 @@ func (a *App) disconnect() {
 	eng, tun, stop := a.eng, a.tun, a.stopMonitor
 	a.eng, a.tun, a.stopMonitor = nil, nil, nil
 	a.mu.Unlock()
+	vpnprov.SetTunnel(nil)
 	if stop != nil {
 		stop()
 	}
