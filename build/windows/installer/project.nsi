@@ -152,7 +152,12 @@ Section "uninstall"
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
 
-    RMDir /r $INSTDIR
+    # Delete only what the installer put there. The install folder can be
+    # changed during setup, so a recursive delete of $INSTDIR could wipe a
+    # folder full of the user's own files (e.g. if installed into Downloads).
+    Delete "$INSTDIR\${PRODUCT_EXECUTABLE}"
+    Delete "$INSTDIR\LICENSE"
+    Delete "$INSTDIR\THIRD_PARTY_LICENSES.txt"
 
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
@@ -160,4 +165,5 @@ Section "uninstall"
     # Settings, the WARP account (%APPDATA%\SharkBiteTorrent) and downloads are kept.
 
     !insertmacro wails.deleteUninstaller
+    RMDir $INSTDIR # only if it's now empty
 SectionEnd

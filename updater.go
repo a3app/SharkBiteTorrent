@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -186,7 +187,14 @@ func (a *App) SkipUpdate(version string) error {
 // InstallUpdate downloads the installer for version, verifies its SHA-256
 // against the release's SHA256SUMS.txt, runs it silently and quits. The
 // installer closes this app and relaunches the new version.
+// versionPattern is what a release version looks like ("0.2.24", "0.3.0-rc1").
+// It's checked before the version goes into a download URL.
+var versionPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z.]+)?$`)
+
 func (a *App) InstallUpdate(version string) error {
+	if !versionPattern.MatchString(version) {
+		return fmt.Errorf("not a version number: %q", version)
+	}
 	if !a.canInstallUpdates() {
 		return errors.New("automatic install isn't available for this version; download it from the release page")
 	}

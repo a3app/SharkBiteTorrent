@@ -225,11 +225,45 @@ func deref(p *int) int {
 	return *p
 }
 
+// Dialer opens a connection through the VPN tunnel.
+type Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
+
+// fetchTransport reaches the configured Prowlarr/Jackett directly (it's
+// usually on this computer or the home network, which the tunnel can't
+// reach) and everything else through the VPN. A result's link, or a redirect
+// from it, can point at the indexer site itself; those requests must not
+// show the user's real IP.
+func fetchTransport(c Config, tunnel Dialer) *http.Transport {
+	server := ""
+	if u, err := url.Parse(c.URL); err == nil {
+		port := u.Port()
+		if port == "" {
+			port = map[string]string{"http": "80", "https": "443"}[u.Scheme]
+		}
+		server = net.JoinHostPort(strings.ToLower(u.Hostname()), port)
+	}
+	direct := localTransport.DialContext
+	return &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if host, port, err := net.SplitHostPort(addr); err == nil && net.JoinHostPort(strings.ToLower(host), port) == server {
+				return direct(ctx, network, addr)
+			}
+			if tunnel == nil {
+				return nil, errors.New("VPN not connected")
+			}
+			return tunnel(ctx, network, addr)
+		},
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+}
+
 // Fetch turns a result into something the engine can add: its magnet link,
 // or a .torrent saved to a temporary file (the caller removes it). Download
-// links go through the user's server, which may answer with a .torrent or
-// redirect to a magnet link.
-func Fetch(ctx context.Context, r Result) (source string, tempFile string, err error) {
+// links normally go through the user's server, which may answer with a
+// .torrent or redirect to a magnet link. Only that server is contacted
+// directly; any other host (a direct indexer link, or a redirect to one)
+// goes through tunnel.
+func Fetch(ctx context.Context, c Config, r Result, tunnel Dialer) (source string, tempFile string, err error) {
 	if strings.HasPrefix(r.Magnet, "magnet:") {
 		return r.Magnet, "", nil
 	}
@@ -244,7 +278,7 @@ func Fetch(ctx context.Context, r Result) (source string, tempFile string, err e
 	var magnet string
 	client := &http.Client{
 		Timeout:   60 * time.Second,
-		Transport: localTransport,
+		Transport: fetchTransport(c, tunnel),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.URL.Scheme == "magnet" {
 				magnet = req.URL.String()

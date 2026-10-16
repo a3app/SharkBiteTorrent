@@ -32,6 +32,19 @@ func TestNewerVersion(t *testing.T) {
 	}
 }
 
+func TestVersionPattern(t *testing.T) {
+	for _, v := range []string{"0.2.24", "1.0", "0.3.0-rc1", "1.2.3.4"} {
+		if !versionPattern.MatchString(v) {
+			t.Errorf("rejected %q", v)
+		}
+	}
+	for _, v := range []string{"", "1", "../../x", "0.2.24/../../evil", "1.2.3?x=1", "v1.2.3", "1.2.3 "} {
+		if versionPattern.MatchString(v) {
+			t.Errorf("accepted %q", v)
+		}
+	}
+}
+
 func TestFetchChecksum(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111  SharkBiteTorrent.exe\n" +

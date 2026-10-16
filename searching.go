@@ -110,7 +110,8 @@ func (a *App) SearchTorrents(query, category string) ([]search.Result, error) {
 func (a *App) AddSearchResult(r search.Result) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	src, tmp, err := search.Fetch(ctx, r)
+	c, _ := a.searchConfig()
+	src, tmp, err := search.Fetch(ctx, c, r, a.dialTunnel)
 	if err != nil {
 		return err
 	}
