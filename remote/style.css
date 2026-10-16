@@ -6,6 +6,8 @@
   :root { --bg: #f6f7f9; --panel: #fff; --border: #d8dce4; --text: #1b1f27; --muted: #5f6b7d; }
 }
 * { box-sizing: border-box; }
+/* "hidden" must win over the display rules below (button, .row, …). */
+[hidden] { display: none !important; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
   font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
