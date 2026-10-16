@@ -56,7 +56,7 @@
     <b title={torrent.name}>{torrent.name || torrent.hash}</b>
     <span class="muted">{files.length} file{files.length === 1 ? '' : 's'}</span>
   </div>
-  {#if warnings.length > 0 || torrent.scanState}
+  {#if warnings.length > 0 || torrent.scanState || torrent.verified || torrent.verifying || torrent.sfv}
     <div class="safety">
       {#each warnings as w (w.file)}
         <div class="caution">⚠ <b>{w.file}</b>: {w.reason}</div>
@@ -72,6 +72,33 @@
         </div>
       {:else if torrent.scanState === 'error'}
         <div class="muted">Not scanned for malware: {torrent.scanError}.</div>
+      {/if}
+      {#if torrent.verifying}
+        <div class="muted">Verifying files on disk against the torrent's piece hashes… {Math.floor(torrent.verifyProgress * 100)}%</div>
+      {:else if torrent.verified}
+        {#if torrent.verified.bad === 0}
+          <div class="ok">✓ Verified: all {torrent.verified.pieces} finished pieces on disk match the torrent.</div>
+        {:else}
+          <div class="threat">
+            ⚠ {torrent.verified.bad} of {torrent.verified.pieces} pieces didn't match
+            ({(torrent.verified.badFiles ?? []).join(', ')}).
+            {torrent.state === 'seeding' ? 'They were downloaded again.' : 'They are being downloaded again.'}
+          </div>
+        {/if}
+      {/if}
+      {#if torrent.sfv?.checking}
+        <div class="muted">Checking files against the torrent's .sfv…</div>
+      {:else if torrent.sfv}
+        {#if torrent.sfv.error}
+          <div class="muted">Couldn't check the .sfv: {torrent.sfv.error}</div>
+        {:else if (torrent.sfv.bad ?? []).length > 0}
+          <div class="threat">⚠ .sfv: {torrent.sfv.bad.length} file(s) don't match: {torrent.sfv.bad.join(', ')}</div>
+        {:else}
+          <div class="ok">
+            ✓ .sfv: {torrent.sfv.checked} file{torrent.sfv.checked === 1 ? '' : 's'} match{torrent.sfv.checked === 1 ? 'es' : ''}.
+            {#if (torrent.sfv.missing ?? []).length > 0}<span class="muted">({torrent.sfv.missing.length} listed but not downloaded)</span>{/if}
+          </div>
+        {/if}
       {/if}
     </div>
   {/if}

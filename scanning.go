@@ -9,6 +9,7 @@ import (
 
 	"sharkbite/internal/engine"
 	"sharkbite/internal/scan"
+	"sharkbite/internal/sfv"
 )
 
 // Malware checks on finished torrents. The file-list check (scan.Inspect)
@@ -21,6 +22,8 @@ type scanRecord struct {
 	Threats []string `json:"threats,omitempty"`
 	Error   string   `json:"error,omitempty"`
 	At      int64    `json:"at"` // unix seconds
+	// SFV is the .sfv check, if the torrent has one.
+	SFV *engine.SFVStatus `json:"sfv,omitempty"`
 }
 
 // scanLoop looks for newly finished torrents and checks them, one at a time,
@@ -73,11 +76,16 @@ func (a *App) checkFinished(ctx context.Context, eng *engine.Engine, t engine.St
 	}
 	scan.MarkDownloaded(p)
 
+	sfvRes := a.checkSFV(ctx, eng, t.Hash)
+	if ctx.Err() != nil {
+		return
+	}
+
 	a.mu.Lock()
 	enabled := a.settings.ScanDownloads
 	a.mu.Unlock()
 	name, available := scan.Scanner()
-	rec := &scanRecord{Engine: name, At: time.Now().Unix()}
+	rec := &scanRecord{Engine: name, At: time.Now().Unix(), SFV: sfvRes}
 	switch {
 	case !enabled:
 		rec.Error = "scanning is turned off in Settings"
@@ -115,11 +123,97 @@ func (a *App) checkFinished(ctx context.Context, eng *engine.Engine, t engine.St
 	}
 	a.mu.Unlock()
 
+	if sfvRes != nil && len(sfvRes.Bad) > 0 {
+		runtime.EventsEmit(a.ctx, "error", fmt.Sprintf(
+			"⚠ “%s”: %d file(s) don't match the torrent's .sfv checksums: %v", t.Name, len(sfvRes.Bad), sfvRes.Bad))
+	}
 	if len(rec.Threats) > 0 {
 		runtime.EventsEmit(a.ctx, "error", fmt.Sprintf(
 			"⚠ %s found a threat in “%s”: %v. Don't open its files; consider removing it with its files.",
 			rec.Engine, t.Name, rec.Threats))
 	}
+}
+
+// checkSFV checks the torrent's .sfv file(s), if it has any; nil if not.
+// While it runs, the torrent shows as checking.
+func (a *App) checkSFV(ctx context.Context, eng *engine.Engine, hash string) *engine.SFVStatus {
+	files, err := eng.FilePaths(hash)
+	if err != nil || len(sfv.Find(files)) == 0 {
+		return nil
+	}
+	a.mu.Lock()
+	if a.sfvChecking == nil {
+		a.sfvChecking = map[string]bool{}
+	}
+	a.sfvChecking[hash] = true
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		delete(a.sfvChecking, hash)
+		a.mu.Unlock()
+	}()
+
+	res, err := sfv.Check(ctx, files)
+	st := &engine.SFVStatus{Checked: res.Checked, Bad: res.Bad, Missing: res.Missing}
+	if err != nil {
+		st.Error = err.Error()
+	}
+	return st
+}
+
+// VerifyTorrent re-checks a torrent's files on disk against its piece
+// hashes and, if it has one, its .sfv. It returns at once; progress and the
+// result show in the torrent list.
+func (a *App) VerifyTorrent(hash string) error {
+	eng, err := a.engine()
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	ctx := a.verifyCtx
+	a.mu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	go func() {
+		res, err := eng.Verify(ctx, hash)
+		if err != nil {
+			if ctx.Err() == nil {
+				runtime.EventsEmit(a.ctx, "error", "Verify: "+err.Error())
+			}
+			return
+		}
+		name := hash
+		for _, t := range eng.List() {
+			if t.Hash == hash {
+				name = t.Name
+			}
+		}
+		sfvRes := a.checkSFV(ctx, eng, hash)
+		if ctx.Err() != nil {
+			return
+		}
+		if sfvRes != nil {
+			a.mu.Lock()
+			if s := a.savedFor(hash); s != nil && s.Scan != nil {
+				s.Scan.SFV = sfvRes
+				a.writeSaved()
+			} else {
+				// Not finished/scanned yet: keep it out of the saved scan
+				// record, or the malware scan would think it already ran.
+				if a.sfvResults == nil {
+					a.sfvResults = map[string]*engine.SFVStatus{}
+				}
+				a.sfvResults[hash] = sfvRes
+			}
+			a.mu.Unlock()
+		}
+		if res.Bad > 0 {
+			runtime.EventsEmit(a.ctx, "error", fmt.Sprintf(
+				"⚠ “%s”: %d of %d pieces didn't match and are being downloaded again (in %v).", name, res.Bad, res.Pieces, res.BadFiles))
+		}
+	}()
+	return nil
 }
 
 // withScans adds scan results to the torrent list for the UI.
@@ -128,6 +222,15 @@ func (a *App) withScans(list []engine.Status) []engine.Status {
 	defer a.mu.Unlock()
 	for i := range list {
 		t := &list[i]
+		if r, ok := a.sfvResults[t.Hash]; ok {
+			t.SFV = r
+		}
+		if s := a.savedFor(t.Hash); s != nil && s.Scan != nil && s.Scan.SFV != nil {
+			t.SFV = s.Scan.SFV
+		}
+		if a.sfvChecking[t.Hash] {
+			t.SFV = &engine.SFVStatus{Checking: true}
+		}
 		if a.scanning[t.Hash] {
 			t.ScanState = "scanning"
 			continue

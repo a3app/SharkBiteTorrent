@@ -72,6 +72,11 @@ type entry struct {
 	inspected bool
 	checking  atomic.Bool // verifying existing data after a restart
 
+	// "Verify files": re-hash finished pieces on disk (see Verify).
+	verifying            atomic.Bool
+	verifyDone, verifyOf atomic.Int64
+	verified             *VerifyResult // last result; guarded by Engine.mu
+
 	last               time.Time
 	lastRead, lastWrit int64
 	downRate, upRate   int64
@@ -493,6 +498,30 @@ type Status struct {
 	ScanEngine string   `json:"scanEngine"`
 	Threats    []string `json:"threats"`
 	ScanError  string   `json:"scanError"`
+	// "Verify files" (see Engine.Verify): progress while running, then the
+	// last result. Bad pieces are downloaded again automatically.
+	Verifying      bool          `json:"verifying"`
+	VerifyProgress float64       `json:"verifyProgress"`
+	Verified       *VerifyResult `json:"verified"`
+	// .sfv check of the finished files; filled in by the app.
+	SFV *SFVStatus `json:"sfv"`
+}
+
+// VerifyResult is the outcome of re-checking a torrent's data on disk.
+type VerifyResult struct {
+	Pieces   int      `json:"pieces"`   // pieces that were complete and got re-checked
+	Bad      int      `json:"bad"`      // of those, how many no longer matched
+	BadFiles []string `json:"badFiles"` // files containing bad pieces
+	At       int64    `json:"at"`       // unix seconds
+}
+
+// SFVStatus is the result of checking the torrent's own .sfv file(s).
+type SFVStatus struct {
+	Checked  int      `json:"checked"`
+	Bad      []string `json:"bad"`
+	Missing  []string `json:"missing"`
+	Error    string   `json:"error"`
+	Checking bool     `json:"checking"`
 }
 
 // List returns a snapshot of all torrents. Rates are computed from the
@@ -536,6 +565,13 @@ func (e *Engine) List() []Status {
 			en.warnings, en.inspected = scan.Inspect(fs), true
 		}
 		row.Warnings = en.warnings
+		row.Verified = en.verified
+		if en.verifying.Load() {
+			row.Verifying = true
+			if of := en.verifyOf.Load(); of > 0 {
+				row.VerifyProgress = float64(en.verifyDone.Load()) / float64(of)
+			}
+		}
 		if t.Info() != nil {
 			for i, f := range t.Files() {
 				if en.skipped[i] {
@@ -613,6 +649,106 @@ func recheck(en *entry) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// Verify re-reads every finished piece from disk and checks it against the
+// torrent's piece hashes (SHA-1, or SHA-256 for v2 torrents). That catches
+// damage after the download: a bad copy, a failing disk or NAS. Pieces that
+// no longer match are marked missing, so the torrent downloads them again.
+// It blocks until done; progress shows in List.
+func (e *Engine) Verify(ctx context.Context, hash string) (*VerifyResult, error) {
+	en, err := e.find(hash)
+	if err != nil {
+		return nil, err
+	}
+	t := en.t
+	if t.Info() == nil {
+		return nil, errors.New("the torrent's file list isn't known yet")
+	}
+	if !en.verifying.CompareAndSwap(false, true) {
+		return nil, errors.New("already verifying")
+	}
+	defer en.verifying.Store(false)
+
+	var pieces []int
+	for i := 0; i < t.NumPieces(); i++ {
+		if t.PieceState(i).Complete {
+			pieces = append(pieces, i)
+		}
+	}
+	en.verifyDone.Store(0)
+	en.verifyOf.Store(int64(len(pieces)))
+
+	var mu sync.Mutex
+	var bad []int
+	sem := make(chan struct{}, 16)
+	var wg sync.WaitGroup
+	for _, i := range pieces {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			wg.Wait()
+			return nil, ctx.Err()
+		}
+		wg.Add(1)
+		go func(i int) {
+			defer func() { <-sem; wg.Done() }()
+			err := t.Piece(i).VerifyDataContext(ctx)
+			if err == nil && !t.PieceState(i).Complete {
+				mu.Lock()
+				bad = append(bad, i)
+				mu.Unlock()
+			}
+			en.verifyDone.Add(1)
+		}(i)
+	}
+	wg.Wait()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	res := &VerifyResult{Pieces: len(pieces), Bad: len(bad), BadFiles: []string{}, At: time.Now().Unix()}
+	for _, f := range t.Files() {
+		for _, p := range bad {
+			if p >= f.BeginPieceIndex() && p < f.EndPieceIndex() {
+				res.BadFiles = append(res.BadFiles, f.DisplayPath())
+				break
+			}
+		}
+	}
+	e.mu.Lock()
+	en.verified = res
+	e.mu.Unlock()
+	return res, nil
+}
+
+// FilePaths returns where each finished, wanted file is on disk, keyed by
+// its path inside the torrent (forward slashes).
+func (e *Engine) FilePaths(hash string) (map[string]string, error) {
+	en, err := e.find(hash)
+	if err != nil {
+		return nil, err
+	}
+	info := en.t.Info()
+	if info == nil {
+		return nil, errors.New("the torrent's file list isn't known yet")
+	}
+	root := filepath.Join(en.dir, info.BestName())
+	out := map[string]string{}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for i, f := range en.t.Files() {
+		if en.skipped[i] || f.BytesCompleted() < f.Length() {
+			continue
+		}
+		rel := f.DisplayPath()
+		if info.IsDir() {
+			out[rel] = filepath.Join(root, filepath.FromSlash(rel))
+		} else {
+			out[rel] = root
+		}
+	}
+	return out, nil
 }
 
 // ContentPath returns where a torrent's data lives: its folder for

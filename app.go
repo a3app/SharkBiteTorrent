@@ -43,6 +43,9 @@ type App struct {
 	scanning    map[string]bool // torrents being scanned right now
 	proxy       *socks.Server   // local SOCKS5 proxy into the tunnel, for Prowlarr/Jackett
 	proxyErr    string
+	sfvChecking map[string]bool              // torrents whose .sfv is being checked
+	sfvResults  map[string]*engine.SFVStatus // .sfv results not yet in a saved scan record
+	verifyCtx   context.Context              // cancelled on disconnect; stops "Verify files"
 }
 
 type VpnStatus struct {
@@ -305,6 +308,7 @@ func (a *App) connect() {
 	mctx, stop := context.WithCancel(context.Background())
 	a.mu.Lock()
 	a.tun, a.eng, a.stopMonitor = tun, eng, stop
+	a.verifyCtx = mctx
 	a.vpn = VpnStatus{State: "connected", Provider: set.VpnProvider, Name: name,
 		ExitIP: tr.IP, Location: tr.Location, Colo: tr.Colo, Port: port, Warning: pfWarning}
 	if conn != nil {

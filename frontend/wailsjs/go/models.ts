@@ -34,6 +34,44 @@ export namespace engine {
 	        this.n = source["n"];
 	    }
 	}
+	export class SFVStatus {
+	    checked: number;
+	    bad: string[];
+	    missing: string[];
+	    error: string;
+	    checking: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new SFVStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.checked = source["checked"];
+	        this.bad = source["bad"];
+	        this.missing = source["missing"];
+	        this.error = source["error"];
+	        this.checking = source["checking"];
+	    }
+	}
+	export class VerifyResult {
+	    pieces: number;
+	    bad: number;
+	    badFiles: string[];
+	    at: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new VerifyResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.pieces = source["pieces"];
+	        this.bad = source["bad"];
+	        this.badFiles = source["badFiles"];
+	        this.at = source["at"];
+	    }
+	}
 	export class Status {
 	    hash: string;
 	    name: string;
@@ -51,6 +89,10 @@ export namespace engine {
 	    scanEngine: string;
 	    threats: string[];
 	    scanError: string;
+	    verifying: boolean;
+	    verifyProgress: number;
+	    verified?: VerifyResult;
+	    sfv?: SFVStatus;
 	
 	    static createFrom(source: any = {}) {
 	        return new Status(source);
@@ -74,6 +116,10 @@ export namespace engine {
 	        this.scanEngine = source["scanEngine"];
 	        this.threats = source["threats"];
 	        this.scanError = source["scanError"];
+	        this.verifying = source["verifying"];
+	        this.verifyProgress = source["verifyProgress"];
+	        this.verified = this.convertValues(source["verified"], VerifyResult);
+	        this.sfv = this.convertValues(source["sfv"], SFVStatus);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

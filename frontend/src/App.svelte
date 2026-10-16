@@ -3,7 +3,7 @@
   import {
     GetVpnStatus, ListTorrents, AddMagnet, PickTorrentFile, GetSettings,
     Pause, Resume, Remove, Reconnect, OpenFolder, ChooseDownloadDir,
-    InstallUpdate, SkipUpdate, OpenURL,
+    InstallUpdate, SkipUpdate, OpenURL, VerifyTorrent,
   } from '../wailsjs/go/main/App.js'
   import { EventsOn, OnFileDrop } from '../wailsjs/runtime/runtime.js'
   import type { engine, main } from '../wailsjs/go/models'
@@ -167,6 +167,8 @@
 
   // Antivirus status takes over the Status column once a torrent finishes.
   function statusText(t: engine.Status): string {
+    if (t.verifying) return `Verifying ${Math.floor(t.verifyProgress * 100)}%`
+    if (t.sfv?.checking) return 'Checking .sfv…'
     if (t.state === 'seeding' && t.scanState === 'scanning') return 'Scanning for malware…'
     if (t.scanState === 'threat') return '⚠ Threat found'
     return stateLabel[t.state] ?? t.state
@@ -338,6 +340,11 @@
     {:else}
       <button role="menuitem" onclick={() => menuAction(t => Pause(t.hash))}>Pause</button>
     {/if}
+    <button
+      role="menuitem"
+      disabled={menu.t.verifying || menu.t.state === 'metadata' || menu.t.state === 'needs-torrent-file'}
+      onclick={() => menuAction(t => VerifyTorrent(t.hash))}
+    >Verify files</button>
     <div class="menu-sep"></div>
     <button role="menuitem" onclick={() => { removing = menu!.t; deleteFiles = false; menu = null }}>Remove…</button>
   </div>
@@ -475,7 +482,8 @@
     display: flex; flex-direction: column;
   }
   .menu button { border: none; background: none; text-align: left; padding: 6px 10px; border-radius: 5px; }
-  .menu button:hover { background: var(--row-hover); }
+  .menu button:hover:not(:disabled) { background: var(--row-hover); }
+  .menu button:disabled { opacity: 0.45; cursor: default; }
   .menu-sep { height: 1px; background: var(--border); margin: 4px 2px; }
 
   .backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); display: grid; place-items: center; z-index: 10; }

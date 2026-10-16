@@ -153,3 +153,7 @@ export function SetSearchProxy(arg1) {
 export function SkipUpdate(arg1) {
   return window['go']['main']['App']['SkipUpdate'](arg1);
 }
+
+export function VerifyTorrent(arg1) {
+  return window['go']['main']['App']['VerifyTorrent'](arg1);
+}
