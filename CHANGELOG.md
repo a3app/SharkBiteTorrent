@@ -10,6 +10,9 @@ What changed in each release of Shark BiteTorrent. The release notes on GitHub a
 - The phone remote says when a download finishes while it's open ("Finished: …"), with a short vibration where the phone supports it.
 - The home-Wi-Fi remote only runs on the home network; until a phone has paired over home Wi-Fi, it only listens during that pairing.
 
+### Security
+- System tools the app runs (route, arp, Explorer, open, xdg-open, ClamAV) are started from their fixed system locations instead of being searched for on PATH.
+
 ## [0.2.32] - 2026-10-16
 
 ### Added

@@ -7,12 +7,14 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+
+	"sharkbite/internal/systool"
 )
 
 // defaultRoutes reads IPv4 default routes from "route print -4": lines like
 // "0.0.0.0  0.0.0.0  192.168.4.1  192.168.4.111  25".
 func defaultRoutes() []defaultRoute {
-	out, err := hiddenCommand("route", "print", "-4").Output()
+	out, err := hiddenCommand(sysPath("route"), "print", "-4").Output()
 	if err != nil {
 		return nil
 	}
@@ -29,7 +31,7 @@ func defaultRoutes() []defaultRoute {
 // gatewayMAC looks the router up in the ARP table of that interface:
 // "  192.168.4.1           aa-bb-cc-dd-ee-ff     dynamic".
 func gatewayMAC(localIP, gateway string) string {
-	out, err := hiddenCommand("arp", "-a", "-N", localIP).Output()
+	out, err := hiddenCommand(sysPath("arp"), "-a", "-N", localIP).Output()
 	if err != nil {
 		return ""
 	}
@@ -47,4 +49,12 @@ func hiddenCommand(name string, args ...string) *exec.Cmd {
 	cmd := exec.Command(name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000} // CREATE_NO_WINDOW
 	return cmd
+}
+
+// sysPath is where a Windows tool lives (System32), so PATH can't swap it.
+func sysPath(name string) string {
+	if p, ok := systool.Find(name); ok {
+		return p
+	}
+	return name + ".exe-not-found"
 }

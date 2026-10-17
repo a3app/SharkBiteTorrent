@@ -4,13 +4,14 @@ package main
 
 import (
 	"net"
-	"os/exec"
 	"strings"
+
+	"sharkbite/internal/systool"
 )
 
 // defaultRoutes reads "netstat -rn -f inet": "default  192.168.1.1  UGScg  en0".
 func defaultRoutes() []defaultRoute {
-	out, err := exec.Command("netstat", "-rn", "-f", "inet").Output()
+	out, err := systool.Command("netstat", "-rn", "-f", "inet").Output()
 	if err != nil {
 		return nil
 	}
@@ -42,7 +43,7 @@ func ifaceIPv4(name string) string {
 
 // gatewayMAC reads "arp -n 192.168.1.1": "? (192.168.1.1) at aa:bb:cc:dd:ee:ff on en0 …".
 func gatewayMAC(_, gateway string) string {
-	out, err := exec.Command("arp", "-n", gateway).Output()
+	out, err := systool.Command("arp", "-n", gateway).Output()
 	if err != nil {
 		return ""
 	}

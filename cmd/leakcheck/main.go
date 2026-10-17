@@ -45,7 +45,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -58,6 +57,7 @@ import (
 	"sharkbite/internal/engine"
 	"sharkbite/internal/search"
 	"sharkbite/internal/secret"
+	"sharkbite/internal/systool"
 	"sharkbite/internal/tunnel"
 	"sharkbite/internal/vpnprov"
 	"sharkbite/internal/warp"
@@ -377,7 +377,7 @@ func runEngine(acc *warp.Account, secs int, selftest bool, source string) error 
 // runApp launches the app as the logged-in user (through Explorer, so it
 // isn't elevated like this process) and watches it for secs seconds.
 func runApp(exe string, secs int) (int, *pidSet, error) {
-	exec.Command("explorer.exe", exe).Run() // explorer's exit code is meaningless
+	systool.Command("explorer", exe).Run() // explorer's exit code is meaningless
 	var pid int
 	for i := 0; i < 60 && pid == 0; i++ {
 		time.Sleep(500 * time.Millisecond)
@@ -515,22 +515,22 @@ func startAuditing() (restore func(), err error) {
 		once.Do(func() {
 			var failed []string
 			for _, p := range saved {
-				if out, err := exec.Command("auditpol", "/set", "/subcategory:"+p.name, "/success:"+p.success, "/failure:"+p.failure).CombinedOutput(); err != nil {
+				if out, err := systool.Command("auditpol", "/set", "/subcategory:"+p.name, "/success:"+p.success, "/failure:"+p.failure).CombinedOutput(); err != nil {
 					failed = append(failed, fmt.Sprintf("%s (%v: %s)", p.name, err, strings.TrimSpace(string(out))))
 				}
 			}
 			if dnsPrevSize != "" {
 				// The size can only be changed while the log is off.
-				exec.Command("wevtutil", "sl", dnsLog, "/e:false").Run()
-				if err := exec.Command("wevtutil", "sl", dnsLog, "/ms:"+dnsPrevSize).Run(); err != nil {
+				systool.Command("wevtutil", "sl", dnsLog, "/e:false").Run()
+				if err := systool.Command("wevtutil", "sl", dnsLog, "/ms:"+dnsPrevSize).Run(); err != nil {
 					failed = append(failed, "DNS log size (was "+dnsPrevSize+" bytes)")
 				}
 			}
 			if dnsWasEnabled {
-				if err := exec.Command("wevtutil", "sl", dnsLog, "/e:true").Run(); err != nil {
+				if err := systool.Command("wevtutil", "sl", dnsLog, "/e:true").Run(); err != nil {
 					failed = append(failed, "DNS log on")
 				}
-			} else if err := exec.Command("wevtutil", "sl", dnsLog, "/e:false").Run(); err != nil {
+			} else if err := systool.Command("wevtutil", "sl", dnsLog, "/e:false").Run(); err != nil {
 				failed = append(failed, "DNS log off")
 			}
 			if len(failed) > 0 {
@@ -546,7 +546,7 @@ func startAuditing() (restore func(), err error) {
 		return nil, err
 	}
 	for _, sub := range []string{wfpSubcategory, processSubcategory} {
-		out, err := exec.Command("auditpol", "/get", "/subcategory:"+sub, "/r").Output()
+		out, err := systool.Command("auditpol", "/get", "/subcategory:"+sub, "/r").Output()
 		if err != nil {
 			return fail(fmt.Errorf("auditpol: %w", err))
 		}
@@ -555,11 +555,11 @@ func startAuditing() (restore func(), err error) {
 		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 		setting := lines[len(lines)-1]
 		saved = append(saved, prev{sub, onOff(strings.Contains(setting, "Success")), onOff(strings.Contains(setting, "Failure"))})
-		if out, err := exec.Command("auditpol", "/set", "/subcategory:"+sub, "/success:enable", "/failure:enable").CombinedOutput(); err != nil {
+		if out, err := systool.Command("auditpol", "/set", "/subcategory:"+sub, "/success:enable", "/failure:enable").CombinedOutput(); err != nil {
 			return fail(fmt.Errorf("auditpol: %v: %s", err, out))
 		}
 	}
-	prevDNS, err := exec.Command("wevtutil", "gl", dnsLog).Output()
+	prevDNS, err := systool.Command("wevtutil", "gl", dnsLog).Output()
 	if err != nil {
 		return fail(fmt.Errorf("reading the DNS log settings: %w", err))
 	}
@@ -574,11 +574,11 @@ func startAuditing() (restore func(), err error) {
 		return fail(errors.New("couldn't read the DNS log's size"))
 	}
 	// The size can only be changed while the log is off.
-	exec.Command("wevtutil", "sl", dnsLog, "/e:false").Run()
-	if err := exec.Command("wevtutil", "sl", dnsLog, "/ms:"+strconv.Itoa(dnsLogSize)).Run(); err != nil {
+	systool.Command("wevtutil", "sl", dnsLog, "/e:false").Run()
+	if err := systool.Command("wevtutil", "sl", dnsLog, "/ms:"+strconv.Itoa(dnsLogSize)).Run(); err != nil {
 		return fail(fmt.Errorf("enlarging the DNS log: %w", err))
 	}
-	if err := exec.Command("wevtutil", "sl", dnsLog, "/e:true").Run(); err != nil {
+	if err := systool.Command("wevtutil", "sl", dnsLog, "/e:true").Run(); err != nil {
 		return fail(fmt.Errorf("turning on the DNS log: %w", err))
 	}
 	return restore, nil
@@ -653,7 +653,7 @@ func (e event) field(name string) string {
 }
 
 func queryLog(logName, xpath string) ([]event, error) {
-	out, err := exec.Command("wevtutil", "qe", logName, "/q:"+xpath, "/f:xml").Output()
+	out, err := systool.Command("wevtutil", "qe", logName, "/q:"+xpath, "/f:xml").Output()
 	if err != nil {
 		return nil, err
 	}
@@ -806,7 +806,7 @@ func checkBrowserArgs(s *pidSet) string {
 func brokerActivity(start time.Time) []string {
 	set := &pidSet{pids: map[int]bool{}}
 	for _, svc := range []string{"TokenBroker", "WinHttpAutoProxySvc"} {
-		out, _ := exec.Command("tasklist", "/SVC", "/FI", "SERVICES eq "+svc, "/FO", "CSV", "/NH").Output()
+		out, _ := systool.Command("tasklist", "/SVC", "/FI", "SERVICES eq "+svc, "/FO", "CSV", "/NH").Output()
 		if f := strings.Split(strings.TrimSpace(string(out)), "\",\""); len(f) > 1 {
 			if pid, err := strconv.Atoi(f[1]); err == nil {
 				set.pids[pid] = true
@@ -887,7 +887,7 @@ func (s *pidSet) merge(o *pidSet) {
 
 // addChildren adds every running descendant of the watched processes.
 func (s *pidSet) addChildren() {
-	out, err := exec.Command("powershell", "-NoProfile", "-Command",
+	out, err := systool.Command("powershell", "-NoProfile", "-Command",
 		"Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId) $($_.Name) $($_.CommandLine)\" }").Output()
 	if err != nil {
 		return
@@ -948,7 +948,7 @@ func (s *pidSet) kindOf(pid int) string {
 }
 
 func findProcess(image string) int {
-	out, _ := exec.Command("tasklist", "/FI", "IMAGENAME eq "+image, "/FO", "CSV", "/NH").Output()
+	out, _ := systool.Command("tasklist", "/FI", "IMAGENAME eq "+image, "/FO", "CSV", "/NH").Output()
 	f := strings.Split(strings.TrimSpace(string(out)), "\",\"")
 	if len(f) > 1 {
 		pid, _ := strconv.Atoi(f[1])
@@ -959,7 +959,7 @@ func findProcess(image string) int {
 
 func isAdmin() bool {
 	// "net session" only succeeds in an elevated process.
-	return exec.Command("net", "session").Run() == nil
+	return systool.Command("net", "session").Run() == nil
 }
 
 func containsAny(list []string, sub string) bool {

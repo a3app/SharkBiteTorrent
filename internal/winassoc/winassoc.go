@@ -6,11 +6,12 @@ package winassoc
 
 import (
 	"errors"
-	"os/exec"
 	"strings"
 	"syscall"
 
 	"golang.org/x/sys/windows/registry"
+
+	"sharkbite/internal/systool"
 )
 
 const (
@@ -170,7 +171,7 @@ func deleteTree(path string) error {
 
 // OpenDefaultAppsSettings opens this app's page in Windows Default Apps.
 func OpenDefaultAppsSettings() error {
-	return exec.Command("explorer", "ms-settings:defaultapps?registeredAppUser="+appKey).Start()
+	return systool.Command("explorer", "ms-settings:defaultapps?registeredAppUser="+appKey).Start()
 }
 
 func notifyAssocChanged() {

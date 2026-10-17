@@ -9,16 +9,18 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"sharkbite/internal/systool"
 )
 
 // ClamAV is used on Linux and macOS when installed (clamdscan, through the
 // running daemon, is much faster than clamscan, which loads its signature
 // database for every run).
 func clamCommand() (string, []string, bool) {
-	if p, err := exec.LookPath("clamdscan"); err == nil {
+	if p, ok := systool.Find("clamdscan"); ok {
 		return p, []string{"--fdpass", "--no-summary", "--infected"}, true
 	}
-	if p, err := exec.LookPath("clamscan"); err == nil {
+	if p, ok := systool.Find("clamscan"); ok {
 		return p, []string{"--no-summary", "--infected", "--recursive"}, true
 	}
 	return "", nil, false

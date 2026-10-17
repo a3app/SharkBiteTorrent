@@ -4,9 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"sharkbite/internal/systool"
 )
 
 // Linux follows the freedesktop.org standards that KDE (CachyOS default),
@@ -18,7 +19,7 @@ const desktopID = "sharkbitetorrent.desktop"
 
 var mimeTypes = []string{"x-scheme-handler/magnet", "application/x-bittorrent"}
 
-func OpenFolder(dir string) error { return exec.Command("xdg-open", dir).Start() }
+func OpenFolder(dir string) error { return systool.Command("xdg-open", dir).Start() }
 
 func desktopPath() string {
 	dir := os.Getenv("XDG_DATA_HOME")
@@ -47,9 +48,9 @@ MimeType=%s;
 	if err := os.WriteFile(p, []byte(entry), 0o644); err != nil {
 		return err
 	}
-	exec.Command("update-desktop-database", filepath.Dir(p)).Run() // optional helper
+	systool.Command("update-desktop-database", filepath.Dir(p)).Run() // optional helper
 	for _, m := range mimeTypes {
-		if out, err := exec.Command("xdg-mime", "default", desktopID, m).CombinedOutput(); err != nil {
+		if out, err := systool.Command("xdg-mime", "default", desktopID, m).CombinedOutput(); err != nil {
 			return fmt.Errorf("xdg-mime default %s: %v: %s", m, err, out)
 		}
 	}
@@ -65,7 +66,7 @@ func UnregisterAssociations(string) error {
 }
 
 func isDefault(mime string) bool {
-	out, err := exec.Command("xdg-mime", "query", "default", mime).Output()
+	out, err := systool.Command("xdg-mime", "query", "default", mime).Output()
 	return err == nil && strings.TrimSpace(string(out)) == desktopID
 }
 
@@ -87,5 +88,5 @@ func RevealPath(path string, isDir bool) error {
 	if !isDir {
 		path = filepath.Dir(path)
 	}
-	return exec.Command("xdg-open", path).Start()
+	return systool.Command("xdg-open", path).Start()
 }
