@@ -195,7 +195,11 @@ func TestRemoteSearchResultsHideLinks(t *testing.T) {
 }
 
 func TestRemoteTailscaleClients(t *testing.T) {
-	rs := &remoteServer{tsAddr: "100.101.102.103"}
+	// Tailscale knows 100.90.1.2 (same account) and 100.90.9.9 (someone
+	// else's device on the tailnet); anything else it doesn't know.
+	rs := &remoteServer{tsAddr: "100.101.102.103", whois: func(ip string) tailscalePeer {
+		return tailscalePeer{OK: ip == "100.90.1.2", Name: "pixel"}
+	}}
 	req := func(local, remote string) *http.Request {
 		r := httptest.NewRequest("GET", "/", nil)
 		r.RemoteAddr = remote
@@ -205,7 +209,9 @@ func TestRemoteTailscaleClients(t *testing.T) {
 		local, remote string
 		want          bool
 	}{
-		{"100.101.102.103", "100.90.1.2:5000", true},    // Tailscale phone on the Tailscale address
+		{"100.101.102.103", "100.90.1.2:5000", true},    // my Tailscale phone on the Tailscale address
+		{"100.101.102.103", "100.90.9.9:5000", false},   // another account's device on the tailnet
+		{"100.101.102.103", "100.70.0.5:5000", false},   // a 100.64/10 address Tailscale doesn't know (ISP, hotel)
 		{"100.101.102.103", "192.168.4.39:5000", false}, // home device on the Tailscale address
 		{"100.101.102.103", "203.0.113.5:5000", false},  // internet
 		{"192.168.4.111", "192.168.4.39:5000", true},    // home phone at home
@@ -219,5 +225,30 @@ func TestRemoteTailscaleClients(t *testing.T) {
 	// Without Tailscale access, a Tailscale address is just not private.
 	if (&remoteServer{}).allowedClient(req("100.101.102.103", "100.90.1.2:5000")) {
 		t.Error("Tailscale client allowed with Tailscale access off")
+	}
+}
+
+// Pairing over Tailscale is tagged as such and never sets the home network.
+func TestRemoteTailscalePairingKeepsHomeUnset(t *testing.T) {
+	a := &App{configDir: t.TempDir()}
+	rs := &remoteServer{port: 8732, addrs: []string{"100.101.102.103"}, tsAddr: "100.101.102.103",
+		whois:    func(string) tailscalePeer { return tailscalePeer{OK: true, Name: "pixel-8"} },
+		keyFails: map[string][]time.Time{}, codeFails: map[string][]time.Time{}}
+	h := a.remoteHandler(rs)
+	rs.pairCode, rs.pairUntil = "K7QM4XRP", time.Now().Add(time.Minute)
+	r := httptest.NewRequest("POST", "/api/pair", strings.NewReader(`{"code":"K7QM4XRP","name":"Android phone"}`))
+	r.RemoteAddr, r.Host = "100.90.1.2:5000", "100.101.102.103:8732"
+	r.Header.Set("Content-Type", "application/json")
+	r = r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, &net.TCPAddr{IP: net.ParseIP("100.101.102.103"), Port: 8732}))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("pair over Tailscale: %d %s", w.Code, w.Body.String())
+	}
+	if a.store.Home != nil {
+		t.Errorf("Tailscale pairing set the home network: %+v", a.store.Home)
+	}
+	if d := a.store.Devices; len(d) != 1 || !d[0].ViaTailscale || d[0].TSName != "pixel-8" {
+		t.Errorf("device not tagged as Tailscale: %+v", d)
 	}
 }

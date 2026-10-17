@@ -220,9 +220,12 @@ func run() int {
 		switch {
 		case c.loopback():
 		case remotePort != "" && *app && c.proto == "TCP" && c.pid == root && !c.outbound &&
-			portOf(c.local) == remotePort && (privateAddr(c.remote) || remoteTailscale && tailscaleAddr(c.remote)):
-			// The remote control (on in Settings): phones on the home network
-			// connecting in. Only inbound, only that port, only private addresses.
+			portOf(c.local) == remotePort && (privateAddr(c.remote) && !tailscaleAddr(c.local) ||
+			remoteTailscale && tailscaleAddr(c.remote) && tailscaleAddr(c.local)):
+			// The remote control (on in Settings): phones connecting in, only
+			// inbound, only on that port: from private addresses to the home
+			// address, or (Tailscale access on) from Tailscale addresses to the
+			// Tailscale address.
 		case c.proto == "UDP" && c.pid == root && (c.remote == endpoint || c.local == endpoint):
 			seenTunnel = true
 		default:

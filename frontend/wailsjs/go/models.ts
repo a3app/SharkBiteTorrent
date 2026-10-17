@@ -363,6 +363,8 @@ export namespace main {
 	    id: string;
 	    name: string;
 	    ip: string;
+	    viaTailscale: boolean;
+	    tsName: string;
 	    created: number;
 	    lastSeen: number;
 	
@@ -375,6 +377,8 @@ export namespace main {
 	        this.id = source["id"];
 	        this.name = source["name"];
 	        this.ip = source["ip"];
+	        this.viaTailscale = source["viaTailscale"];
+	        this.tsName = source["tsName"];
 	        this.created = source["created"];
 	        this.lastSeen = source["lastSeen"];
 	    }
@@ -402,6 +406,7 @@ export namespace main {
 	    running: boolean;
 	    paused: string;
 	    tailscale: boolean;
+	    lanAvailable: boolean;
 	    tailscaleURL: string;
 	    tailscaleFound: boolean;
 	    home: string;
@@ -420,6 +425,7 @@ export namespace main {
 	        this.running = source["running"];
 	        this.paused = source["paused"];
 	        this.tailscale = source["tailscale"];
+	        this.lanAvailable = source["lanAvailable"];
 	        this.tailscaleURL = source["tailscaleURL"];
 	        this.tailscaleFound = source["tailscaleFound"];
 	        this.home = source["home"];

@@ -66,12 +66,17 @@ const (
 )
 
 type remoteDevice struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	IP        string `json:"ip"` // where it paired from
-	TokenHash string `json:"tokenHash"`
-	Created   int64  `json:"created"`
-	LastSeen  int64  `json:"lastSeen"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	IP   string `json:"ip"` // where it paired from
+	// ViaTailscale: paired over Tailscale (then IP is its Tailscale address
+	// and TSName its Tailscale name). Only home-Wi-Fi pairings set the home
+	// network.
+	ViaTailscale bool   `json:"viaTailscale"`
+	TSName       string `json:"tsName,omitempty"`
+	TokenHash    string `json:"tokenHash"`
+	Created      int64  `json:"created"`
+	LastSeen     int64  `json:"lastSeen"`
 }
 
 // remoteStore is remote.json (encrypted): the home network and the paired
@@ -86,6 +91,8 @@ type remoteServer struct {
 	port   int
 	addrs  []string // local addresses it listens on
 	tsAddr string   // the Tailscale one among them, if Tailscale access is on
+	// whois says who a Tailscale address is (tailscaleWhois; replaceable in tests).
+	whois func(ip string) tailscalePeer
 
 	mu           sync.Mutex
 	pairCode     string
@@ -159,7 +166,10 @@ type RemoteStatus struct {
 	// Tailscale access (opt-in): Tailscale is the setting; TailscaleURL is
 	// set while it's listening there; TailscaleFound says whether Tailscale
 	// is installed and connected on this computer.
-	Tailscale      bool               `json:"tailscale"`
+	Tailscale bool `json:"tailscale"`
+	// LanAvailable: a home-Wi-Fi pairing is possible here (the computer is
+	// on the home network, or no home network is set and it\'s on one).
+	LanAvailable   bool               `json:"lanAvailable"`
 	TailscaleURL   string             `json:"tailscaleURL"`
 	TailscaleFound bool               `json:"tailscaleFound"`
 	Home           string             `json:"home"` // the home network's router, if paired
@@ -170,11 +180,13 @@ type RemoteStatus struct {
 }
 
 type RemoteDeviceView struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	IP       string `json:"ip"`
-	Created  int64  `json:"created"`
-	LastSeen int64  `json:"lastSeen"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	IP           string `json:"ip"`
+	ViaTailscale bool   `json:"viaTailscale"`
+	TSName       string `json:"tsName"`
+	Created      int64  `json:"created"`
+	LastSeen     int64  `json:"lastSeen"`
 }
 
 // RemotePairing is shown as a QR code in Settings.
@@ -209,6 +221,14 @@ func (a *App) loadRemoteStore() {
 	}
 	if err != nil {
 		a.storeErr = fmt.Errorf("couldn't read the paired phones (%v)", err)
+		return
+	}
+	// Pairings from before devices were tagged: one that came from a
+	// Tailscale address was paired over Tailscale.
+	for i := range a.store.Devices {
+		if d := &a.store.Devices[i]; !d.ViaTailscale && isTailscaleAddr(net.ParseIP(d.IP)) {
+			d.ViaTailscale = true
+		}
 	}
 }
 
@@ -240,14 +260,22 @@ func (a *App) remoteAddrs() (addrs []string, tsAddr, reason string) {
 	a.remoteMu.Lock()
 	home := a.store.Home
 	a.remoteMu.Unlock()
+	// With no home network yet, the home-Wi-Fi listener only runs while a
+	// home-Wi-Fi pairing is open (5 minutes): before any phone pairs there,
+	// it isn't known which network is home, and it mustn't serve whatever
+	// network a laptop happens to be on.
+	a.mu.Lock()
+	window := time.Now().Before(a.lanPairUntil)
+	a.mu.Unlock()
 	for _, l := range lans {
-		if home == nil || l.same(*home) {
+		if (home != nil && l.same(*home)) || (home == nil && window) {
 			addrs = append(addrs, l.LocalIP)
 		}
 	}
 	lanReason := ""
 	switch {
-	case len(addrs) > 0:
+	case len(addrs) > 0, home == nil && len(lans) > 0:
+		// listening, or simply waiting for a first home-Wi-Fi pairing
 	case home != nil:
 		lanReason = "paused on this network: it isn't the home network the phones were paired on (router " + home.Gateway + ")"
 	default:
@@ -290,7 +318,11 @@ func (a *App) startRemote() {
 	// Phones paired before home networks were recorded: the computer's
 	// current network becomes home (if it's on exactly one), once.
 	a.remoteMu.Lock()
-	if a.store.Home == nil && len(a.store.Devices) > 0 {
+	lanPaired := false
+	for _, d := range a.store.Devices {
+		lanPaired = lanPaired || !d.ViaTailscale
+	}
+	if a.store.Home == nil && lanPaired {
 		if lans := lanNetworks(); len(lans) == 1 {
 			a.store.Home = &lans[0]
 			a.saveRemoteStore()
@@ -303,7 +335,7 @@ func (a *App) startRemote() {
 		return
 	}
 	port := a.remotePort()
-	rs := &remoteServer{port: port, addrs: addrs, tsAddr: tsAddr, keyFails: map[string][]time.Time{}, codeFails: map[string][]time.Time{}}
+	rs := &remoteServer{port: port, addrs: addrs, tsAddr: tsAddr, whois: tailscaleWhois, keyFails: map[string][]time.Time{}, codeFails: map[string][]time.Time{}}
 	rs.srv = &http.Server{
 		Handler:           a.remoteHandler(rs),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -405,8 +437,14 @@ func (rs *remoteServer) allowedClient(r *http.Request) bool {
 		local, _, _ = net.SplitHostPort(la.String())
 	}
 	if rs.tsAddr != "" && local == rs.tsAddr {
+		// The source address alone proves nothing (some networks use
+		// 100.64/10 too): Tailscale must know the device, and it must be
+		// signed in to the same account as this computer.
 		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		return err == nil && isTailscaleAddr(net.ParseIP(host))
+		if err != nil || !isTailscaleAddr(net.ParseIP(host)) || rs.whois == nil {
+			return false
+		}
+		return rs.whois(net.ParseIP(host).String()).OK
 	}
 	_, ok := privateClient(r.RemoteAddr)
 	return ok
@@ -627,14 +665,23 @@ func (a *App) remoteHandler(rs *remoteServer) http.Handler {
 			return
 		}
 
-		// The network this phone paired on becomes the home network.
+		// A home-Wi-Fi pairing makes its network the home network; a
+		// Tailscale pairing doesn't (it says nothing about which LAN is home).
 		var here *lanNet
+		viaTS, tsName := false, ""
 		if la, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
 			if host, _, err := net.SplitHostPort(la.String()); err == nil {
-				for _, l := range lanNetworks() {
-					if l.LocalIP == host {
-						l := l
-						here = &l
+				if rs.tsAddr != "" && host == rs.tsAddr {
+					viaTS = true
+					if rs.whois != nil {
+						tsName = rs.whois(ip).Name
+					}
+				} else {
+					for _, l := range lanNetworks() {
+						if l.LocalIP == host {
+							l := l
+							here = &l
+						}
 					}
 				}
 			}
@@ -647,7 +694,8 @@ func (a *App) remoteHandler(rs *remoteServer) http.Handler {
 			a.store.Home = here
 		}
 		a.store.Devices = append(a.store.Devices, remoteDevice{
-			ID: randomString(9), Name: name, IP: ip, TokenHash: hashToken(token), Created: now, LastSeen: now,
+			ID: randomString(9), Name: name, IP: ip, ViaTailscale: viaTS, TSName: tsName,
+			TokenHash: hashToken(token), Created: now, LastSeen: now,
 		})
 		err := a.saveRemoteStore()
 		a.remoteMu.Unlock()
@@ -658,8 +706,15 @@ func (a *App) remoteHandler(rs *remoteServer) http.Handler {
 		if a.ctx != nil {
 			runtime.EventsEmit(a.ctx, "remote-paired")
 			// Make a pairing visible, in case it wasn't you.
+			where := "home Wi-Fi, " + ip
+			if viaTS {
+				where = "Tailscale, " + ip
+				if tsName != "" {
+					where = "Tailscale device “" + tsName + "”, " + ip
+				}
+			}
 			runtime.EventsEmit(a.ctx, "notice", fmt.Sprintf(
-				"A phone (%s, %s) just paired with the remote control. Not you? Remove it in Settings → Remote control.", name, ip))
+				"A phone (%s, %s) just paired with the remote control. Not you? Remove it in Settings → Remote control.", name, where))
 		}
 		writeJSON(w, map[string]string{"token": token})
 	})
@@ -794,6 +849,14 @@ func (a *App) GetRemoteStatus() RemoteStatus {
 	}
 	st.TailscaleFound = tsAddr != "" || tailscaleIP() != ""
 	a.remoteMu.Lock()
+	home := a.store.Home
+	a.remoteMu.Unlock()
+	for _, l := range lanNetworks() {
+		if home == nil || l.same(*home) {
+			st.LanAvailable = true
+		}
+	}
+	a.remoteMu.Lock()
 	if a.store.Home != nil {
 		st.Home = a.store.Home.Gateway
 	}
@@ -802,7 +865,7 @@ func (a *App) GetRemoteStatus() RemoteStatus {
 	}
 	st.Devices = []RemoteDeviceView{}
 	for _, d := range a.store.Devices {
-		st.Devices = append(st.Devices, RemoteDeviceView{ID: d.ID, Name: d.Name, IP: d.IP, Created: d.Created, LastSeen: d.LastSeen})
+		st.Devices = append(st.Devices, RemoteDeviceView{ID: d.ID, Name: d.Name, IP: d.IP, ViaTailscale: d.ViaTailscale, TSName: d.TSName, Created: d.Created, LastSeen: d.LastSeen})
 	}
 	a.remoteMu.Unlock()
 	return st
@@ -834,6 +897,28 @@ func (a *App) SetRemote(enabled bool, port int) (RemoteStatus, error) {
 // phone keeps one key per address, so this is the one to use if it'll be
 // used from outside).
 func (a *App) StartRemotePairing(viaTailscale bool) (RemotePairing, error) {
+	a.mu.Lock()
+	enabled := a.settings.RemoteEnabled
+	a.mu.Unlock()
+	if !enabled {
+		return RemotePairing{}, errors.New("turn the remote control on first")
+	}
+	if !viaTailscale {
+		// Open the home-Wi-Fi listener for this pairing if there's no home
+		// network yet (it's off until a phone pairs over home Wi-Fi).
+		a.remoteMu.Lock()
+		noHome := a.store.Home == nil
+		a.remoteMu.Unlock()
+		if noHome {
+			a.mu.Lock()
+			a.lanPairUntil = time.Now().Add(pairCodeLifetime)
+			a.mu.Unlock()
+			a.remoteOpMu.Lock()
+			a.stopRemote()
+			a.startRemote()
+			a.remoteOpMu.Unlock()
+		}
+	}
 	a.mu.Lock()
 	rs := a.remote
 	paused := a.remotePaused

@@ -116,23 +116,24 @@
         sign in here and on your phone with the same account, then come back.
       </p>
     {/if}
-    {#if status.running}
+    {#if status.running || status.lanAvailable}
       {#if (status.urls ?? []).length}
         <p class="muted small">On the home Wi-Fi: {status.urls.join(' or ')}</p>
       {/if}
       {#if status.tailscaleURL}
         <p class="muted small">
-          Over Tailscale, at home or away: {status.tailscaleURL}. Only your Tailscale devices can reach it, and
-          Tailscale encrypts the traffic.
+          Over Tailscale, at home or away: {status.tailscaleURL}. Only devices signed in to the same Tailscale
+          account as this computer can use it, and Tailscale encrypts the traffic (sometimes through Tailscale's
+          own relay servers).
         </p>
       {/if}
       <div class="row">
         {#if status.tailscaleURL}
           <button class="primary" onclick={() => pair(true)}>Pair a phone (Tailscale, home and away)</button>
-          {#if (status.urls ?? []).length}
+          {#if status.lanAvailable}
             <button onclick={() => pair(false)}>Pair for home Wi-Fi only</button>
           {/if}
-        {:else}
+        {:else if status.lanAvailable}
           <button class="primary" onclick={() => pair(false)}>Pair a phone</button>
         {/if}
       </div>
@@ -175,7 +176,13 @@
       <p class="muted small">Paired phones{status.enabled ? '' : ' (they can connect again if you turn this back on)'}:</p>
       {#each status.devices as d (d.id)}
         <div class="row">
-          <span class="grow">{d.name} <span class="muted">· paired from {d.ip || 'unknown'} · last used {ago(d.lastSeen)}</span></span>
+          <span class="grow">
+            {d.name}
+            <span class="tag" class:ts={d.viaTailscale}>{d.viaTailscale ? 'Tailscale' : 'Home Wi-Fi'}</span>
+            <span class="muted">
+              {d.viaTailscale && d.tsName ? `· ${d.tsName} ` : ''}· {d.ip || 'unknown'} · last used {ago(d.lastSeen)}
+            </span>
+          </span>
           <button onclick={() => remove(d.id)}>Remove</button>
         </div>
       {/each}
@@ -203,5 +210,7 @@
   .pair img { background: #fff; padding: 6px; border-radius: 6px; image-rendering: pixelated; }
   .devices { margin-top: 6px; }
   .link { background: none; border: none; padding: 0 4px; color: var(--accent); text-decoration: underline; font: inherit; }
+  .tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; margin: 0 4px; border: 1px solid var(--border); color: var(--muted); }
+  .tag.ts { border-color: var(--accent); color: var(--accent); }
   .code { font-size: 22px; font-weight: 600; letter-spacing: 0.12em; margin: 4px 0; font-variant-numeric: tabular-nums; }
 </style>

@@ -52,6 +52,7 @@ type App struct {
 	remote       *remoteServer // phone remote control (remote.go)
 	remoteErr    string
 	remotePaused string     // why it isn't running although enabled
+	lanPairUntil time.Time  // a home-Wi-Fi pairing is open until then (no home network yet)
 	remoteOpMu   sync.Mutex // serializes starting/stopping it
 	remoteMu     sync.Mutex // guards store/storeErr
 	store        remoteStore
