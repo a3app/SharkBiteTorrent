@@ -20,9 +20,15 @@ import (
 //     also be an address this computer actually has;
 //   - for every device that connects, who it is (tailscale whois --json).
 //     Only devices signed in to the same Tailscale account as this computer
-//     are let in: not other people's devices on a shared tailnet, nodes
-//     shared in, or anything behind a subnet router. A 100.64/10 address
-//     alone (which some ISPs and hotel networks use) proves nothing.
+//     are let in, not other people's devices on a shared tailnet or nodes
+//     shared in. Tagged devices are refused (on either side): Tailscale
+//     gives all tagged devices one shared identity, so "same account" would
+//     mean every tagged machine in the tailnet. A 100.64/10 address alone
+//     (which some ISPs and hotel networks use) proves nothing.
+//
+//     Devices on a LAN behind one of the user's own subnet routers appear
+//     to Tailscale as that router (it rewrites their address), so they pass
+//     this check; they still need a pairing code or a phone's access key.
 
 var tailscaleRange = func() *net.IPNet {
 	_, n, _ := net.ParseCIDR("100.64.0.0/10")
@@ -73,6 +79,7 @@ func tailscaleJSON(v any, args ...string) error {
 type tailscaleSelf struct {
 	IP     string
 	UserID int64
+	Tagged bool
 }
 
 var (
@@ -98,6 +105,7 @@ func tailscaleSelfInfo() tailscaleSelf {
 		Self         struct {
 			TailscaleIPs []string
 			UserID       int64
+			Tags         []string
 		}
 	}
 	var self tailscaleSelf
@@ -106,7 +114,7 @@ func tailscaleSelfInfo() tailscaleSelf {
 		for _, a := range st.Self.TailscaleIPs {
 			ip := net.ParseIP(a)
 			if ip != nil && ip.To4() != nil && isTailscaleAddr(ip) && local[ip.String()] {
-				self = tailscaleSelf{IP: ip.String(), UserID: st.Self.UserID}
+				self = tailscaleSelf{IP: ip.String(), UserID: st.Self.UserID, Tagged: len(st.Self.Tags) > 0}
 			}
 		}
 	}
@@ -136,10 +144,19 @@ type tailscalePeer struct {
 	at   time.Time
 }
 
-// tailscaleWhois asks Tailscale who ip is, cached for 5 minutes.
+// tailscaleSameAccount reports whether a device with this user and these tags
+// belongs to the same person as this computer. Tagged devices (either side)
+// share one identity across the tailnet, so they never count.
+func tailscaleSameAccount(self tailscaleSelf, peerUser int64, peerTags []string) bool {
+	return self.UserID != 0 && peerUser == self.UserID && !self.Tagged && len(peerTags) == 0
+}
+
+// tailscaleWhois asks Tailscale who ip is. Answers are cached for 5 minutes;
+// failures only for 15 seconds, so one slow lookup can't lock out the
+// user's own phone for long.
 func tailscaleWhois(ip string) tailscalePeer {
 	tsMu.Lock()
-	if p, ok := tsWhoCache[ip]; ok && time.Since(p.at) < 5*time.Minute {
+	if p, ok := tsWhoCache[ip]; ok && (p.OK && time.Since(p.at) < 5*time.Minute || !p.OK && time.Since(p.at) < 15*time.Second) {
 		tsMu.Unlock()
 		return p
 	}
@@ -149,6 +166,7 @@ func tailscaleWhois(ip string) tailscalePeer {
 		Node *struct {
 			Name         string
 			ComputedName string
+			Tags         []string
 			Hostinfo     struct{ Hostname string }
 		}
 		UserProfile *struct{ ID int64 }
@@ -156,7 +174,7 @@ func tailscaleWhois(ip string) tailscalePeer {
 	p := tailscalePeer{at: time.Now()}
 	self := tailscaleSelfInfo()
 	if self.IP != "" && tailscaleJSON(&who, "whois", "--json", ip) == nil && who.Node != nil && who.UserProfile != nil {
-		p.OK = who.UserProfile.ID == self.UserID
+		p.OK = tailscaleSameAccount(self, who.UserProfile.ID, who.Node.Tags)
 		p.Name = who.Node.ComputedName
 		if p.Name == "" {
 			p.Name = who.Node.Hostinfo.Hostname

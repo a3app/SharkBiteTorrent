@@ -252,3 +252,24 @@ func TestRemoteTailscalePairingKeepsHomeUnset(t *testing.T) {
 		t.Errorf("device not tagged as Tailscale: %+v", d)
 	}
 }
+
+func TestTailscaleSameAccount(t *testing.T) {
+	me := tailscaleSelf{IP: "100.81.0.1", UserID: 42}
+	cases := []struct {
+		self tailscaleSelf
+		user int64
+		tags []string
+		want bool
+	}{
+		{me, 42, nil, true},
+		{me, 43, nil, false},                                      // someone else on the tailnet
+		{me, 42, []string{"tag:server"}, false},                   // tagged device: shared identity
+		{tailscaleSelf{UserID: 42, Tagged: true}, 42, nil, false}, // this PC is tagged
+		{tailscaleSelf{}, 0, nil, false},                          // no user known
+	}
+	for i, c := range cases {
+		if got := tailscaleSameAccount(c.self, c.user, c.tags); got != c.want {
+			t.Errorf("case %d: got %v, want %v", i, got, c.want)
+		}
+	}
+}
