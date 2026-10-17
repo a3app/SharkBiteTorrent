@@ -2,6 +2,11 @@
 
 What changed in each release of Shark BiteTorrent. The release notes on GitHub are taken from this file, so every release's section should say what users will notice.
 
+## [Unreleased]
+
+### Fixed
+- **Windows: the app failed to start on PCs without three MinGW files** ("libstdc++-6.dll was not found", also libgcc_s_seh-1.dll and libwinpthread-1.dll), including every Microsoft Store install. The Windows builds now need nothing beyond Windows itself, and each release build is checked for this.
+
 ## [0.2.33] - 2026-10-16
 
 ### Added

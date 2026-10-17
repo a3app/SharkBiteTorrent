@@ -19,6 +19,10 @@ env:
 jobs:
   windows:
     runs-on: windows-2025
+    # The runner has MinGW, so cgo would switch on and link its C++ runtime
+    # (DLLs most PCs don't have). Off, the app is pure Go, like the builds
+    # the leak tests run against.
+    env: { CGO_ENABLED: "0" }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
@@ -39,6 +43,7 @@ jobs:
           export PATH="$PATH:/c/Program Files (x86)/NSIS"
           wails build -clean -trimpath -ldflags "-s -w" -nsis -installscope user
           ls -la build/bin
+          go run scripts/check-pe-imports.go build/bin/SharkBiteTorrent.exe
       - name: Test
         # After the build: the Go code embeds frontend/dist, which the build creates.
         run: go test ./...
@@ -119,6 +124,7 @@ jobs:
     # provenance (below) and puts it in the maintainer's Downloads folder for
     # uploading to Partner Center.
     runs-on: windows-2025
+    env: { CGO_ENABLED: "0" } # see the windows job
     permissions:
       contents: read
       id-token: write     # for the provenance attestation

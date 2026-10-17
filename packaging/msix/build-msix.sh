@@ -19,7 +19,10 @@ version=$(sed -n 's/.*"productVersion": "\([0-9.]*\)".*/\1/p' wails.json)
 # The Store wants four parts with the last one 0.
 msixver="$version.0"
 
-wails build -clean -trimpath -ldflags "-s -w" -tags store
+# Pure Go: a Store package can't load DLLs from anywhere but itself and
+# Windows, so MinGW's runtime (linked when cgo is on) would stop it starting.
+CGO_ENABLED=0 wails build -clean -trimpath -ldflags "-s -w" -tags store
+go run scripts/check-pe-imports.go build/bin/SharkBiteTorrent.exe
 
 layout=build/msix
 rm -rf "$layout" && mkdir -p "$layout" dist

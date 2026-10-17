@@ -16,6 +16,7 @@ env:
 jobs:
   checks:
     runs-on: windows-2025 # the main platform; DPAPI and Defender tests run here
+    env: { CGO_ENABLED: "0" } # test what ships: release builds are pure Go
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
