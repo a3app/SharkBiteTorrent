@@ -2,7 +2,7 @@
 
 What changed in each release of Shark BiteTorrent. The release notes on GitHub are taken from this file, so every release's section should say what users will notice.
 
-## [Unreleased]
+## [0.2.33] - 2026-10-16
 
 ### Added
 - **Remote control over Tailscale** (Settings → Remote control → "Also allow my Tailscale devices", off by default): use the phone remote away from home. With Tailscale on this computer and your phone, the remote also listens on this computer's Tailscale address, and only answers devices signed in to the same Tailscale account (checked with Tailscale for each device; tagged devices are never let in); Tailscale encrypts the traffic. Pair the phone over Tailscale and the same shortcut works at home and away. Paired phones are now tagged **Home Wi-Fi** or **Tailscale** in Settings.
