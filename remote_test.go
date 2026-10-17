@@ -101,6 +101,15 @@ func TestRemoteSecurity(t *testing.T) {
 	if w := remoteRequest(h, "POST", "/api/torrents/../remove", lan, host, got.Token, ""); w.Code == http.StatusOK {
 		t.Errorf("bad hash accepted")
 	}
+	if w := remoteRequest(h, "POST", "/api/all/pause", lan, host, got.Token, ""); w.Code != http.StatusOK {
+		t.Errorf("pause all: %d %s", w.Code, w.Body.String())
+	}
+	if w := remoteRequest(h, "POST", "/api/all/delete", lan, host, got.Token, ""); w.Code == http.StatusOK {
+		t.Errorf("unknown bulk action accepted")
+	}
+	if w := remoteRequest(h, "POST", "/api/all/pause", lan, host, "", ""); w.Code != http.StatusUnauthorized {
+		t.Errorf("pause all without a key: %d", w.Code)
+	}
 
 	// Removing the device revokes the key.
 	a.RemoveRemoteDevice(a.store.Devices[0].ID)

@@ -57,3 +57,4 @@ dialog h2 { margin-top: 0; }
 #results .item { display: flex; align-items: center; gap: 10px; }
 #results .item > div { flex: 1; min-width: 0; }
 #results button { flex: none; }
+#bulk button { flex: 1; }

@@ -784,6 +784,17 @@ func (a *App) remoteHandler(rs *remoteServer) http.Handler {
 		}
 		return errors.New("unknown action")
 	})
+	api("POST /api/all/{action}", func(w http.ResponseWriter, r *http.Request) error {
+		switch r.PathValue("action") {
+		case "pause":
+			a.PauseAll()
+		case "resume":
+			a.ResumeAll()
+		default:
+			return errors.New("unknown action")
+		}
+		return nil
+	})
 	api("GET /api/search", func(w http.ResponseWriter, r *http.Request) error {
 		res, err := a.SearchTorrents(r.URL.Query().Get("q"), r.URL.Query().Get("cat"))
 		if err != nil {

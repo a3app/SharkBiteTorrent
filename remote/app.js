@@ -84,10 +84,36 @@ function renderVPN(v) {
   if (detail) box.append(document.createTextNode(' · ' + detail))
 }
 
+// Progress seen at the last refresh, to say when a download finishes while
+// the page is open. Torrents first seen already complete don't count.
+let lastProgress = null
+
+function noteFinished(list) {
+  const seen = new Map(list.map(t => [t.hash, t.progress]))
+  if (lastProgress) {
+    const done = list.filter(t => t.progress >= 1 && lastProgress.has(t.hash) && lastProgress.get(t.hash) < 1)
+    if (done.length === 1) message('Finished: ' + (done[0].name || done[0].hash), true)
+    else if (done.length > 1) message(done.length + ' downloads finished.', true)
+    if (done.length && navigator.vibrate) navigator.vibrate(200)
+  }
+  lastProgress = seen
+}
+
+function renderBulk(list) {
+  const searching = !$('searchBox').hidden
+  const anyPaused = list.some(t => t.state === 'paused')
+  const anyRunning = list.some(t => t.state !== 'paused')
+  $('pauseAll').hidden = !anyRunning
+  $('resumeAll').hidden = !anyPaused
+  $('bulk').hidden = searching || list.length < 2
+}
+
 function renderTorrents(list) {
   const ul = $('torrents')
   ul.replaceChildren()
   $('empty').hidden = list.length > 0 || !$('searchBox').hidden // not on the search screen
+  noteFinished(list)
+  renderBulk(list)
   for (const t of list) {
     const li = el('li', 'item')
     li.append(el('div', 'name', t.name || t.hash))
@@ -256,12 +282,15 @@ function wire() {
     act(() => api('POST', '/api/torrent', fd), 'Added.')
     $('file').value = ''
   }
+  $('pauseAll').onclick = () => act(() => api('POST', '/api/all/pause'), 'Paused everything.')
+  $('resumeAll').onclick = () => act(() => api('POST', '/api/all/resume'), 'Resumed everything.')
   // Search is its own screen, like the desktop app: it replaces the torrent
   // list, and the button becomes the way back.
   $('searchToggle').onclick = () => {
     const searching = $('searchBox').hidden
     $('searchBox').hidden = !searching
     for (const id of ['addForm', 'uploadBtn', 'torrents']) $(id).hidden = searching
+    $('bulk').hidden = searching || $('torrents').children.length < 2
     $('empty').hidden = searching || $('torrents').children.length > 0
     $('searchToggle').textContent = searching ? '← Torrents' : 'Search'
     if (searching) $('query').focus()

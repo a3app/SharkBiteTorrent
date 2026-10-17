@@ -6,6 +6,8 @@ What changed in each release of Shark BiteTorrent. The release notes on GitHub a
 
 ### Added
 - **Remote control over Tailscale** (Settings → Remote control → "Also allow my Tailscale devices", off by default): use the phone remote away from home. With Tailscale on this computer and your phone, the remote also listens on this computer's Tailscale address, and only answers devices signed in to the same Tailscale account (checked with Tailscale for each device; tagged devices are never let in); Tailscale encrypts the traffic. Pair the phone over Tailscale and the same shortcut works at home and away. Paired phones are now tagged **Home Wi-Fi** or **Tailscale** in Settings.
+- **Pause all / Resume all** on the phone remote (shown when there are two or more torrents).
+- The phone remote says when a download finishes while it's open ("Finished: …"), with a short vibration where the phone supports it.
 - The home-Wi-Fi remote only runs on the home network; until a phone has paired over home Wi-Fi, it only listens during that pairing.
 
 ## [0.2.32] - 2026-10-16
