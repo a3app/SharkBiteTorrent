@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -182,11 +181,14 @@ func (t *Tunnel) ListenUDP4() (net.PacketConn, error) {
 }
 
 // ListenUDP opens a UDP socket for network "udp6" (bound to the tunnel's
-// IPv6 address, if it has one) or anything else (IPv4).
+// IPv6 address) or anything else (IPv4). A tunnel without IPv6 (PIA, many
+// WireGuard providers) gets a socket that can't send: the torrent library
+// panics if opening one fails (an udp6:// tracker crashed the app at every
+// start), and this way those trackers just never answer.
 func (t *Tunnel) ListenUDP(network string) (net.PacketConn, error) {
 	if network == "udp6" {
 		if !t.v6.IsValid() {
-			return nil, errors.New("tunnel has no IPv6 address")
+			return newNoRoutePacketConn(), nil
 		}
 		return t.tnet.ListenUDPAddrPort(netip.AddrPortFrom(t.v6, 0))
 	}

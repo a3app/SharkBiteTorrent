@@ -2,6 +2,11 @@
 
 What changed in each release of Shark BiteTorrent. The release notes on GitHub are taken from this file, so every release's section should say what users will notice.
 
+## [Unreleased]
+
+### Fixed
+- The app could close right after opening when connected through a VPN without IPv6 (such as PIA) and a torrent listed an IPv6-only tracker. Those trackers are now skipped.
+
 ## [0.2.34] - 2026-10-17
 
 ### Fixed
