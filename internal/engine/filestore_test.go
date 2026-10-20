@@ -49,46 +49,85 @@ func TestTorrentPathsRejectsUnsafeNames(t *testing.T) {
 	}
 }
 
-// The store never writes into files that already exist unless they're its own.
-func TestClaimRefusesExistingFiles(t *testing.T) {
+// writePiece writes and completes piece 0 through the store, which creates
+// the torrent's first file.
+func writePiece(t *testing.T, impl storage.TorrentImpl, info *metainfo.Info) error {
+	t.Helper()
+	pc := impl.Piece(info.Piece(0))
+	if _, err := pc.WriteAt([]byte("x"), 0); err != nil {
+		return err
+	}
+	return pc.MarkComplete()
+}
+
+func hashN(n byte) (h metainfo.Hash) { h[0] = n; return }
+
+// The store only writes into files it created, per torrent and folder.
+func TestOwnership(t *testing.T) {
 	dir, owned := t.TempDir(), t.TempDir()
 	pc := storage.NewMapPieceCompletion()
-	info := multiInfo("Music", []string{"song.mp3"})
+	open := func(info *metainfo.Info, ih metainfo.Hash, d string) (*fileStore, storage.TorrentImpl) {
+		t.Helper()
+		st := newFileStore(d, pc, owned)
+		impl, err := st.OpenTorrent(t.Context(), info, ih)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st, impl
+	}
+
+	// The user's own file at the torrent's path: blocked, untouched.
 	os.MkdirAll(filepath.Join(dir, "Music"), 0o755)
 	os.WriteFile(filepath.Join(dir, "Music", "song.mp3"), []byte("user's own"), 0o644)
-	var ih metainfo.Hash
-	ih[0] = 1
-
-	st := newFileStore(dir, pc, owned)
-	impl, err := st.OpenTorrent(t.Context(), info, ih)
-	if err != nil {
-		t.Fatal(err)
-	}
+	music := multiInfo("Music", []string{"song.mp3"})
+	st, impl := open(music, hashN(1), dir)
 	if st.Blocked() == nil {
 		t.Fatal("not blocked over an existing file")
 	}
-	// Writing is refused and the file is untouched.
-	piece := impl.Piece(info.Piece(0))
-	piece.WriteAt([]byte("x"), 0)
-	piece.MarkComplete()
+	writePiece(t, impl, music)
 	if b, _ := os.ReadFile(filepath.Join(dir, "Music", "song.mp3")); string(b) != "user's own" {
 		t.Errorf("existing file changed: %q", b)
 	}
 
-	// A torrent whose files don't exist yet is allowed and marked as ours,
-	// so it can open its own files again after a restart.
-	var ih2 metainfo.Hash
-	ih2[0] = 2
-	st2 := newFileStore(dir, pc, owned)
-	info2 := multiInfo("New", []string{"a"})
-	if _, err := st2.OpenTorrent(t.Context(), info2, ih2); err != nil || st2.Blocked() != nil {
-		t.Fatalf("new torrent blocked: %v %v", err, st2.Blocked())
+	// A file the store created is its own after a restart.
+	iso := multiInfo("Linux", []string{"a.iso"})
+	st, impl = open(iso, hashN(2), dir)
+	if st.Blocked() != nil || writePiece(t, impl, iso) != nil {
+		t.Fatalf("new torrent: %v", st.Blocked())
 	}
-	os.MkdirAll(filepath.Join(dir, "New"), 0o755)
-	os.WriteFile(filepath.Join(dir, "New", "a"), []byte("1"), 0o644)
-	st3 := newFileStore(dir, pc, owned)
-	if _, err := st3.OpenTorrent(t.Context(), info2, ih2); err != nil || st3.Blocked() != nil {
-		t.Fatalf("own files refused after restart: %v %v", err, st3.Blocked())
+	st, _ = open(iso, hashN(2), dir)
+	if st.Blocked() != nil {
+		t.Fatalf("own file refused after restart: %v", st.Blocked())
+	}
+
+	// Another torrent with the same name, claimed before the first one wrote
+	// anything: the first one's file isn't the second's to write into.
+	same := multiInfo("Shared", []string{"x.iso"})
+	_, implA := open(same, hashN(3), dir)
+	stB, implB := open(same, hashN(4), dir) // claimed too: nothing exists yet
+	if err := writePiece(t, implA, same); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePiece(t, implB, same); err == nil || stB.Blocked() == nil {
+		t.Errorf("second same-name torrent wrote into the first's file: %v, %v", err, stB.Blocked())
+	}
+
+	// The same torrent in another folder: files there aren't its own, and
+	// progress recorded for the first folder doesn't count.
+	other := t.TempDir()
+	os.MkdirAll(filepath.Join(other, "Linux"), 0o755)
+	os.WriteFile(filepath.Join(other, "Linux", "a.iso"), []byte("someone else's"), 0o644)
+	if st, _ := open(iso, hashN(2), other); st.Blocked() == nil {
+		t.Error("files in another folder taken as the torrent's own")
+	}
+
+	// An older version's empty marker: existing files are adopted once.
+	legacyInfo := multiInfo("Old", []string{"old.mkv"})
+	os.MkdirAll(filepath.Join(dir, "Old"), 0o755)
+	os.WriteFile(filepath.Join(dir, "Old", "old.mkv"), []byte("1"), 0o644)
+	os.WriteFile(filepath.Join(owned, hashN(5).HexString()), nil, 0o600)
+	if st, _ := open(legacyInfo, hashN(5), dir); st.Blocked() != nil || len(st.ownedFiles()) != 1 {
+		t.Errorf("legacy files not adopted: %v %v", st.Blocked(), st.ownedFiles())
 	}
 }
 

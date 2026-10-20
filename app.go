@@ -45,8 +45,9 @@ type App struct {
 	settings    Settings
 	pending     []pendingSource // magnets/.torrent paths received before the VPN was up
 	quitting    bool
-	scanning    map[string]bool // torrents being scanned right now
-	proxy       *socks.Server   // local SOCKS5 proxy into the tunnel, for Prowlarr/Jackett
+	scanning    map[string]bool         // torrents being scanned right now
+	work        map[string]*torrentWork // background work reading a torrent's files (see workCtx)
+	proxy       *socks.Server           // local SOCKS5 proxy into the tunnel, for Prowlarr/Jackett
 	proxyErr    string
 	// connMu serializes connecting and reconnecting, so the startup connect
 	// and quick successive Reconnects can't interleave. reconnectGen lets a
@@ -956,7 +957,10 @@ func (a *App) Remove(hash string, deleteFiles bool) error {
 	// close, a slow network share), so the list doesn't wait for it: past a
 	// moment, Remove returns and any problem is reported when it's done.
 	done := make(chan error, 1)
-	go func() { done <- eng.Remove(hash, deleteFiles) }()
+	go func() {
+		a.stopWork(hash, 10*time.Second) // a scan, .sfv check or Verify reading its files
+		done <- eng.Remove(hash, deleteFiles)
+	}()
 	var rmErr error
 	select {
 	case rmErr = <-done:

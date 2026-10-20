@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -63,7 +64,9 @@ func (a *App) scanLoop(ctx context.Context) {
 			if s == nil || busy || s.Scan != nil && t.Done <= s.Scan.Done {
 				continue
 			}
-			a.checkFinished(ctx, eng, t)
+			wctx, done := a.workCtx(ctx, t.Hash)
+			a.checkFinished(wctx, eng, t)
+			done()
 		}
 	}
 }
@@ -199,7 +202,9 @@ func (a *App) ScanFully(hash string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx, done := a.workCtx(ctx, hash)
 	go func() {
+		defer done()
 		if !a.runScan(ctx, hash, p, true, rec) {
 			return
 		}
@@ -261,7 +266,9 @@ func (a *App) VerifyTorrent(hash string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx, done := a.workCtx(ctx, hash)
 	go func() {
+		defer done()
 		res, err := eng.Verify(ctx, hash)
 		if err != nil {
 			if ctx.Err() == nil {
@@ -342,4 +349,55 @@ func (a *App) withScans(list []engine.Status) []engine.Status {
 		}
 	}
 	return list
+}
+
+// torrentWork is the background work reading one torrent's files (antivirus
+// scan, .sfv check, Verify), so Remove can stop it before deleting them.
+type torrentWork struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+}
+
+// workCtx returns a context for work on hash's files, ended by parent or by
+// stopWork; call done when the work is finished.
+func (a *App) workCtx(parent context.Context, hash string) (context.Context, func()) {
+	a.mu.Lock()
+	if a.work == nil {
+		a.work = map[string]*torrentWork{}
+	}
+	w := a.work[hash]
+	if w == nil {
+		w = &torrentWork{}
+		w.ctx, w.cancel = context.WithCancel(context.Background())
+		a.work[hash] = w
+	}
+	w.wg.Add(1)
+	a.mu.Unlock()
+	ctx, cancel := context.WithCancel(parent)
+	stop := context.AfterFunc(w.ctx, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+		w.wg.Done()
+	}
+}
+
+// stopWork cancels the work on hash's files and waits (up to timeout) for
+// it to stop, so nothing has them open when they're deleted.
+func (a *App) stopWork(hash string, timeout time.Duration) {
+	a.mu.Lock()
+	w := a.work[hash]
+	delete(a.work, hash)
+	a.mu.Unlock()
+	if w == nil {
+		return
+	}
+	w.cancel()
+	done := make(chan struct{})
+	go func() { w.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+	}
 }

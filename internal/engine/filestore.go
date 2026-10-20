@@ -36,17 +36,47 @@ import (
 // Files are written at their final names. Handles are closed and unfinished
 // buffers dropped when the torrent is dropped, so files can be deleted after.
 //
-// The store only writes into files it created for this torrent: if a file
-// at one of the torrent's paths already exists and isn't ours (no ownership
-// marker and no finished pieces), the torrent is blocked instead.
+// The store only writes into and deletes files it created for this torrent
+// in this folder (see ownership.go); a torrent whose paths are taken by
+// other files is blocked instead.
 type fileStore struct {
 	dir      string // download folder for this torrent
 	pc       storage.PieceCompletion
 	ownedDir string // ownership markers, one per info hash; "" skips the check
 
 	mu      sync.Mutex
-	blocked error        // set by OpenTorrent if the torrent mustn't write
+	blocked error        // set if the torrent mustn't write (shown in the list)
 	ft      *fileTorrent // the torrent's storage, once opened
+	own     *ownership   // nil without ownedDir
+}
+
+// ownership returns the torrent's record, nil without one.
+func (s *fileStore) ownership() *ownership {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.own
+}
+
+// ownedFiles are the files this torrent created here that still exist.
+func (s *fileStore) ownedFiles() []string {
+	o := s.ownership()
+	if o == nil {
+		return nil
+	}
+	var out []string
+	for _, p := range o.list() {
+		if _, err := os.Lstat(p); err == nil {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// forgetOwnership deletes the record (all of its files were deleted).
+func (s *fileStore) forgetOwnership() {
+	if o := s.ownership(); o != nil {
+		o.forget()
+	}
 }
 
 func newFileStore(dir string, pc storage.PieceCompletion, ownedDir string) *fileStore {
@@ -103,39 +133,6 @@ func safeName(c string) bool {
 		!strings.HasSuffix(c, ".") && !strings.HasSuffix(c, " ")
 }
 
-// claim checks that the torrent may write its files. A marker records that
-// the files are this app's, so restarts and re-adding keep working.
-func (s *fileStore) claim(ih metainfo.Hash, info *metainfo.Info, paths []string) error {
-	if s.ownedDir == "" {
-		return nil
-	}
-	marker := filepath.Join(s.ownedDir, ih.HexString())
-	if _, err := os.Stat(marker); err == nil {
-		return nil
-	}
-	if !anyComplete(s.pc, ih, info.NumPieces()) { // finished pieces: ours, from before markers
-		for _, p := range paths {
-			if _, err := os.Lstat(p); err == nil {
-				rel, _ := filepath.Rel(s.dir, p)
-				return fmt.Errorf("%q already exists in the download folder, and Shark BiteTorrent only writes into files it created. Move it away or choose another download folder, then add the torrent again", rel)
-			}
-		}
-	}
-	if err := os.MkdirAll(s.ownedDir, 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(marker, nil, 0o600)
-}
-
-func anyComplete(pc storage.PieceCompletion, ih metainfo.Hash, n int) bool {
-	for i := range n {
-		if c, err := pc.Get(metainfo.PieceKey{InfoHash: ih, Index: i}); err == nil && c.Ok && c.Complete {
-			return true
-		}
-	}
-	return false
-}
-
 const (
 	blockSize = 16 << 10 // BitTorrent's request size; buffers track blocks
 	// maxBuffered caps memory used by unfinished pieces per torrent. Past
@@ -145,12 +142,14 @@ const (
 
 func (s *fileStore) OpenTorrent(_ context.Context, info *metainfo.Info, ih metainfo.Hash) (storage.TorrentImpl, error) {
 	ft := &fileTorrent{
+		store:   s,
 		info:    info,
 		pc:      s.pc,
 		ih:      ih,
 		index:   info.FileSegmentsIndex(),
 		handles: map[int]*handlePool{},
 		bufs:    map[int]*pieceBuf{},
+		busy:    map[int]int{},
 	}
 	paths, err := torrentPaths(s.dir, info)
 	if err == nil {
@@ -185,6 +184,7 @@ func isSub(base, p string) bool {
 }
 
 type fileTorrent struct {
+	store   *fileStore
 	info    *metainfo.Info
 	pc      storage.PieceCompletion
 	ih      metainfo.Hash
@@ -200,7 +200,8 @@ type fileTorrent struct {
 	buffered int64
 	seq      uint64 // allocation order, to evict the oldest buffer
 	closed   bool
-	inUse    int // handles handed out and not yet released
+	inUse    int         // handles handed out and not yet released, plus MarkCompletes running
+	busy     map[int]int // handles in use, by file index
 }
 
 // pieceBuf holds a piece's blocks until it's complete. have marks which
@@ -246,6 +247,7 @@ func (t *fileTorrent) acquire(i int, create bool) (*os.File, error) {
 			f := pool.idle[n-1]
 			pool.idle = pool.idle[:n-1]
 			t.inUse++
+			t.busy[i]++
 			return f, nil
 		}
 		if pool.open < handlesPerFile {
@@ -255,6 +257,7 @@ func (t *fileTorrent) acquire(i int, create bool) (*os.File, error) {
 			}
 			pool.open++
 			t.inUse++
+			t.busy[i]++
 			return f, nil
 		}
 		t.freed.Wait()
@@ -265,6 +268,9 @@ func (t *fileTorrent) release(i int, f *os.File) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.inUse--
+	if t.busy[i]--; t.busy[i] <= 0 {
+		delete(t.busy, i)
+	}
 	if t.closed {
 		f.Close()
 		t.freed.Broadcast() // waitReleased
@@ -275,33 +281,65 @@ func (t *fileTorrent) release(i int, f *os.File) {
 }
 
 // waitReleased waits (up to timeout) until the closed torrent's last file
-// handle is closed. Deleting a file that's still open fails on Windows and,
-// on an SMB share, leaves a ".__smbfile_silly" file and can stall the share.
-func (s *fileStore) waitReleased(timeout time.Duration) {
+// handle is closed and no piece is still being written, and returns the
+// files still open after that. Deleting a file that's still open fails on
+// Windows and, on an SMB share, leaves a ".__smbfile_silly" file and can
+// stall the share.
+func (s *fileStore) waitReleased(timeout time.Duration) (stillOpen map[string]bool) {
 	s.mu.Lock()
 	t := s.ft
 	s.mu.Unlock()
 	if t == nil {
-		return
+		return nil
 	}
-	deadline := time.Now().Add(timeout)
+	timedOut := false
+	timer := time.AfterFunc(timeout, func() {
+		t.mu.Lock()
+		timedOut = true
+		t.freed.Broadcast()
+		t.mu.Unlock()
+	})
+	defer timer.Stop()
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for t.inUse > 0 && time.Now().Before(deadline) {
-		t.mu.Unlock()
-		time.Sleep(20 * time.Millisecond)
-		t.mu.Lock()
+	for t.inUse > 0 && !timedOut {
+		t.freed.Wait()
 	}
+	if len(t.busy) == 0 {
+		return nil
+	}
+	stillOpen = map[string]bool{}
+	for i := range t.busy {
+		stillOpen[t.paths[i]] = true
+	}
+	return stillOpen
 }
 
 // openFile opens (or creates) file i. Called with t.mu held.
 func (t *fileTorrent) openFile(i int, create bool) (*os.File, error) {
+	own := t.store.ownership()
 	f, err := os.OpenFile(t.paths[i], os.O_RDWR, 0o644)
+	if err == nil && own != nil && !own.has(t.paths[i]) {
+		// It appeared after the torrent was claimed (a file ticked later,
+		// another torrent with the same name): not ours to write into.
+		f.Close()
+		rel, _ := filepath.Rel(t.store.dir, t.paths[i])
+		err = fmt.Errorf("%q: %w", rel, errNotOurs)
+		t.store.block(fmt.Errorf("%q already exists in the download folder, and Shark BiteTorrent only writes into files it created. Move it away, then add the torrent again", rel))
+		return nil, err
+	}
 	if errors.Is(err, fs.ErrNotExist) && create {
 		if err := os.MkdirAll(filepath.Dir(t.paths[i]), 0o755); err != nil {
 			return nil, err
 		}
 		f, err = os.OpenFile(t.paths[i], os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
+		if err == nil && own != nil {
+			if oerr := own.add(t.paths[i]); oerr != nil {
+				f.Close()
+				os.Remove(t.paths[i])
+				return nil, oerr
+			}
+		}
 		if err == nil {
 			makeSparse(f) // best effort: unsupported filesystems still work, just slower
 			err = f.Truncate(t.lengths[i])
@@ -479,6 +517,17 @@ func (p *filePiece) flushAt(idx int, buf *pieceBuf) error {
 func (p *filePiece) MarkComplete() error {
 	idx := p.p.Index()
 	p.t.mu.Lock()
+	if p.t.closed {
+		p.t.mu.Unlock()
+		return errors.New("torrent storage closed")
+	}
+	p.t.inUse++ // waitReleased waits for this
+	defer func() {
+		p.t.mu.Lock()
+		p.t.inUse--
+		p.t.freed.Broadcast()
+		p.t.mu.Unlock()
+	}()
 	buf := p.t.bufs[idx]
 	if buf != nil {
 		delete(p.t.bufs, idx)
@@ -489,6 +538,13 @@ func (p *filePiece) MarkComplete() error {
 		if err := p.flushAt(idx, buf); err != nil {
 			return err // not marked complete; the library will retry the piece
 		}
+	}
+	p.t.mu.Lock()
+	closed := p.t.closed
+	p.t.mu.Unlock()
+	if closed {
+		// Removed meanwhile: don't leave a "complete" record behind.
+		return errors.New("torrent storage closed")
 	}
 	return p.t.pc.Set(p.key(), true)
 }

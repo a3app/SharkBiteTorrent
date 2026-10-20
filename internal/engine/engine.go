@@ -73,6 +73,8 @@ type entry struct {
 	warnings  []scan.Warning // from the file list, computed once metadata arrives
 	inspected bool
 	checking  atomic.Bool // verifying existing data after a restart
+	removing  bool        // Remove is deleting its files; guarded by Engine.mu
+	stopped   bool        // blocked, and data transfer turned off; guarded by Engine.mu
 
 	// "Verify files": re-hash finished pieces on disk (see Verify).
 	verifying            atomic.Bool
@@ -341,8 +343,13 @@ func (e *Engine) Add(o AddOptions) (string, error) {
 	}
 
 	e.mu.Lock()
-	if _, ok := e.entries[spec.InfoHash]; ok {
+	if old, ok := e.entries[spec.InfoHash]; ok {
 		e.mu.Unlock()
+		if old.removing {
+			// Its files are still being deleted: adding it now would
+			// create files the old removal then deletes.
+			return "", errors.New("this torrent is still being removed; try again in a moment")
+		}
 		return spec.InfoHash.HexString(), nil
 	}
 	st := newFileStore(o.Dir, e.pc, e.ownedDir)
@@ -409,7 +416,7 @@ func (e *Engine) find(hash string) (*entry, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	en, ok := e.entries[h]
-	if !ok || en.t == nil {
+	if !ok || en.t == nil || en.removing {
 		return nil, fmt.Errorf("torrent %s: %w", hash, ErrNotFound)
 	}
 	return en, nil
@@ -448,47 +455,49 @@ func (e *Engine) Resume(hash string) error {
 var ErrNotFound = errors.New("not found")
 
 // Remove drops the torrent. If deleteFiles is set, its downloaded files are
-// deleted too: exactly the files it wrote, then any of its folders left
-// empty. Never a whole folder, which may hold other things (another torrent
-// with the same name, the user's own files).
+// deleted too: only the files it created (see ownership.go), and only once
+// nothing has them open, then any of its folders left empty. Never a whole
+// folder, and never a file it didn't create. The torrent stays reserved
+// until then, so it can't be added again while its files are going.
 func (e *Engine) Remove(hash string, deleteFiles bool) error {
 	en, err := e.find(hash)
 	if err != nil {
 		return err
 	}
-	var paths []string
-	var pathErr error
-	info := en.t.Info()
-	if info != nil && deleteFiles && en.storage.Blocked() == nil {
-		// Unsafe names: the torrent is still removed, its files aren't touched.
-		if paths, pathErr = torrentPaths(en.dir, info); pathErr != nil {
-			paths = nil
-		}
-	}
+	ih := en.t.InfoHash()
 	e.mu.Lock()
-	delete(e.entries, en.t.InfoHash())
+	en.removing = true
 	e.mu.Unlock()
-	en.t.Drop() // closes the storage, releasing its file handles
+	defer func() {
+		e.mu.Lock()
+		delete(e.entries, ih)
+		e.mu.Unlock()
+	}()
+	info := en.t.Info()
+	en.t.Drop() // closes the storage
+	stillOpen := en.storage.waitReleased(15 * time.Second)
 	if info != nil {
-		// Forget its progress, so re-adding it later starts clean. Only
-		// finished pieces have anything to forget, and each write is a disk
-		// sync: clearing all of a big torrent's pieces took seconds.
-		for i := range info.NumPieces() {
-			key := metainfo.PieceKey{InfoHash: en.t.InfoHash(), Index: i}
-			if c, err := e.pc.Get(key); err == nil && c.Ok && c.Complete {
-				e.pc.Set(key, false)
-			}
-		}
+		// Forget its progress, so re-adding it later starts clean; after
+		// the wait, so a piece finishing meanwhile can't mark itself again.
+		clearComplete(e.pc, ih, info.NumPieces())
 	}
 	if !deleteFiles {
-		return nil // the marker stays: re-adding may use these files again
+		return nil // the record stays: re-adding here may use these files again
 	}
-	if e.ownedDir != "" && en.storage.Blocked() == nil {
-		os.Remove(filepath.Join(e.ownedDir, en.t.InfoHash().HexString()))
+	var paths []string
+	for _, p := range en.storage.ownedFiles() {
+		if !stillOpen[p] {
+			paths = append(paths, p)
+		}
 	}
-
-	en.storage.waitReleased(10 * time.Second) // no file is deleted while still open
-	return errors.Join(pathErr, removeFiles(en.dir, paths))
+	err = removeFiles(en.dir, paths)
+	if len(stillOpen) > 0 {
+		return errors.Join(err, fmt.Errorf("%d file(s) were still in use, so they weren't deleted", len(stillOpen)))
+	}
+	if err == nil {
+		en.storage.forgetOwnership()
+	}
+	return err
 }
 
 // removeFiles deletes paths (files inside dir), then their folders that are
@@ -650,7 +659,7 @@ func (e *Engine) List() []Status {
 	out := []Status{}
 	for h, en := range e.entries {
 		t := en.t
-		if t == nil {
+		if t == nil || en.removing {
 			continue
 		}
 		st := t.Stats()
@@ -703,6 +712,12 @@ func (e *Engine) List() []Status {
 			}
 		}
 		blocked := en.storage.Blocked()
+		if blocked != nil && !en.stopped {
+			// Blocked after it started (a file appeared that isn't ours).
+			en.stopped = true
+			t.DisallowDataDownload()
+			t.DisallowDataUpload()
+		}
 		switch {
 		case blocked != nil:
 			row.State, row.Problem = "blocked", blocked.Error()
