@@ -57,6 +57,10 @@ func TestKeyFileFallback(t *testing.T) {
 	if got, err := ReadFile(path); err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("after the keyring came back: %q, %v", got, err)
 	}
+	// Reading it moved it to the keyring.
+	if raw, _ := os.ReadFile(path); !strings.HasPrefix(string(raw), header) {
+		t.Error("key-file secret wasn't moved to the keyring when read")
+	}
 	if err := WriteFile(path, want); err != nil {
 		t.Fatal(err)
 	}

@@ -101,6 +101,12 @@ var KeyringMissing = func() bool {
 	return !have && !keyringPresent()
 }
 
+// keyringUsable reports that the keyring's key can be used right now.
+func keyringUsable() bool {
+	_, err := keyringKey()
+	return err == nil
+}
+
 // keyringPresent is keyringExists; a var so tests can stand in for it.
 var keyringPresent = keyringExists
 

@@ -46,3 +46,6 @@ func blob(b []byte) *windows.DataBlob {
 
 // UseKeyFileForTests: DPAPI works unattended, so tests use it as is.
 func UseKeyFileForTests(string) {}
+
+// keyringUsable: Windows never uses the key file.
+func keyringUsable() bool { return false }

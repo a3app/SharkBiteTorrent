@@ -69,5 +69,14 @@ func ReadFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s is corrupted: %w", filepath.Base(path), err)
 	}
-	return unprotect(enc, keyFile)
+	plain, err := unprotect(enc, keyFile)
+	if err != nil {
+		return nil, err
+	}
+	// Saved with the key file while there was no keyring: now that there is
+	// one, move it there (best effort; it stays readable either way).
+	if keyFile && keyringUsable() {
+		WriteFile(path, plain)
+	}
+	return plain, nil
 }
