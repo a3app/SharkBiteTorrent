@@ -211,7 +211,7 @@ func runLinux(secs int, selftest, app bool, exe, endpointFlag, childWarp string)
 		}
 		// Quitting is covered too. (The app ignores SIGTERM for now, so the
 		// person running the check quits it.)
-		fmt.Println("\nYOU: now quit Shark BiteTorrent from its tray icon (right-click → Quit). It was started with a private DNS setup for this check; start it normally afterwards.")
+		fmt.Println("\nYOU: now quit Shark BiteTorrent from its tray icon (right-click → Quit). The copy this check started used a private DNS setup; start it again afterwards (the usual way).")
 		select {
 		case <-exited:
 		case <-time.After(2 * time.Minute):
