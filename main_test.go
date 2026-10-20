@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"sharkbite/internal/secret"
 	"testing"
 )
 
@@ -16,6 +17,7 @@ func TestMain(m *testing.M) {
 		if os.PathSeparator == '/' {
 			os.Setenv("HOME", dir)
 		}
+		secret.UseKeyFileForTests(dir) // not the machine's keyring
 	}
 	code := m.Run()
 	os.RemoveAll(dir)

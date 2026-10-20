@@ -231,3 +231,14 @@ func unprotect(c []byte, keyFile bool) ([]byte, error) {
 	}
 	return out, nil
 }
+
+// UseKeyFileForTests makes this package use a key file in dir instead of the
+// OS keyring (other packages' tests: a CI machine's keyring can be locked or
+// prompt, which hangs). Never called by the app.
+func UseKeyFileForTests(dir string) {
+	keyFilePath = func() (string, error) { return filepath.Join(dir, "secret.key"), nil }
+	keyringKey = func() ([]byte, error) { return nil, errNoKeyring }
+	fileKeyMu.Lock()
+	fileKeyV = nil
+	fileKeyMu.Unlock()
+}

@@ -43,3 +43,6 @@ func blob(b []byte) *windows.DataBlob {
 	}
 	return &windows.DataBlob{Size: uint32(len(b)), Data: &b[0]}
 }
+
+// UseKeyFileForTests: DPAPI works unattended, so tests use it as is.
+func UseKeyFileForTests(string) {}

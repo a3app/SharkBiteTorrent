@@ -119,6 +119,7 @@ func New(tun *tunnel.Tunnel, opts Options) (*Engine, error) {
 	}
 
 	cfg := torrent.NewDefaultClientConfig()
+	cfg.Slogger = redactingLogger() // no tracker passkeys in logs
 	cfg.Seed = true
 	// No web seeds (HTTP mirrors listed in a torrent). anacrolix/torrent
 	// v1.61.0 crashes the whole app when a torrent with active web seed
@@ -160,7 +161,7 @@ func New(tun *tunnel.Tunnel, opts Options) (*Engine, error) {
 	cfg.DisableWebtorrent = true       // WebRTC uses OS sockets
 	cfg.AcceptPeerConnections = opts.ForwardedPort > 0
 
-	cfg.TrackerDialContext = tun.DialContext
+	cfg.TrackerDialContext = verifiedTrackerDial(tun.DialContext) // HTTPS trackers get real certificate checks
 	cfg.HTTPDialContext = tun.DialContext
 	cfg.TrackerListenPacket = func(network, addr string) (net.PacketConn, error) {
 		return tun.ListenUDP(network)
@@ -227,6 +228,7 @@ func newDirect(opts Options) (*Engine, error) {
 	}
 
 	cfg := torrent.NewDefaultClientConfig()
+	cfg.Slogger = redactingLogger() // no tracker passkeys in logs
 	cfg.Seed = true
 	cfg.DisableWebseeds = true // see New
 	cfg.EstablishedConnsPerTorrent = 200
