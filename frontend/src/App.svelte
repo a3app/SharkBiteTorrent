@@ -288,7 +288,7 @@
       {:else}
         <span>
           🧲 Added from outside the app (a link or file you opened):
-          <b>{t.name || 'fetching its name…'}</b>{t.size ? ` (${bytes(t.size)})` : ''}. It's paused until you start it.
+          <b>{t.name}</b>{t.size ? ` (${bytes(t.size)})` : ''}. Nothing is downloaded or contacted until you start it.
         </span>
         <button class="primary" onclick={() => run(() => StartTorrent(t.hash))}>Start</button>
       {/if}

@@ -113,8 +113,12 @@ type savedTorrent struct {
 	Skipped []int  `json:"skipped,omitempty"`
 	Paused  bool   `json:"paused"`
 	// Confirm: added from outside the app (a browser, the file association),
-	// so it waits, paused, until the user starts it.
-	Confirm bool `json:"confirm,omitempty"`
+	// so it waits until the user starts it. It isn't given to the engine
+	// until then: nothing (trackers, DHT, peers) is contacted. Name and Size
+	// are what the link or file says, for showing it meanwhile.
+	Confirm bool   `json:"confirm,omitempty"`
+	Name    string `json:"name,omitempty"`
+	Size    int64  `json:"size,omitempty"`
 	// Scan is the antivirus result once the torrent finished (nil = not yet).
 	Scan *scanRecord `json:"scan,omitempty"`
 }
@@ -513,6 +517,9 @@ func (a *App) startEngine(tun *tunnel.Tunnel, eng *engine.Engine, st VpnStatus) 
 	a.mu.Unlock()
 
 	for _, s := range saved {
+		if s.Confirm {
+			continue // waiting for the user: not given to the engine yet
+		}
 		_, err := eng.Add(engine.AddOptions{Source: s.Source, Dir: s.Dir, Skipped: s.Skipped, Paused: s.Paused})
 		if err != nil {
 			runtime.LogWarningf(a.ctx, "restore %s: %v", s.Hash, err)
@@ -732,11 +739,22 @@ func (a *App) tunnelWorks() bool {
 }
 
 func (a *App) ListTorrents() []engine.Status {
-	eng, err := a.engine()
-	if err != nil {
+	var list []engine.Status
+	if eng, err := a.engine(); err == nil {
+		list = eng.List()
+	}
+	// Torrents added from outside the app, waiting for the user.
+	a.mu.Lock()
+	for _, s := range a.saved {
+		if s.Confirm {
+			list = append(list, engine.Status{Hash: s.Hash, Name: scan.StripBidiControls(s.Name), Size: s.Size, State: "paused"})
+		}
+	}
+	a.mu.Unlock()
+	if list == nil {
 		return []engine.Status{}
 	}
-	return a.withScans(eng.List())
+	return a.withScans(list)
 }
 
 func (a *App) AddMagnet(link string) error {
@@ -770,14 +788,20 @@ func (a *App) addSource(src string) error { return a.addSourceFrom(src, false) }
 // addSourceFrom adds a torrent; an external one waits paused for the user
 // (savedTorrent.Confirm).
 func (a *App) addSourceFrom(src string, external bool) error {
-	eng, err := a.engine()
-	if err != nil {
-		return err
-	}
-	if !strings.HasPrefix(src, "magnet:") {
+	var pending savedTorrent // what an external source says about itself
+	if strings.HasPrefix(src, "magnet:") {
+		m, err := metainfo.ParseMagnetUri(src)
+		if err != nil {
+			return err
+		}
+		pending = savedTorrent{Hash: m.InfoHash.HexString(), Name: m.DisplayName}
+	} else {
 		mi, err := metainfo.LoadFromFile(src)
 		if err != nil {
 			return fmt.Errorf("%s: %w", filepath.Base(src), err)
+		}
+		if info, err := mi.UnmarshalInfo(); err == nil {
+			pending = savedTorrent{Hash: mi.HashInfoBytes().HexString(), Name: info.BestName(), Size: info.TotalLength()}
 		}
 		// Keep our own copy so the torrent survives the original being deleted.
 		dst := filepath.Join(a.configDir, "torrents", mi.HashInfoBytes().HexString()+".torrent")
@@ -791,31 +815,94 @@ func (a *App) addSourceFrom(src string, external bool) error {
 	a.mu.Lock()
 	dir := a.settings.DownloadDir
 	a.mu.Unlock()
+	if external {
+		// Only remembered until the user presses Start (StartTorrent).
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		for _, s := range a.saved {
+			if s.Hash == pending.Hash {
+				return nil
+			}
+		}
+		pending.Source, pending.Dir, pending.Confirm = src, dir, true
+		if pending.Name == "" {
+			pending.Name = pending.Hash
+		}
+		a.saved = append(a.saved, pending)
+		return a.writeSaved()
+	}
+	eng, err := a.engine()
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	hash, err := eng.Add(engine.AddOptions{Source: src, Dir: dir, Paused: external})
+	hash, err := eng.Add(engine.AddOptions{Source: src, Dir: dir})
 	if err != nil {
 		return err
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	for _, s := range a.saved {
-		if s.Hash == hash {
-			return nil
+	for i := range a.saved {
+		if a.saved[i].Hash == hash {
+			a.saved[i].Confirm = false // also added from inside the app: accepted
+			return a.writeSaved()
 		}
 	}
-	a.saved = append(a.saved, savedTorrent{Hash: hash, Source: src, Dir: dir, Paused: external, Confirm: external})
+	a.saved = append(a.saved, savedTorrent{Hash: hash, Source: src, Dir: dir})
 	return a.writeSaved()
 }
 
-// StartTorrent starts a torrent that was added from outside the app.
-func (a *App) StartTorrent(hash string) error { return a.setPaused(hash, false) }
+// pendingFor returns a torrent added from outside the app that's waiting
+// for the user, nil if hash isn't one. Call with a.mu held.
+func (a *App) pendingFor(hash string) *savedTorrent {
+	if s := a.savedFor(hash); s != nil && s.Confirm {
+		return s
+	}
+	return nil
+}
+
+// StartTorrent starts a torrent that was added from outside the app: only
+// now does the engine get it.
+func (a *App) StartTorrent(hash string) error {
+	a.mu.Lock()
+	s := a.pendingFor(hash)
+	var src, dir string
+	if s != nil {
+		src, dir = s.Source, s.Dir
+	}
+	a.mu.Unlock()
+	if s == nil {
+		return a.setPaused(hash, false)
+	}
+	eng, err := a.engine()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if _, err := eng.Add(engine.AddOptions{Source: src, Dir: dir}); err != nil {
+		return err
+	}
+	a.updateSaved(hash, func(s *savedTorrent) { s.Confirm, s.Paused, s.Name, s.Size = false, false, "", 0 })
+	return nil
+}
 
 func (a *App) Pause(hash string) error  { return a.setPaused(hash, true) }
 func (a *App) Resume(hash string) error { return a.setPaused(hash, false) }
 
 func (a *App) setPaused(hash string, paused bool) error {
+	a.mu.Lock()
+	waiting := a.pendingFor(hash) != nil
+	a.mu.Unlock()
+	if waiting {
+		if paused {
+			return nil // not running anyway
+		}
+		return a.StartTorrent(hash) // Resume (here or from the phone) starts it
+	}
 	eng, err := a.engine()
 	if err != nil {
 		return err
@@ -855,6 +942,12 @@ func (a *App) ResumeAll() {
 
 // Remove drops a torrent from the list, optionally deleting its data.
 func (a *App) Remove(hash string, deleteFiles bool) error {
+	a.mu.Lock()
+	waiting := a.pendingFor(hash) != nil
+	a.mu.Unlock()
+	if waiting {
+		return a.forget(hash) // never given to the engine: no files either
+	}
 	eng, err := a.engine()
 	if err != nil {
 		return err
@@ -877,6 +970,18 @@ func (a *App) Remove(hash string, deleteFiles bool) error {
 	if errors.Is(rmErr, engine.ErrNotFound) {
 		rmErr = nil // already removed (a second click while the first finished)
 	}
+	if err := a.forget(hash); err != nil {
+		return err
+	}
+	if rmErr != nil {
+		return fmt.Errorf("removed, but some files couldn't be deleted: %w", rmErr)
+	}
+	return nil
+}
+
+// forget drops a torrent from the saved list, with the app's copy of its
+// .torrent file.
+func (a *App) forget(hash string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	kept := a.saved[:0]
@@ -890,16 +995,16 @@ func (a *App) Remove(hash string, deleteFiles bool) error {
 		kept = append(kept, s)
 	}
 	a.saved = kept
-	if err := a.writeSaved(); err != nil {
-		return err
-	}
-	if rmErr != nil {
-		return fmt.Errorf("removed, but some files couldn't be deleted: %w", rmErr)
-	}
-	return nil
+	return a.writeSaved()
 }
 
 func (a *App) GetFiles(hash string) ([]engine.FileStatus, error) {
+	a.mu.Lock()
+	waiting := a.pendingFor(hash) != nil
+	a.mu.Unlock()
+	if waiting {
+		return []engine.FileStatus{}, nil // file list unknown until it's started
+	}
 	eng, err := a.engine()
 	if err != nil {
 		return nil, err
