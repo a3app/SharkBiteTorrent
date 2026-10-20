@@ -288,9 +288,10 @@ func TestPhoneErrorHidesPaths(t *testing.T) {
 	for _, e := range []error{
 		errors.New("removed, but some files couldn't be deleted: unlinkat /home/tony/Downloads/x.iso: permission denied"),
 		errors.New(`mkdir C:\Users\Tony\Downloads\Torrents: access denied`),
+		errors.New(`open C:\Users\Tony Smith\Downloads\x: denied`),
 	} {
 		got := phoneError(e)
-		if strings.Contains(got, "tony") || strings.Contains(got, "Tony") {
+		if strings.Contains(got, "tony") || strings.Contains(got, "Tony") || strings.Contains(got, "Smith") {
 			t.Errorf("path left in %q", got)
 		}
 	}

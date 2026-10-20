@@ -431,7 +431,7 @@ func (a *App) connectPrepared(prep *preparedConn) {
 		// Cloudflare may have dropped the saved WARP device (rotated endpoint,
 		// pruned inactive account). If a fresh registration works, use it.
 		if acc, rerr := warp.Reregister(a.warpPath()); rerr == nil {
-			runtime.LogWarningf(a.ctx, "WARP: saved device failed (%v); registered a new one", err)
+			runtime.LogWarningf(a.ctx, "%s", engine.Redact(fmt.Sprintf("WARP: saved device failed (%v); registered a new one", err)))
 			tun, tr, err = startTunnel(warpConfig(acc), set.VpnProvider, realIP)
 		}
 	}
@@ -521,7 +521,7 @@ func (a *App) startEngine(tun *tunnel.Tunnel, eng *engine.Engine, st VpnStatus) 
 		}
 		_, err := eng.Add(engine.AddOptions{Source: s.Source, Dir: s.Dir, Skipped: s.Skipped, Paused: s.Paused})
 		if err != nil {
-			runtime.LogWarningf(a.ctx, "restore %s: %v", s.Hash, err)
+			runtime.LogWarningf(a.ctx, "%s", engine.Redact(fmt.Sprintf("restore %s: %v", s.Hash, err)))
 		}
 	}
 	for _, p := range pending {
@@ -1270,7 +1270,7 @@ func (a *App) updateSaved(hash string, f func(*savedTorrent)) {
 		}
 	}
 	if err := a.writeSaved(); err != nil {
-		runtime.LogErrorf(a.ctx, "save torrents: %v", err)
+		runtime.LogErrorf(a.ctx, "%s", engine.Redact(fmt.Sprintf("save torrents: %v", err)))
 	}
 }
 

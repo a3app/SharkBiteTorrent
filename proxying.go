@@ -6,9 +6,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"sharkbite/internal/engine"
 	"strconv"
 	"time"
 
@@ -116,7 +118,7 @@ func (a *App) startProxy() {
 	a.proxy, a.proxyErr = s, ""
 	go func() {
 		if err := s.Serve(ln); err != nil {
-			runtime.LogWarningf(a.ctx, "proxy: %v", err)
+			runtime.LogWarningf(a.ctx, "%s", engine.Redact(fmt.Sprintf("proxy: %v", err)))
 		}
 	}()
 }
@@ -236,7 +238,7 @@ func (a *App) disableSearchProxy() {
 		a.SetSearchProxy(false)
 	}
 	if err := os.Remove(a.proxyPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
-		runtime.LogWarningf(a.ctx, "proxy: %v", err)
+		runtime.LogWarningf(a.ctx, "%s", engine.Redact(fmt.Sprintf("proxy: %v", err)))
 	}
 }
 

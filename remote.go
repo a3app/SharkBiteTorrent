@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sharkbite/internal/engine"
 	"strconv"
 	"strings"
 	"sync"
@@ -366,7 +367,7 @@ func (a *App) startRemote() {
 	for _, ln := range lns {
 		go func(ln net.Listener) {
 			if err := rs.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) && a.ctx != nil {
-				runtime.LogWarningf(a.ctx, "remote control: %v", err)
+				runtime.LogWarningf(a.ctx, "%s", engine.Redact(fmt.Sprintf("remote control: %v", err)))
 			}
 		}(ln)
 	}
@@ -742,7 +743,11 @@ func (a *App) remoteHandler(rs *remoteServer) http.Handler {
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, maxTorrentUpload+1<<20)
 			if err := h(w, r); err != nil {
-				http.Error(w, phoneError(err), http.StatusBadRequest)
+				msg := phoneError(err)
+				if msg != err.Error() {
+					a.notifyError(err) // the details, with paths, on the computer only
+				}
+				http.Error(w, msg, http.StatusBadRequest)
 			}
 		})
 	}
@@ -1023,10 +1028,15 @@ func (a *App) ForgetRemoteHome() (RemoteStatus, error) {
 // pathLike matches file paths (/home/…, C:\Users\…) in error messages.
 var pathLike = regexp.MustCompile(`(?:[A-Za-z]:\\|/)[^\s:"']+`)
 
-// phoneError is err's message without file paths: the phone never gets this
-// computer's folders or user name (see PRIVACY.md).
+// phoneError is what the phone is told about err: its message, or a generic
+// one if it mentions a file path, since the phone never gets this computer's
+// folders or user name (see PRIVACY.md), and paths can contain spaces, which
+// no pattern can reliably cut out.
 func phoneError(err error) string {
-	return pathLike.ReplaceAllString(err.Error(), "…")
+	if pathLike.MatchString(err.Error()) {
+		return "That didn't work on the computer; the details are shown there."
+	}
+	return err.Error()
 }
 
 // perDeviceListener refuses a device's connections beyond

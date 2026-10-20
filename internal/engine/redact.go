@@ -16,8 +16,9 @@ var (
 	longSegment = regexp.MustCompile(`/[A-Za-z0-9_-]{16,}(/|\b)`)
 )
 
-// redact removes query strings and passkey-like path segments from URLs.
-func redact(s string) string {
+// Redact removes query strings and passkey-like path segments from URLs
+// (for anything logged that may contain a torrent source or tracker).
+func Redact(s string) string {
 	s = urlQuery.ReplaceAllString(s, "$1?…")
 	return longSegment.ReplaceAllString(s, "/…$1")
 }
@@ -28,12 +29,12 @@ func redactingLogger() *slog.Logger {
 		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
 			switch v := a.Value.Resolve(); v.Kind() {
 			case slog.KindString:
-				a.Value = slog.StringValue(redact(v.String()))
+				a.Value = slog.StringValue(Redact(v.String()))
 			case slog.KindAny:
 				if err, ok := v.Any().(error); ok {
-					a.Value = slog.StringValue(redact(err.Error()))
+					a.Value = slog.StringValue(Redact(err.Error()))
 				} else {
-					a.Value = slog.StringValue(redact(v.String()))
+					a.Value = slog.StringValue(Redact(v.String()))
 				}
 			}
 			return a
