@@ -24,9 +24,9 @@ func TestInspect(t *testing.T) {
 
 func TestInspectBypasses(t *testing.T) {
 	for _, files := range [][]File{
-		{{"Movie/movie.mp4.exe.", 1}, {"Movie/movie.mkv", 1 << 30}},  // trailing dot
-		{{"Movie/movie.mp4.exe ", 1}, {"Movie/movie.mkv", 1 << 30}},  // trailing space
-		{{"Invoice/Cute\u202egpj.exe", 1}},                          // right-to-left override
+		{{"Movie/movie.mp4.exe.", 1}, {"Movie/movie.mkv", 1 << 30}},   // trailing dot
+		{{"Movie/movie.mp4.exe ", 1}, {"Movie/movie.mkv", 1 << 30}},   // trailing space
+		{{"Invoice/Cute\u202egpj.exe", 1}},                            // right-to-left override
 		{{"Movie/Watch online.url", 1}, {"Movie/movie.mkv", 1 << 30}}, // shortcut to a site
 		{{"Movie/codec.iso", 1}, {"Movie/movie.mkv", 1 << 30}},        // disk image
 	} {
