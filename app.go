@@ -22,6 +22,7 @@ import (
 	"sharkbite/internal/engine"
 	"sharkbite/internal/platform"
 	"sharkbite/internal/scan"
+	"sharkbite/internal/search"
 	"sharkbite/internal/secret"
 	"sharkbite/internal/socks"
 	"sharkbite/internal/tunnel"
@@ -133,6 +134,7 @@ func (a *App) startup(ctx context.Context) {
 	if !storeBuild {
 		platform.RefreshStartup(a.exe) // the app moved: keep sign-in start working
 	}
+	search.SetTunnel(a.searchDial) // a search server that isn't local goes through the VPN
 	runtime.OnFileDrop(ctx, func(_, _ int, paths []string) { a.handleArgs(paths) })
 	go a.runTray()
 	go a.connect()

@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -55,14 +56,98 @@ var Categories = map[string]int{
 	"movies": 2000, "tv": 5000, "music": 3000, "software": 4000, "books": 7000,
 }
 
-// localTransport reaches the user's own server with the operating system's
-// name resolution. The torrent engine points net.DefaultResolver into the
-// VPN tunnel (to keep tracker lookups private), and the VPN's DNS server
-// doesn't know "localhost" or names on the home network, so with the default
-// transport the server was unreachable while the VPN was up.
+// localTransport reaches the user's own server (see serverDial).
 var localTransport = &http.Transport{
-	DialContext:         (&net.Dialer{Timeout: 10 * time.Second, Resolver: &net.Resolver{}}).DialContext,
+	DialContext:         serverDial,
 	TLSHandshakeTimeout: 10 * time.Second,
+}
+
+var (
+	tunnelMu   sync.Mutex
+	tunnelDial Dialer
+)
+
+// SetTunnel sets how a server that isn't on this computer, the home network
+// or Tailscale is reached: the app passes its VPN dialer (which connects
+// directly only in No VPN mode). Until then such servers can't be reached.
+func SetTunnel(d Dialer) {
+	tunnelMu.Lock()
+	tunnelDial = d
+	tunnelMu.Unlock()
+}
+
+func viaTunnel(ctx context.Context, network, addr string) (net.Conn, error) {
+	tunnelMu.Lock()
+	d := tunnelDial
+	tunnelMu.Unlock()
+	if d == nil {
+		return nil, errors.New("VPN not connected")
+	}
+	return d(ctx, network, addr)
+}
+
+var directDialer = &net.Dialer{Timeout: 10 * time.Second}
+
+// serverDial connects to the user's Prowlarr/Jackett. One on this computer,
+// the home network or Tailscale is reached directly (the VPN can't reach
+// those), using the operating system's name resolution, since the VPN's DNS
+// doesn't know "localhost" or home names. Anything else, such as a seedbox,
+// goes through the VPN, and its name is never looked up outside it.
+func serverDial(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if localIP(ip) {
+			return directDialer.DialContext(ctx, network, addr)
+		}
+		return viaTunnel(ctx, network, addr)
+	}
+	if !localName(host) {
+		return viaTunnel(ctx, network, addr)
+	}
+	ips, err := (&net.Resolver{}).LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	var lastErr error = fmt.Errorf("%s has no address", host)
+	for _, ip := range ips {
+		if !localIP(ip.IP) {
+			return nil, fmt.Errorf("%s isn't on this computer or the home network; use its public name or address so it's reached through the VPN", host)
+		}
+	}
+	for _, ip := range ips {
+		c, err := directDialer.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+		if err == nil {
+			return c, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+var tailscaleNet = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+
+// localIP: this computer, the home network (private and link-local
+// addresses) or Tailscale (100.64/10).
+func localIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || tailscaleNet.Contains(ip)
+}
+
+// localName: names that only make sense on this computer or the home
+// network (or Tailscale's MagicDNS), so the system resolver may look them up.
+func localName(host string) bool {
+	h := strings.ToLower(strings.TrimSuffix(host, "."))
+	if h == "localhost" || !strings.Contains(h, ".") {
+		return true
+	}
+	for _, suffix := range []string{".localhost", ".local", ".lan", ".home", ".home.arpa", ".internal", ".localdomain", ".ts.net"} {
+		if strings.HasSuffix(h, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 var httpClient = &http.Client{Timeout: 90 * time.Second, Transport: localTransport}
@@ -228,9 +313,8 @@ func deref(p *int) int {
 // Dialer opens a connection through the VPN tunnel.
 type Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
 
-// fetchTransport reaches the configured Prowlarr/Jackett directly (it's
-// usually on this computer or the home network, which the tunnel can't
-// reach) and everything else through the VPN. A result's link, or a redirect
+// fetchTransport reaches the configured Prowlarr/Jackett with serverDial
+// (directly only if it's local) and everything else through the VPN. A result's link, or a redirect
 // from it, can point at the indexer site itself; those requests must not
 // show the user's real IP.
 func fetchTransport(c Config, tunnel Dialer) *http.Transport {
@@ -280,6 +364,9 @@ func Fetch(ctx context.Context, c Config, r Result, tunnel Dialer) (source strin
 		Timeout:   60 * time.Second,
 		Transport: fetchTransport(c, tunnel),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// The previous URL may carry the server's API key (?apikey=);
+			// it mustn't reach the indexer site as the Referer.
+			req.Header.Del("Referer")
 			if req.URL.Scheme == "magnet" {
 				magnet = req.URL.String()
 				return http.ErrUseLastResponse
