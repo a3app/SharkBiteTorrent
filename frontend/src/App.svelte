@@ -193,6 +193,7 @@
     if (t.sfv?.checking) return 'Checking .sfv…'
     if (t.state === 'seeding' && t.scanState === 'scanning') return 'Scanning for malware…'
     if (t.scanState === 'threat') return '⚠ Threat found'
+    if (t.confirm && t.state === 'paused') return 'Waiting for Start'
     return stateLabel[t.state] ?? t.state
   }
 
@@ -269,11 +270,17 @@
 
   {#each torrents.filter(t => t.confirm) as t (t.hash)}
     <div class="update" role="status">
-      <span>
-        🧲 Added from outside the app (a link or file you opened):
-        <b>{t.name || 'fetching its name…'}</b>{t.size ? ` (${bytes(t.size)})` : ''}. It's paused until you start it.
-      </span>
-      <button class="primary" onclick={() => run(() => StartTorrent(t.hash))}>Start</button>
+      {#if t.state === 'blocked'}
+        <span>
+          🧲 Added from outside the app: <b>{t.name}</b>. It can't start: {t.problem}
+        </span>
+      {:else}
+        <span>
+          🧲 Added from outside the app (a link or file you opened):
+          <b>{t.name || 'fetching its name…'}</b>{t.size ? ` (${bytes(t.size)})` : ''}. It's paused until you start it.
+        </span>
+        <button class="primary" onclick={() => run(() => StartTorrent(t.hash))}>Start</button>
+      {/if}
       <button onclick={() => run(() => Remove(t.hash, false))}>Remove</button>
     </div>
   {/each}
