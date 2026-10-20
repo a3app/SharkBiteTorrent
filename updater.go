@@ -53,8 +53,12 @@ type UpdateInfo struct {
 
 func (a *App) currentVersion() string { return a.GetAbout().Version }
 
+// errVPNDown is returned when the VPN is down and the user hasn't agreed to
+// use the normal connection; the frontend asks and retries with allowDirect.
+var errVPNDown = errors.New("The VPN isn't connected")
+
 // updateClient returns an HTTP client through the VPN, or the direct
-// connection if allowDirect and the VPN is down.
+// connection if allowDirect (the user agreed) and the VPN is down.
 func (a *App) updateClient(allowDirect bool) (*http.Client, bool, error) {
 	a.mu.Lock()
 	tun := a.tun
@@ -65,7 +69,7 @@ func (a *App) updateClient(allowDirect bool) (*http.Client, bool, error) {
 		return c, false, nil
 	}
 	if !allowDirect && !a.directMode() {
-		return nil, false, errors.New("VPN not connected")
+		return nil, false, errVPNDown
 	}
 	return &http.Client{Timeout: 10 * time.Minute}, true, nil
 }
@@ -98,6 +102,9 @@ func (a *App) checkUpdate(ctx context.Context, allowDirect bool) (UpdateInfo, er
 	}
 	tag := loc[i+len("/tag/"):]
 	info.Latest = strings.TrimPrefix(tag, "v")
+	if !strings.HasPrefix(tag, "v") || !versionPattern.MatchString(info.Latest) {
+		return info, fmt.Errorf("unexpected release tag %q", tag)
+	}
 	info.NotesURL = releasesURL + "/tag/" + tag
 	info.Available = newerVersion(info.Latest, info.Current)
 	if info.Available {
@@ -120,9 +127,35 @@ func newerVersion(a, b string) bool {
 		case preB == "":
 			return false
 		}
-		return preA > preB
+		return newerPre(preA, preB)
 	}
 	return newerCore(a, b)
+}
+
+// newerPre compares pre-release suffixes, numerically where they differ
+// only in a trailing number ("rc10" > "rc9").
+func newerPre(a, b string) bool {
+	ta, na := splitTrailingNumber(a)
+	tb, nb := splitTrailingNumber(b)
+	if ta == tb && na >= 0 && nb >= 0 {
+		return na > nb
+	}
+	return a > b
+}
+
+func splitTrailingNumber(s string) (string, int) {
+	i := len(s)
+	for i > 0 && s[i-1] >= '0' && s[i-1] <= '9' {
+		i--
+	}
+	if i == len(s) {
+		return s, -1
+	}
+	n, err := strconv.Atoi(s[i:])
+	if err != nil {
+		return s, -1
+	}
+	return s[:i], n
 }
 
 func newerCore(a, b string) bool {
@@ -170,15 +203,16 @@ func (a *App) autoCheckUpdate() {
 
 // --- Bound to the frontend ---
 
-// CheckForUpdates is the manual "Check for updates" button. It uses the VPN
-// if it's up, and otherwise the normal connection (reported via Direct).
-func (a *App) CheckForUpdates() (UpdateInfo, error) {
+// CheckForUpdates is the manual "Check for updates" button. It uses the VPN;
+// if that's down it returns errVPNDown, unless allowDirect (the user agreed
+// to the normal connection; reported via Direct).
+func (a *App) CheckForUpdates(allowDirect bool) (UpdateInfo, error) {
 	if storeBuild {
 		return UpdateInfo{}, errors.New("the Microsoft Store installs updates for this version")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	info, err := a.checkUpdate(ctx, true)
+	info, err := a.checkUpdate(ctx, allowDirect)
 	if err == nil {
 		a.mu.Lock()
 		a.settings.LastUpdateCheck = time.Now().Unix()
@@ -202,14 +236,19 @@ func (a *App) SkipUpdate(version string) error {
 // It's checked before the version goes into a download URL.
 var versionPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z.]+)?$`)
 
-func (a *App) InstallUpdate(version string) error {
+// allowDirect is as for CheckForUpdates: without it, a VPN that's down
+// returns errVPNDown instead of downloading over the normal connection.
+func (a *App) InstallUpdate(version string, allowDirect bool) error {
 	if !versionPattern.MatchString(version) {
 		return fmt.Errorf("not a version number: %q", version)
+	}
+	if !newerVersion(version, a.currentVersion()) {
+		return fmt.Errorf("%s isn't newer than this version (%s)", version, a.currentVersion())
 	}
 	if !a.canInstallUpdates() {
 		return errors.New("automatic install isn't available for this version; download it from the release page")
 	}
-	hc, _, err := a.updateClient(true)
+	hc, _, err := a.updateClient(allowDirect)
 	if err != nil {
 		return err
 	}

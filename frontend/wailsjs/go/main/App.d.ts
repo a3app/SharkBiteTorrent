@@ -12,7 +12,7 @@ export function AddSearchResult(arg1:search.Result):Promise<void>;
 
 export function AutoDetectSearch():Promise<main.SearchStatus>;
 
-export function CheckForUpdates():Promise<main.UpdateInfo>;
+export function CheckForUpdates(arg1:boolean):Promise<main.UpdateInfo>;
 
 export function CheckSearchProxy():Promise<main.ProxyCheck>;
 
@@ -50,7 +50,7 @@ export function GetVpnStatus():Promise<main.VpnStatus>;
 
 export function ImportWireGuardConfig():Promise<string>;
 
-export function InstallUpdate(arg1:string):Promise<void>;
+export function InstallUpdate(arg1:string,arg2:boolean):Promise<void>;
 
 export function ListTorrents():Promise<Array<engine.Status>>;
 

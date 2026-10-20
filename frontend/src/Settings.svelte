@@ -50,17 +50,35 @@
   let checking = $state(false)
   let installing = $state(false)
   let updateResult = $state<main.UpdateInfo | null>(null)
+  // Set when the VPN is down: the user is asked before anything uses the
+  // normal connection.
+  let askDirect = $state<'check' | 'install' | null>(null)
+  const vpnDown = (e: unknown) => String(e).includes("VPN isn't connected")
 
-  async function checkUpdates() {
+  async function checkUpdates(direct = false) {
     checking = true
+    askDirect = null
     updateResult = null
-    await attempt(async () => (updateResult = await CheckForUpdates()))
+    error = ''
+    try {
+      updateResult = await CheckForUpdates(direct)
+    } catch (e) {
+      if (vpnDown(e)) askDirect = 'check'
+      else error = String(e)
+    }
     checking = false
   }
 
-  async function installUpdate() {
+  async function installUpdate(direct = false) {
     installing = true
-    await attempt(() => InstallUpdate(updateResult!.latest)) // the app quits and relaunches
+    askDirect = null
+    error = ''
+    try {
+      await InstallUpdate(updateResult!.latest, direct) // the app quits and relaunches
+    } catch (e) {
+      if (vpnDown(e)) askDirect = 'install'
+      else error = String(e)
+    }
     installing = false
   }
 
@@ -261,14 +279,14 @@
               <p class="muted small">Updates are installed by the Microsoft Store.</p>
             {:else}
             <div class="row">
-              <button onclick={checkUpdates} disabled={checking || installing}>
+              <button onclick={() => checkUpdates()} disabled={checking || installing}>
                 {checking ? 'Checking…' : 'Check for updates'}
               </button>
               {#if updateResult}
                 {#if updateResult.available}
                   <span>Version <b>{updateResult.latest}</b> is available.</span>
                   {#if updateResult.canInstall}
-                    <button class="primary" onclick={installUpdate} disabled={installing}>
+                    <button class="primary" onclick={() => installUpdate()} disabled={installing}>
                       {installing ? 'Downloading…' : 'Update now'}
                     </button>
                   {:else}
@@ -282,6 +300,13 @@
             </div>
             {#if updateResult?.available && (updateResult.notes ?? []).length > 0}
               <div class="notes-box"><ReleaseNotes notes={updateResult.notes} /></div>
+            {/if}
+            {#if askDirect}
+              <div class="row">
+                <span>The VPN isn't connected. {askDirect === 'check' ? 'Check' : 'Download the update'} over your normal connection instead? GitHub will see your real IP address.</span>
+                <button onclick={() => (askDirect === 'check' ? checkUpdates(true) : installUpdate(true))}>Use normal connection</button>
+                <button onclick={() => (askDirect = null)}>Cancel</button>
+              </div>
             {/if}
             {#if updateResult?.direct}
               <p class="muted small">The VPN was off, so this check used your normal connection.</p>

@@ -8,6 +8,7 @@ What changed in each release of Shark BiteTorrent. The release notes on GitHub a
 - **Start when I sign in** (Settings → Desktop): Shark BiteTorrent starts in the background at sign-in, in the tray, without opening its window. Works on Windows, Linux (KDE, GNOME and others) and macOS. In the Microsoft Store version, turn it on in Windows Settings → Apps → Startup (the option links there); that version opens its window at sign-in.
 
 ### Fixed
+- **Check for updates** and **Update now** no longer use your normal connection by themselves when the VPN is down: the app asks first. It also refuses to "update" to an older version.
 - **Remove with files** deleted the torrent's whole top-level folder, so it could take other things with it: another torrent with the same folder name, files you'd added, or (with the download folder set to a drive or your home folder) a library folder like Music. It now deletes exactly the files the torrent downloaded, then only the folders left empty.
 - Torrents can no longer write into files that were already there before they were added (for example your own files in a folder with the same name); such a torrent stops and says why. Torrents with unsafe names (hidden names like ".ssh", Windows device names like CON, names ending in a dot or space) are refused.
 - Settings → VPN: **WireGuard config file** can be chosen before a config is imported; choosing it shows the Import button (before, the option was greyed out until you found the button below it).

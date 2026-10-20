@@ -123,13 +123,16 @@
   let update = $state<main.UpdateInfo | null>(null)
   let showNotes = $state(false)
   let installing = $state(false)
+  let askDirect = $state(false) // VPN down: ask before using the normal connection
 
-  async function installUpdate() {
+  async function installUpdate(direct = false) {
     installing = true
+    askDirect = false
     try {
-      await InstallUpdate(update!.latest) // the app quits and the installer relaunches it
+      await InstallUpdate(update!.latest, direct) // the app quits and the installer relaunches it
     } catch (e) {
-      error = String(e)
+      if (String(e).includes("VPN isn't connected")) askDirect = true
+      else error = String(e)
       installing = false
     }
   }
@@ -257,8 +260,12 @@
       {#if installing}
         <span class="muted">Downloading and verifying the update…</span>
       {:else}
-        {#if update.canInstall}
-          <button class="primary" onclick={installUpdate}>Update now</button>
+        {#if askDirect}
+          <span>The VPN isn't connected. Download over your normal connection? GitHub will see your real IP.</span>
+          <button onclick={() => installUpdate(true)}>Use normal connection</button>
+          <button onclick={() => (askDirect = false)}>Cancel</button>
+        {:else if update.canInstall}
+          <button class="primary" onclick={() => installUpdate()}>Update now</button>
         {:else}
           <button class="primary" onclick={() => OpenURL(update!.notesURL)}>Download</button>
         {/if}

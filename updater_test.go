@@ -24,6 +24,8 @@ func TestNewerVersion(t *testing.T) {
 		{"0.3.0", "0.3.0-rc1", true},
 		{"0.3.0-rc1", "0.3.0", false},
 		{"0.3.0-rc2", "0.3.0-rc1", true},
+		{"0.3.0-rc10", "0.3.0-rc9", true},
+		{"0.3.0-rc9", "0.3.0-rc10", false},
 		{"0.3.0-rc1", "0.2.18", true},
 		{"0.2.18", "0.3.0-rc1", false},
 	}
