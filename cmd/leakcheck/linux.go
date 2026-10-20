@@ -31,11 +31,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -45,6 +47,7 @@ import (
 	"syscall"
 	"time"
 
+	"sharkbite/internal/secret"
 	"sharkbite/internal/systool"
 	"sharkbite/internal/warp"
 )
@@ -95,7 +98,9 @@ func runLinux(secs int, selftest, app bool, exe, endpointFlag, childWarp string)
 		remotePort, remoteTailscale = appRemotePort()
 		if endpoint == "" {
 			var err error
-			if endpoint, err = appEndpoint(); err != nil {
+			if endpoint, err = appEndpoint(); errors.Is(err, errAccountEndpoint) {
+				fmt.Println("The app uses a VPN account; the server it connects to is read from the app afterwards.")
+			} else if err != nil {
 				return fatalCode(err.Error())
 			}
 		}
@@ -133,7 +138,9 @@ func runLinux(secs int, selftest, app bool, exe, endpointFlag, childWarp string)
 		}
 		childArgs = append(childArgs, flag.Args()[0])
 	}
-	endpoint = normalizeHostPort(endpoint)
+	if endpoint != "" {
+		endpoint = normalizeHostPort(endpoint)
+	}
 
 	fmt.Println("YOU: if sudo asks for your password, type it (it's needed for the firewall counters and the private DNS setup).")
 	if err := sudoInteractive("-v"); err != nil {
@@ -227,7 +234,7 @@ read go || exit 1; exec setpriv --reuid="$2" --regid="$3" --init-groups --inh-ca
 	start := time.Now()
 
 	if app {
-		fmt.Printf("Started Shark BiteTorrent; watching it for %d seconds.\nYOU: leave the window alone for the first minute (that covers startup), then type in the search box and search, type or paste in the magnet box, open every Settings section (type in a text field, click through VPN providers without saving), and click Check for updates.\n", secs)
+		fmt.Printf("Started Shark BiteTorrent; watching it for %d seconds.\nYOU: leave the window alone for the first minute (that covers startup). Then: search and add a result; type or paste in the magnet box; open every Settings section (type in a text field, click through VPN providers without saving); turn the search proxy on and click Check it's working (then off again if you don't use it); switch to another VPN provider and save, then back (that covers reconnecting); and click Check for updates.\n", secs)
 		select {
 		case err := <-exited:
 			return fatalCode(fmt.Sprintf("the app exited after %ds (%v): %s", int(time.Since(start).Seconds()), err, lastLines(appLog.String(), 10)))
@@ -263,7 +270,56 @@ read go || exit 1; exec setpriv --reuid="$2" --regid="$3" --init-groups --inh-ca
 	if err != nil {
 		return fatalCode("reading the counters: " + err.Error())
 	}
-	return verdict(flows, total, endpoint, remotePort, remoteTailscale, selftest)
+	if endpoint == "" { // a VPN account: the server the app picked
+		if endpoint, err = recordedEndpoint(start); err != nil {
+			return fatalCode(err.Error())
+		}
+	}
+	pol := policy{local: localAddrs(), endpoint: endpoint, remotePort: remotePort, remoteTailscale: remoteTailscale}
+	pol.servers, pol.listen = appLocalServices()
+	return verdict(flows, total, pol, selftest)
+}
+
+// policy is what the watched processes may contact outside the tunnel.
+type policy struct {
+	local           map[string]bool // this computer's addresses
+	endpoint        string          // the VPN server (UDP)
+	remotePort      string          // the remote control, if on
+	remoteTailscale bool
+	servers         map[string]bool // the user's Prowlarr/Jackett, ip:port
+	listen          map[int]bool    // the app's own local listeners (search proxy)
+}
+
+// appLocalServices reads which local services the app uses by design: its
+// search server (contacted directly when it's local) and its search proxy's
+// port (Prowlarr connects to it, so the app answers from it).
+func appLocalServices() (servers map[string]bool, listen map[int]bool) {
+	servers, listen = map[string]bool{}, map[int]bool{}
+	cfgDir, _ := os.UserConfigDir()
+	dir := filepath.Join(cfgDir, "SharkBiteTorrent")
+	var sc struct {
+		URL string `json:"url"`
+	}
+	if data, err := secret.ReadFile(filepath.Join(dir, "search.json")); err == nil && json.Unmarshal(data, &sc) == nil {
+		if u, err := url.Parse(sc.URL); err == nil && u.Hostname() != "" {
+			port := u.Port()
+			if port == "" {
+				port = map[string]string{"http": "80", "https": "443"}[u.Scheme]
+			}
+			ips, _ := (&net.Resolver{}).LookupIPAddr(context.Background(), u.Hostname())
+			for _, ip := range ips {
+				servers[net.JoinHostPort(ip.IP.String(), port)] = true
+			}
+		}
+	}
+	var pc struct {
+		Enabled bool `json:"enabled"`
+		Port    int  `json:"port"`
+	}
+	if data, err := secret.ReadFile(filepath.Join(dir, "proxy.json")); err == nil && json.Unmarshal(data, &pc) == nil && pc.Enabled {
+		listen[pc.Port] = true
+	}
+	return servers, listen
 }
 
 // runChild is the engine run inside the watched cgroup.
@@ -282,8 +338,9 @@ func runChild(warpFile string, secs int, selftest bool) int {
 	return 0
 }
 
-func verdict(flows []flow, total int64, endpoint, remotePort string, remoteTailscale, selftest bool) int {
-	list, counted, tunnel := classify(flows, localAddrs(), endpoint, remotePort, remoteTailscale)
+func verdict(flows []flow, total int64, pol policy, selftest bool) int {
+	endpoint := pol.endpoint
+	list, counted, tunnel := classify(flows, pol)
 	fmt.Printf("\npackets from the watched processes: %d (tunnel %d)\n", total, tunnel)
 	if counted != total {
 		// The per-address sets missed packets (full?), so the details are
@@ -326,7 +383,7 @@ func verdict(flows []flow, total int64, endpoint, remotePort string, remoteTails
 
 // classify sorts the counted flows into the tunnel, allowed traffic and
 // leaks (returned as text with packet counts).
-func classify(flows []flow, local map[string]bool, endpoint, remotePort string, remoteTailscale bool) (list []string, counted, tunnel int64) {
+func classify(flows []flow, p policy) (list []string, counted, tunnel int64) {
 	type leak struct {
 		text    string
 		packets int64
@@ -343,13 +400,21 @@ func classify(flows []flow, local map[string]bool, endpoint, remotePort string, 
 		switch {
 		case f.dport == 53 && (f.proto == "udp" || f.proto == "tcp"):
 			add("DNS lookup outside the tunnel (to "+f.to()+")", f.packets)
-		case local[f.dst] || net.ParseIP(f.dst).IsLoopback():
-		case f.proto == "udp" && normalizeHostPort(f.to()) == endpoint:
+		case f.proto == "tcp" && p.servers[normalizeHostPort(f.to())]:
+			// The user's own Prowlarr/Jackett, on this computer or the home
+			// network (contacted directly by design).
+		case (p.local[f.dst] || net.ParseIP(f.dst).IsLoopback()) && p.listen[f.sport]:
+			// The app's search proxy answering Prowlarr.
+		case f.proto == "udp" && normalizeHostPort(f.to()) == p.endpoint:
 			tunnel += f.packets
-		case remotePort != "" && f.proto == "tcp" && strconv.Itoa(f.sport) == remotePort &&
+		case p.remotePort != "" && f.proto == "tcp" && strconv.Itoa(f.sport) == p.remotePort &&
 			(privateAddr(f.to()) && !tailscaleAddr(net.JoinHostPort(f.src, "0")) ||
-				remoteTailscale && tailscaleAddr(f.to()) && tailscaleAddr(net.JoinHostPort(f.src, "0"))):
+				p.remoteTailscale && tailscaleAddr(f.to()) && tailscaleAddr(net.JoinHostPort(f.src, "0"))):
 			// The remote control (on in Settings) answering a phone.
+		case p.local[f.dst] || net.ParseIP(f.dst).IsLoopback():
+			// Anything else on this computer: a system proxy or DNS forwarder
+			// listening there would pass traffic on outside the tunnel.
+			add(strings.ToUpper(f.proto)+" to "+f.to()+" (a service on this computer other than your search server)", f.packets)
 		default:
 			text := strings.ToUpper(f.proto) + " to " + f.dst
 			if f.proto == "tcp" || f.proto == "udp" {

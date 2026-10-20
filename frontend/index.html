@@ -6,6 +6,11 @@
 <head>
     <meta charset="UTF-8"/>
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+    <!-- The window only ever shows the app itself: nothing from the internet
+         (scripts, images, fonts, connections), so a future change can't make
+         the web view contact anything outside the VPN. data: is for the
+         phone-pairing QR code. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"/>
     <title>Shark BiteTorrent</title>
 </head>
 <body>

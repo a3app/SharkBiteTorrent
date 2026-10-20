@@ -453,6 +453,9 @@ func (a *App) startEngine(tun *tunnel.Tunnel, eng *engine.Engine, st VpnStatus) 
 	a.verifyCtx = mctx
 	if tun != nil {
 		vpnprov.SetTunnel(tun.DialContext) // server lists and sign-ins go through the VPN
+		// For the release leak test (cmd/leakcheck), which must know the one
+		// address the tunnel may send to. Not secret: it's in every packet.
+		os.WriteFile(filepath.Join(a.configDir, "vpn-endpoint"), []byte(tun.Endpoint()+"\n"), 0o600)
 	}
 	a.vpn = st
 	saved := append([]savedTorrent(nil), a.saved...)

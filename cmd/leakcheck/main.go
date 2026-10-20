@@ -117,10 +117,12 @@ func run() int {
 			return fatalCode("app not found at " + *exe + " (use -exe)")
 		}
 		endpoint = *endpointFlag
+		remotePort, remoteTailscale = appRemotePort()
 		if endpoint == "" {
 			var err error
-			remotePort, remoteTailscale = appRemotePort()
-			if endpoint, err = appEndpoint(); err != nil {
+			if endpoint, err = appEndpoint(); errors.Is(err, errAccountEndpoint) {
+				fmt.Println("The app uses a VPN account; the server it connects to is read from the app afterwards.")
+			} else if err != nil {
 				return fatalCode(err.Error())
 			}
 		}
@@ -141,7 +143,9 @@ func run() int {
 		}
 		endpoint = acc.Endpoint
 	}
-	endpoint = normalizeHostPort(endpoint)
+	if endpoint != "" {
+		endpoint = normalizeHostPort(endpoint)
+	}
 
 	restore, err := startAuditing()
 	if err != nil {
@@ -184,6 +188,11 @@ func run() int {
 	controlLookup()
 	time.Sleep(3 * time.Second) // let the last events reach the logs
 
+	if endpoint == "" { // a VPN account: the server the app picked
+		if endpoint, err = recordedEndpoint(start); err != nil {
+			return fatalCode(err.Error())
+		}
+	}
 	watched, err := descendants(start, root)
 	if err != nil {
 		return fatalCode("reading the process log: " + err.Error())
@@ -391,7 +400,7 @@ func runApp(exe string, secs int) (int, *pidSet, error) {
 		return 0, nil, errors.New("the app didn't start")
 	}
 	set := newPIDSet(pid)
-	fmt.Printf("Started Shark BiteTorrent (PID %d); watching it for %d seconds.\nYOU: leave the window alone for the first minute (that covers startup), then type in the search box and search, type or paste in the magnet box, open every Settings section (type in a text field, click through VPN providers without saving), and click Check for updates.\n", pid, secs)
+	fmt.Printf("Started Shark BiteTorrent (PID %d); watching it for %d seconds.\nYOU: leave the window alone for the first minute (that covers startup). Then: search and add a result; type or paste in the magnet box; open every Settings section (type in a text field, click through VPN providers without saving); turn the search proxy on and click Check it's working (then off again if you don't use it); switch to another VPN provider and save, then back (that covers reconnecting); and click Check for updates.\n", pid, secs)
 	deadline := time.Now().Add(time.Duration(secs) * time.Second)
 	for time.Now().Before(deadline) {
 		set.addChildren() // backup to the process-creation log
@@ -479,8 +488,28 @@ func appEndpoint() (string, error) {
 	case "none":
 		return "", errors.New("the app is set to No VPN; switch it to WARP for this check")
 	default:
-		return "", errors.New("the app uses a VPN account, whose server is chosen when it connects; switch it to WARP for this check, or pass -endpoint ip:port")
+		return "", errAccountEndpoint
 	}
+}
+
+// errAccountEndpoint: the app uses a VPN account, whose server is only
+// chosen when it connects; recordedEndpoint reads it after the run.
+var errAccountEndpoint = errors.New("the app uses a VPN account")
+
+// recordedEndpoint reads the server the app connected to during the run
+// (it writes vpn-endpoint in its settings folder on every connect).
+func recordedEndpoint(since time.Time) (string, error) {
+	cfgDir, _ := os.UserConfigDir()
+	p := filepath.Join(cfgDir, "SharkBiteTorrent", "vpn-endpoint")
+	fi, err := os.Stat(p)
+	if err != nil || fi.ModTime().Before(since.Add(-2*time.Second)) {
+		return "", errors.New("the app didn't record a VPN connection during the run (did it connect?); pass -endpoint ip:port")
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return "", err
+	}
+	return normalizeHostPort(strings.TrimSpace(string(b))), nil
 }
 
 // controlConnection makes one loopback TCP connection and returns the

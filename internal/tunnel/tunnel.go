@@ -33,11 +33,12 @@ type Config struct {
 }
 
 type Tunnel struct {
-	dev  *device.Device
-	tnet *netstack.Net
-	dns  string     // host:port of the DNS server reached through the tunnel
-	v4   netip.Addr // our IPv4 address inside the tunnel
-	v6   netip.Addr // our IPv6 address inside the tunnel, if any
+	dev      *device.Device
+	tnet     *netstack.Net
+	dns      string     // host:port of the DNS server reached through the tunnel
+	v4       netip.Addr // our IPv4 address inside the tunnel
+	v6       netip.Addr // our IPv6 address inside the tunnel, if any
+	endpoint string     // the WireGuard server, ip:port
 }
 
 func Start(cfg Config) (*Tunnel, error) {
@@ -106,7 +107,7 @@ func Start(cfg Config) (*Tunnel, error) {
 		dev.Close()
 		return nil, fmt.Errorf("bring up wireguard: %w", err)
 	}
-	t := &Tunnel{dev: dev, tnet: tnet, dns: "1.1.1.1:53"}
+	t := &Tunnel{dev: dev, tnet: tnet, dns: "1.1.1.1:53", endpoint: endpoint}
 	for _, a := range addrs {
 		if a.Is4() && !t.v4.IsValid() {
 			t.v4 = a
@@ -154,6 +155,9 @@ func (t *Tunnel) Close() {
 
 // DNSServer is the ip:port of the DNS server used inside the tunnel.
 func (t *Tunnel) DNSServer() string { return t.dns }
+
+// Endpoint is the WireGuard server the tunnel talks to (ip:port).
+func (t *Tunnel) Endpoint() string { return t.endpoint }
 
 // ListenTCP4 listens for inbound connections on port inside the tunnel. Only
 // useful with providers that forward a port to you.
