@@ -26,7 +26,10 @@ type scanRecord struct {
 	// "Scan fully" would check at least one of them.
 	TooLarge     []string `json:"tooLarge,omitempty"`
 	CanScanFully bool     `json:"canScanFully,omitempty"`
-	At           int64    `json:"at"` // unix seconds
+	// Seen: the user has opened the torrent's files panel since, so its row
+	// stops flagging the files that were too large.
+	Seen bool  `json:"seen,omitempty"`
+	At   int64 `json:"at"` // unix seconds
 	// SFV is the .sfv check, if the torrent has one.
 	SFV *engine.SFVStatus `json:"sfv,omitempty"`
 }
@@ -153,6 +156,17 @@ func (a *App) warnThreats(name string, rec *scanRecord) {
 	}
 }
 
+// MarkScanSeen records that the user has seen a torrent's scan result in
+// its files panel.
+func (a *App) MarkScanSeen(hash string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if s := a.savedFor(hash); s != nil && s.Scan != nil && !s.Scan.Seen {
+		s.Scan.Seen = true
+		a.writeSaved()
+	}
+}
+
 // ScanFully scans a finished torrent again with the antivirus's size limits
 // raised, for files the normal scan skipped. It returns at once; progress
 // and the result show in the torrent list.
@@ -172,7 +186,7 @@ func (a *App) ScanFully(hash string) error {
 		a.mu.Unlock()
 		return errors.New("nothing to scan")
 	}
-	rec := &scanRecord{Engine: s.Scan.Engine, At: time.Now().Unix(), SFV: s.Scan.SFV}
+	rec := &scanRecord{Engine: s.Scan.Engine, At: time.Now().Unix(), SFV: s.Scan.SFV, Seen: true}
 	a.mu.Unlock()
 	if ctx == nil {
 		ctx = context.Background()
@@ -311,6 +325,7 @@ func (a *App) withScans(list []engine.Status) []engine.Status {
 			t.ScanState, t.ScanError = "error", s.Scan.Error
 		case len(s.Scan.TooLarge) > 0:
 			t.ScanState, t.TooLarge, t.CanScanFully = "toolarge", s.Scan.TooLarge, s.Scan.CanScanFully
+			t.ScanSeen = s.Scan.Seen
 		case s.Scan.Clean:
 			t.ScanState = "clean"
 		}

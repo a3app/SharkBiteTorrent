@@ -91,6 +91,7 @@ export namespace engine {
 	    scanError: string;
 	    tooLarge: string[];
 	    canScanFully: boolean;
+	    scanSeen: boolean;
 	    verifying: boolean;
 	    verifyProgress: number;
 	    verified?: VerifyResult;
@@ -120,6 +121,7 @@ export namespace engine {
 	        this.scanError = source["scanError"];
 	        this.tooLarge = source["tooLarge"];
 	        this.canScanFully = source["canScanFully"];
+	        this.scanSeen = source["scanSeen"];
 	        this.verifying = source["verifying"];
 	        this.verifyProgress = source["verifyProgress"];
 	        this.verified = this.convertValues(source["verified"], VerifyResult);

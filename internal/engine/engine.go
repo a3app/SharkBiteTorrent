@@ -561,6 +561,7 @@ type Status struct {
 	// App.ScanFully would check at least one of them.
 	TooLarge     []string `json:"tooLarge"`
 	CanScanFully bool     `json:"canScanFully"`
+	ScanSeen     bool     `json:"scanSeen"` // the user has opened the files panel since
 	// "Verify files" (see Engine.Verify): progress while running, then the
 	// last result. Bad pieces are downloaded again automatically.
 	Verifying      bool          `json:"verifying"`

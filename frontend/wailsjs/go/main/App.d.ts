@@ -60,6 +60,8 @@ export function LoginVpnAccount(arg1:string,arg2:Record<string, string>):Promise
 
 export function LogoutVpnAccount(arg1:string):Promise<void>;
 
+export function MarkScanSeen(arg1:string):Promise<void>;
+
 export function OpenDefaultAppsSettings():Promise<void>;
 
 export function OpenFolder(arg1:string):Promise<void>;

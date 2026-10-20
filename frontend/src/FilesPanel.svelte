@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { GetFiles, SetFilesWanted, ScanFully } from '../wailsjs/go/main/App.js'
+  import { GetFiles, SetFilesWanted, ScanFully, MarkScanSeen } from '../wailsjs/go/main/App.js'
   import type { engine } from '../wailsjs/go/models'
   import { bytes } from './format'
   import PieceMap from './PieceMap.svelte'
@@ -12,6 +12,12 @@
   const warnings = $derived(torrent.warnings ?? [])
   const flagged = $derived(new Set(warnings.map(w => w.file)))
   const tooLarge = $derived(torrent.tooLarge ?? [])
+
+  // Opening the panel shows the "too large to scan" note, so the torrent's
+  // row stops flagging it.
+  $effect(() => {
+    if (torrent.scanState === 'toolarge' && !torrent.scanSeen) MarkScanSeen(torrent.hash)
+  })
 
   async function scanFully() {
     try {

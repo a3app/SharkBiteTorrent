@@ -110,6 +110,10 @@ export function LogoutVpnAccount(arg1) {
   return window['go']['main']['App']['LogoutVpnAccount'](arg1);
 }
 
+export function MarkScanSeen(arg1) {
+  return window['go']['main']['App']['MarkScanSeen'](arg1);
+}
+
 export function OpenDefaultAppsSettings() {
   return window['go']['main']['App']['OpenDefaultAppsSettings']();
 }

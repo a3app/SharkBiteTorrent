@@ -315,6 +315,8 @@
                 <td class="name" title={t.name}>
                   {#if t.scanState === 'threat'}
                     <span class="flag threat" title="Antivirus found: {(t.threats ?? []).join(', ')}">⚠</span>
+                  {:else if t.scanState === 'toolarge' && !t.scanSeen}
+                    <span class="flag caution" title="Some files were too large to scan for malware. Click for details.">⚠</span>
                   {:else if (t.warnings ?? []).length > 0}
                     <span class="flag caution" title={(t.warnings ?? []).map(w => w.reason).join('\n')}>⚠</span>
                   {/if}
