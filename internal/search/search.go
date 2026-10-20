@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sharkbite/internal/scan"
 	"sort"
 	"strconv"
 	"strings"
@@ -210,6 +211,9 @@ func Search(ctx context.Context, c Config, query, category string) ([]Result, er
 	}
 	if err != nil {
 		return nil, err
+	}
+	for i := range out {
+		out[i].Title = scan.StripBidiControls(out[i].Title) // no direction tricks in shown names
 	}
 	out = dedupe(out)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Seeders > out[j].Seeders })

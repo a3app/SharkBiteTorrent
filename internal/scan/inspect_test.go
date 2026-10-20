@@ -21,3 +21,24 @@ func TestInspect(t *testing.T) {
 		}
 	}
 }
+
+func TestInspectBypasses(t *testing.T) {
+	for _, files := range [][]File{
+		{{"Movie/movie.mp4.exe.", 1}, {"Movie/movie.mkv", 1 << 30}},  // trailing dot
+		{{"Movie/movie.mp4.exe ", 1}, {"Movie/movie.mkv", 1 << 30}},  // trailing space
+		{{"Invoice/Cute\u202egpj.exe", 1}},                          // right-to-left override
+		{{"Movie/Watch online.url", 1}, {"Movie/movie.mkv", 1 << 30}}, // shortcut to a site
+		{{"Movie/codec.iso", 1}, {"Movie/movie.mkv", 1 << 30}},        // disk image
+	} {
+		if w := Inspect(files); len(w) == 0 {
+			t.Errorf("no warning for %v", files)
+		}
+	}
+	// A Linux ISO torrent is fine.
+	if w := Inspect([]File{{"archlinux.iso", 1 << 30}}); len(w) != 0 {
+		t.Errorf("Linux ISO flagged: %v", w)
+	}
+	if got := StripBidiControls("Cute\u202egpj.exe"); got != "Cutegpj.exe" {
+		t.Errorf("StripBidiControls: %q", got)
+	}
+}

@@ -7,6 +7,7 @@ package scan
 import (
 	"path"
 	"strings"
+	"unicode"
 )
 
 type File struct {
@@ -24,8 +25,14 @@ var executable = set(
 	// Windows programs and scripts
 	".exe", ".scr", ".com", ".pif", ".bat", ".cmd", ".vbs", ".vbe", ".js", ".jse",
 	".wsf", ".wsh", ".ps1", ".msi", ".msp", ".hta", ".cpl", ".jar", ".reg", ".lnk",
+	".url", ".scf", ".chm", ".msix", ".appx", ".xll", ".library-ms", ".py",
+	// Office documents with macros
+	".docm", ".xlsm", ".pptm",
+	// Disk images: opening one gets around Mark of the Web
+	".iso", ".img", ".vhd", ".vhdx",
 	// macOS and Linux
 	".app", ".pkg", ".dmg", ".command", ".sh", ".run", ".appimage", ".desktop",
+	".terminal", ".workflow", ".scpt", ".webloc", ".inetloc", ".fileloc", ".deb", ".rpm",
 )
 
 var media = set(
@@ -46,7 +53,28 @@ func set(xs ...string) map[string]bool {
 	return m
 }
 
-func ext(p string) string { return strings.ToLower(path.Ext(p)) }
+// ext is the extension as the OS will see it: Windows drops trailing dots
+// and spaces, so "movie.mp4.exe." is a .exe there.
+func ext(p string) string { return strings.ToLower(path.Ext(strings.TrimRight(p, ". "))) }
+
+// HasBidiControl reports characters that change the direction text is shown
+// in (U+202E and friends), which can make "gpj.exe" show as "exe.jpg".
+func HasBidiControl(s string) bool { return strings.IndexFunc(s, isBidiControl) >= 0 }
+
+// StripBidiControls removes them, for showing names.
+func StripBidiControls(s string) string {
+	if !HasBidiControl(s) {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if isBidiControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+func isBidiControl(r rune) bool { return unicode.Is(unicode.Bidi_Control, r) }
 
 // Inspect flags the classic torrent malware tricks: a program disguised as
 // a video ("movie.mp4.exe"), a program or script shipped inside what is
@@ -68,11 +96,15 @@ func Inspect(files []File) []Warning {
 	mostlyMedia := total > 0 && mediaBytes*10 >= total*8 // 80%+ of the data
 
 	for _, f := range files {
+		if HasBidiControl(f.Path) {
+			out = append(out, Warning{StripBidiControls(f.Path), "The name contains invisible characters that reverse how text is shown, a trick to disguise a program's real extension."})
+			continue
+		}
 		e := ext(f.Path)
 		if !executable[e] {
 			continue
 		}
-		base := strings.ToLower(path.Base(f.Path))
+		base := strings.ToLower(strings.TrimRight(path.Base(f.Path), ". "))
 		inner := path.Ext(strings.TrimSuffix(base, e))
 		switch {
 		case inner != "" && (media[inner] || docLike[inner]):

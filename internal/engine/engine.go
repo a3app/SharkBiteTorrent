@@ -538,7 +538,7 @@ func (e *Engine) Files(hash string) ([]FileStatus, error) {
 	for i, f := range files {
 		out[i] = FileStatus{
 			Index:  i,
-			Path:   f.DisplayPath(),
+			Path:   scan.StripBidiControls(f.DisplayPath()), // shown as-is: no direction tricks
 			Size:   f.Length(),
 			Done:   f.BytesCompleted(),
 			Wanted: !en.skipped[i],
@@ -655,7 +655,7 @@ func (e *Engine) List() []Status {
 
 		row := Status{
 			Hash:     h.HexString(),
-			Name:     t.Name(),
+			Name:     scan.StripBidiControls(t.Name()),
 			Dir:      en.dir,
 			DownRate: en.downRate,
 			UpRate:   en.upRate,
@@ -819,7 +819,7 @@ func (e *Engine) Verify(ctx context.Context, hash string) (*VerifyResult, error)
 	for _, f := range t.Files() {
 		for _, p := range bad {
 			if p >= f.BeginPieceIndex() && p < f.EndPieceIndex() {
-				res.BadFiles = append(res.BadFiles, f.DisplayPath())
+				res.BadFiles = append(res.BadFiles, scan.StripBidiControls(f.DisplayPath()))
 				break
 			}
 		}

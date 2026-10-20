@@ -9,6 +9,7 @@ What changed in each release of Shark BiteTorrent. The release notes on GitHub a
 - **Start when I sign in** (Settings → Desktop): Shark BiteTorrent starts in the background at sign-in, in the tray, without opening its window. Works on Windows, Linux (KDE, GNOME and others) and macOS. In the Microsoft Store version, turn it on in Windows Settings → Apps → Startup (the option links there); that version opens its window at sign-in.
 
 ### Fixed
+- The check for disguised programs catches more tricks: names ending in a dot or space ("movie.mp4.exe."), invisible characters that reverse text so "gpj.exe" shows as "exe.jpg" (also removed from the names the app shows), and more risky file types (.url, .scf, .chm, disk images, macro documents, scripts).
 - HTTPS trackers' certificates are now checked (the torrent library skipped the check), so nobody between the VPN and a private tracker can read your passkey. Tracker addresses in the app's logs no longer include passkeys.
 - The app's window is now restricted to the app's own content (a Content-Security-Policy), so it can never load anything from the internet, on any platform.
 - Windows: **Update now** installs into the folder the app is in. If you'd installed it somewhere other than the default, updates used to go to the default folder, leaving the old copy behind. The installer also waits for the app to close before forcing it, so it doesn't interrupt saving your torrent list.
