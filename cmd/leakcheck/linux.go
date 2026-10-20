@@ -142,6 +142,11 @@ func runLinux(secs int, selftest, app bool, exe, endpointFlag, childWarp string)
 		endpoint = normalizeHostPort(endpoint)
 	}
 
+	readEndpoints := func() []string { return nil }
+	if app {
+		readEndpoints = startEndpointRecording()
+	}
+
 	fmt.Println("YOU: if sudo asks for your password, type it (it's needed for the firewall counters and the private DNS setup).")
 	if err := sudoInteractive("-v"); err != nil {
 		return fatalCode("sudo: " + err.Error())
@@ -270,12 +275,11 @@ read go || exit 1; exec setpriv --reuid="$2" --regid="$3" --init-groups --inh-ca
 	if err != nil {
 		return fatalCode("reading the counters: " + err.Error())
 	}
-	if endpoint == "" { // a VPN account: the server the app picked
-		if endpoint, err = recordedEndpoint(start); err != nil {
-			return fatalCode(err.Error())
-		}
+	endpoints := endpointSet(endpoint, readEndpoints())
+	if len(endpoints) == 0 {
+		return fatalCode("the app didn't record a VPN connection during the run (did it connect?); pass -endpoint ip:port")
 	}
-	pol := policy{local: localAddrs(), endpoint: endpoint, remotePort: remotePort, remoteTailscale: remoteTailscale}
+	pol := policy{local: localAddrs(), endpoints: endpoints, remotePort: remotePort, remoteTailscale: remoteTailscale}
 	pol.servers, pol.listen = appLocalServices()
 	return verdict(flows, total, pol, selftest)
 }
@@ -283,7 +287,7 @@ read go || exit 1; exec setpriv --reuid="$2" --regid="$3" --init-groups --inh-ca
 // policy is what the watched processes may contact outside the tunnel.
 type policy struct {
 	local           map[string]bool // this computer's addresses
-	endpoint        string          // the VPN server (UDP)
+	endpoints       map[string]bool // the VPN servers (UDP)
 	remotePort      string          // the remote control, if on
 	remoteTailscale bool
 	servers         map[string]bool // the user's Prowlarr/Jackett, ip:port
@@ -308,7 +312,11 @@ func appLocalServices() (servers map[string]bool, listen map[int]bool) {
 			}
 			ips, _ := (&net.Resolver{}).LookupIPAddr(context.Background(), u.Hostname())
 			for _, ip := range ips {
-				servers[net.JoinHostPort(ip.IP.String(), port)] = true
+				// Only a local server may be contacted directly (a remote one,
+				// such as a seedbox, must go through the VPN; see search.serverDial).
+				if ip.IP.IsLoopback() || ip.IP.IsPrivate() || ip.IP.IsLinkLocalUnicast() || tailscaleAddr(net.JoinHostPort(ip.IP.String(), "0")) {
+					servers[net.JoinHostPort(ip.IP.String(), port)] = true
+				}
 			}
 		}
 	}
@@ -339,7 +347,6 @@ func runChild(warpFile string, secs int, selftest bool) int {
 }
 
 func verdict(flows []flow, total int64, pol policy, selftest bool) int {
-	endpoint := pol.endpoint
 	list, counted, tunnel := classify(flows, pol)
 	fmt.Printf("\npackets from the watched processes: %d (tunnel %d)\n", total, tunnel)
 	if counted != total {
@@ -349,7 +356,7 @@ func verdict(flows []flow, total int64, pol policy, selftest bool) int {
 		return 1
 	}
 	if tunnel == 0 {
-		fmt.Println("FAIL: the VPN tunnel's own traffic (UDP to " + endpoint + ") wasn't counted, so nothing was verified")
+		fmt.Println("FAIL: the VPN tunnel's own traffic (UDP to " + setString(pol.endpoints) + ") wasn't counted, so nothing was verified")
 		return 1
 	}
 	if selftest {
@@ -405,7 +412,7 @@ func classify(flows []flow, p policy) (list []string, counted, tunnel int64) {
 			// network (contacted directly by design).
 		case (p.local[f.dst] || net.ParseIP(f.dst).IsLoopback()) && p.listen[f.sport]:
 			// The app's search proxy answering Prowlarr.
-		case f.proto == "udp" && normalizeHostPort(f.to()) == p.endpoint:
+		case f.proto == "udp" && p.endpoints[normalizeHostPort(f.to())]:
 			tunnel += f.packets
 		case p.remotePort != "" && f.proto == "tcp" && strconv.Itoa(f.sport) == p.remotePort &&
 			(privateAddr(f.to()) && !tailscaleAddr(net.JoinHostPort(f.src, "0")) ||

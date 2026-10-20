@@ -507,9 +507,7 @@ func (a *App) startEngine(tun *tunnel.Tunnel, eng *engine.Engine, st VpnStatus) 
 	a.verifyCtx = mctx
 	if tun != nil {
 		vpnprov.SetTunnel(tun.DialContext) // server lists and sign-ins go through the VPN
-		// For the release leak test (cmd/leakcheck), which must know the one
-		// address the tunnel may send to. Not secret: it's in every packet.
-		os.WriteFile(filepath.Join(a.configDir, "vpn-endpoint"), []byte(tun.Endpoint()+"\n"), 0o600)
+		a.recordEndpoint(tun.Endpoint())
 	}
 	a.vpn = st
 	saved := append([]savedTorrent(nil), a.saved...)
@@ -1321,4 +1319,20 @@ func (a *App) GetPieceMap(hash string) ([]engine.PieceRun, error) {
 		return nil, err
 	}
 	return eng.PieceMap(hash)
+}
+
+// recordEndpoint notes the VPN server connected to, only while the release
+// leak test (cmd/leakcheck) runs: it creates leakcheck-active, reads the
+// servers to allow from vpn-endpoint afterwards, and removes both. Normal
+// use keeps no record of which servers were used.
+func (a *App) recordEndpoint(ep string) {
+	if _, err := os.Stat(filepath.Join(a.configDir, "leakcheck-active")); err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(a.configDir, "vpn-endpoint"), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	if err != nil {
+		return
+	}
+	fmt.Fprintln(f, ep)
+	f.Close()
 }

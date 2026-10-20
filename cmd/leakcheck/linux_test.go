@@ -22,7 +22,7 @@ func TestParseAndClassify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	list, counted, tunnel := classify(flows, policy{local: map[string]bool{"10.9.9.1": true}, endpoint: "10.9.9.2:51820"})
+	list, counted, tunnel := classify(flows, policy{local: map[string]bool{"10.9.9.1": true}, endpoints: map[string]bool{"10.9.9.2:51820": true}})
 	if counted != total || tunnel != 3 {
 		t.Errorf("counted %d of %d packets, tunnel %d", counted, total, tunnel)
 	}
@@ -43,7 +43,7 @@ func TestClassifyRemote(t *testing.T) {
 		{proto: "tcp", src: "100.121.116.8", dst: "100.88.1.2", sport: 8732, dport: 50001, packets: 4},  // phone over Tailscale
 		{proto: "tcp", src: "192.168.4.20", dst: "8.8.8.8", sport: 8732, dport: 50002, packets: 1},      // not a phone
 	}
-	list, _, _ := classify(flows, policy{local: map[string]bool{}, endpoint: "1.2.3.4:51820", remotePort: "8732", remoteTailscale: true})
+	list, _, _ := classify(flows, policy{local: map[string]bool{}, endpoints: map[string]bool{"1.2.3.4:51820": true}, remotePort: "8732", remoteTailscale: true})
 	want := []string{"TCP to 8.8.8.8:50002: 1 packets"}
 	if !reflect.DeepEqual(list, want) {
 		t.Errorf("leaks %q, want %q", list, want)
@@ -54,7 +54,7 @@ func TestClassifyRemote(t *testing.T) {
 // home network) and from the app's search proxy, nothing else local.
 func TestClassifyLocalServices(t *testing.T) {
 	p := policy{
-		local: map[string]bool{"192.168.4.20": true}, endpoint: "1.2.3.4:51820",
+		local: map[string]bool{"192.168.4.20": true}, endpoints: map[string]bool{"1.2.3.4:51820": true},
 		servers: map[string]bool{"127.0.0.1:9696": true, "192.168.4.26:9117": true},
 		listen:  map[int]bool{40123: true},
 	}

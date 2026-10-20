@@ -147,6 +147,11 @@ func run() int {
 		endpoint = normalizeHostPort(endpoint)
 	}
 
+	readEndpoints := func() []string { return nil }
+	if *app {
+		readEndpoints = startEndpointRecording()
+	}
+
 	restore, err := startAuditing()
 	if err != nil {
 		return fatalCode("turning on auditing: " + err.Error())
@@ -188,10 +193,9 @@ func run() int {
 	controlLookup()
 	time.Sleep(3 * time.Second) // let the last events reach the logs
 
-	if endpoint == "" { // a VPN account: the server the app picked
-		if endpoint, err = recordedEndpoint(start); err != nil {
-			return fatalCode(err.Error())
-		}
+	endpoints := endpointSet(endpoint, readEndpoints())
+	if len(endpoints) == 0 {
+		return fatalCode("the app didn't record a VPN connection during the run (did it connect?); pass -endpoint ip:port")
 	}
 	watched, err := descendants(start, root)
 	if err != nil {
@@ -239,7 +243,7 @@ func run() int {
 			// inbound, only on that port: from private addresses to the home
 			// address, or (Tailscale access on) from Tailscale addresses to the
 			// Tailscale address.
-		case c.proto == "UDP" && c.pid == root && (c.remote == endpoint || c.local == endpoint):
+		case c.proto == "UDP" && c.pid == root && (endpoints[c.remote] || endpoints[c.local]):
 			seenTunnel = true
 		default:
 			l := c.String() + fmt.Sprintf(" at +%ds", int(c.at.Sub(start).Seconds()))
@@ -279,7 +283,7 @@ func run() int {
 	if !seenTunnel {
 		// Both the engine run and -app start their tunnel during the check,
 		// so its traffic must show up.
-		fmt.Println("FAIL: the VPN tunnel's own traffic (UDP to " + endpoint + ") wasn't recorded, so nothing was verified")
+		fmt.Println("FAIL: the VPN tunnel's own traffic (UDP to " + setString(endpoints) + ") wasn't recorded, so nothing was verified")
 		return 1
 	}
 
@@ -496,20 +500,48 @@ func appEndpoint() (string, error) {
 // chosen when it connects; recordedEndpoint reads it after the run.
 var errAccountEndpoint = errors.New("the app uses a VPN account")
 
-// recordedEndpoint reads the server the app connected to during the run
-// (it writes vpn-endpoint in its settings folder on every connect).
-func recordedEndpoint(since time.Time) (string, error) {
+// startEndpointRecording makes the app note every VPN server it connects to
+// during the run (leakcheck-active; see App.recordEndpoint), so switching
+// provider during -app is covered. The returned func reads them and removes
+// both files.
+func startEndpointRecording() (read func() []string) {
 	cfgDir, _ := os.UserConfigDir()
-	p := filepath.Join(cfgDir, "SharkBiteTorrent", "vpn-endpoint")
-	fi, err := os.Stat(p)
-	if err != nil || fi.ModTime().Before(since.Add(-2*time.Second)) {
-		return "", errors.New("the app didn't record a VPN connection during the run (did it connect?); pass -endpoint ip:port")
+	dir := filepath.Join(cfgDir, "SharkBiteTorrent")
+	flagFile, list := filepath.Join(dir, "leakcheck-active"), filepath.Join(dir, "vpn-endpoint")
+	os.Remove(list)
+	os.WriteFile(flagFile, nil, 0o600)
+	return func() []string {
+		b, _ := os.ReadFile(list)
+		os.Remove(flagFile)
+		os.Remove(list)
+		var out []string
+		for _, l := range strings.Fields(string(b)) {
+			out = append(out, normalizeHostPort(l))
+		}
+		return out
 	}
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return "", err
+}
+
+// endpointSet is the servers the tunnel may send to: the one known before
+// the run plus those the app recorded.
+func endpointSet(known string, recorded []string) map[string]bool {
+	set := map[string]bool{}
+	if known != "" {
+		set[normalizeHostPort(known)] = true
 	}
-	return normalizeHostPort(strings.TrimSpace(string(b))), nil
+	for _, e := range recorded {
+		set[e] = true
+	}
+	return set
+}
+
+func setString(set map[string]bool) string {
+	var out []string
+	for e := range set {
+		out = append(out, e)
+	}
+	sort.Strings(out)
+	return strings.Join(out, ", ")
 }
 
 // controlConnection makes one loopback TCP connection and returns the
