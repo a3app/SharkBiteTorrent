@@ -28,7 +28,7 @@ jobs:
       - name: Frontend (build, type check, npm audit)
         working-directory: frontend
         run: |
-          npm ci
+          npm ci --ignore-scripts
           npm run build
           npx svelte-check --threshold error
           npm audit --audit-level=high
@@ -63,9 +63,11 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config
       - name: Frontend build (the Go code embeds it)
         working-directory: frontend
-        run: npm ci && npm run build
+        run: npm ci --ignore-scripts && npm run build
       - run: go vet -tags webkit2_41 ./...
       - run: go test -short -tags webkit2_41 ./...
+      - name: Race detector on the concurrent parts
+        run: go test -short -race ./internal/dnsroute ./internal/engine ./internal/search ./internal/secret .
 
   macos:
     runs-on: macos-26
@@ -78,6 +80,6 @@ jobs:
         with: { node-version: 24 }
       - name: Frontend build (the Go code embeds it)
         working-directory: frontend
-        run: npm ci && npm run build
+        run: npm ci --ignore-scripts && npm run build
       - run: go vet ./...
       - run: go test -short ./...

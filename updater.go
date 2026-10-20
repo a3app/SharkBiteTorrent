@@ -437,8 +437,14 @@ func (a *App) DownloadUpdate(version string, allowDirect bool) (DownloadedUpdate
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return out, err
 	}
-	final := filepath.Join(dir, asset)
-	tmp := final + ".download"
+	// A temporary file of its own (not following anything already there),
+	// renamed to a name that's free: nothing in Downloads is overwritten.
+	f, err := os.CreateTemp(dir, asset+".*.download")
+	if err != nil {
+		return out, err
+	}
+	tmp := f.Name()
+	f.Close()
 	got, err := download(ctx, hc, base+asset, tmp)
 	if err != nil {
 		os.Remove(tmp)
@@ -448,6 +454,7 @@ func (a *App) DownloadUpdate(version string, allowDirect bool) (DownloadedUpdate
 		os.Remove(tmp)
 		return out, errors.New("the download didn't match the release's signed checksum, so it was deleted")
 	}
+	final := freeName(dir, asset)
 	if err := os.Rename(tmp, final); err != nil {
 		os.Remove(tmp)
 		return out, err
@@ -464,5 +471,23 @@ func cleanUpdateTemp() {
 		if fi, err := os.Stat(d); err == nil && time.Since(fi.ModTime()) > time.Hour {
 			os.RemoveAll(d)
 		}
+	}
+}
+
+// freeName is dir/name, or "name (2)", "name (3)"… if that's taken.
+func freeName(dir, name string) string {
+	base, ext := name, ""
+	for _, e := range []string{".pkg.tar.zst", ".tar.gz", ".zip"} {
+		if b, ok := strings.CutSuffix(name, e); ok {
+			base, ext = b, e
+			break
+		}
+	}
+	p := filepath.Join(dir, name)
+	for i := 2; ; i++ {
+		if _, err := os.Lstat(p); errors.Is(err, os.ErrNotExist) {
+			return p
+		}
+		p = filepath.Join(dir, fmt.Sprintf("%s (%d)%s", base, i, ext))
 	}
 }

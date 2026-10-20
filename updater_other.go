@@ -34,7 +34,8 @@ func updateAsset(version, exe string) string {
 func installHint(path string) string {
 	switch {
 	case strings.HasSuffix(path, ".pkg.tar.zst"):
-		return "Install it with: sudo pacman -U '" + path + "'"
+		// Single-quoted for pasting into a shell, ' itself escaped.
+		return "Install it with: sudo pacman -U '" + strings.ReplaceAll(path, "'", `'\''`) + "'"
 	case strings.HasSuffix(path, ".zip"):
 		return "Open it and drag Shark BiteTorrent into Applications, replacing the old copy."
 	}
