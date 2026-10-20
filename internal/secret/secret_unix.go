@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/zalando/go-keyring"
 )
@@ -22,44 +23,78 @@ const (
 	keyringUser    = "file-encryption-key"
 )
 
+// errNoKeyring: there's no keyring at all (no Secret Service on Linux), as
+// opposed to one that's locked, still starting or refused access. Only then
+// do new secrets fall back to the key file.
+var errNoKeyring = errors.New("no system keyring")
+
+// keyRetry: how long a keyring error is reused before asking again, so a
+// keyring that's slow to start at sign-in is picked up without a restart.
+const keyRetry = 5 * time.Second
+
 var (
-	keyOnce sync.Once
-	key     []byte
-	keyErr  error
+	keyMu    sync.Mutex
+	key      []byte
+	keyErr   error
+	keyErrAt time.Time
 )
 
 // keyringKey loads the AES key from the OS keyring, creating it on first
-// use. A var so tests can stand in for a missing keyring.
+// use. Only success is kept. A var so tests can stand in for the keyring.
 var keyringKey = func() ([]byte, error) {
-	keyOnce.Do(func() {
-		s, err := keyring.Get(keyringService, keyringUser)
-		if errors.Is(err, keyring.ErrNotFound) {
-			k := make([]byte, 32)
-			if _, err = rand.Read(k); err != nil {
-				keyErr = err
-				return
-			}
-			if err = keyring.Set(keyringService, keyringUser, base64.StdEncoding.EncodeToString(k)); err != nil {
-				keyErr = fmt.Errorf("saving key to the system keyring: %w", err)
-				return
-			}
-			key = k
-			return
-		}
-		if err != nil {
-			keyErr = fmt.Errorf("reading key from the system keyring: %w", err)
-			return
-		}
-		key, keyErr = base64.StdEncoding.DecodeString(s)
-	})
-	return key, keyErr
+	keyMu.Lock()
+	defer keyMu.Unlock()
+	if key != nil {
+		return key, nil
+	}
+	if keyErr != nil && time.Since(keyErrAt) < keyRetry {
+		return nil, keyErr
+	}
+	k, err := loadKeyringKey()
+	if err != nil {
+		keyErr, keyErrAt = err, time.Now()
+		return nil, err
+	}
+	key, keyErr = k, nil
+	return k, nil
 }
 
-// KeyringMissing reports that there's no usable keyring, so new secrets are
+// loadKeyringKey is a var so tests can stand in for the keyring itself.
+var loadKeyringKey = func() ([]byte, error) {
+	s, err := keyring.Get(keyringService, keyringUser)
+	if errors.Is(err, keyring.ErrNotFound) {
+		k := make([]byte, 32)
+		if _, err := rand.Read(k); err != nil {
+			return nil, err
+		}
+		if err := keyring.Set(keyringService, keyringUser, base64.StdEncoding.EncodeToString(k)); err != nil {
+			return nil, keyringErr("saving key to the system keyring", err)
+		}
+		return k, nil
+	}
+	if err != nil {
+		return nil, keyringErr("reading key from the system keyring", err)
+	}
+	k, err := base64.StdEncoding.DecodeString(s)
+	if err != nil || len(k) != 32 {
+		return nil, errors.New("the key in the system keyring is damaged")
+	}
+	return k, nil
+}
+
+// keyringErr wraps errNoKeyring only if no keyring exists at all.
+func keyringErr(what string, err error) error {
+	if !keyringExists() {
+		return fmt.Errorf("%w (%s: %v)", errNoKeyring, what, err)
+	}
+	return fmt.Errorf("%s: %w", what, err)
+}
+
+// KeyringMissing reports that there's no keyring, so new secrets are
 // protected by the key file's permissions alone (shown in Settings).
 func KeyringMissing() bool {
 	_, err := keyringKey()
-	return err != nil
+	return errors.Is(err, errNoKeyring)
 }
 
 var (
@@ -148,11 +183,15 @@ func aead(k []byte) (cipher.AEAD, error) {
 func protect(plain []byte) ([]byte, bool, error) {
 	k, err := keyringKey()
 	keyFile := false
-	if err != nil {
+	if errors.Is(err, errNoKeyring) {
 		if k, err = fileKey(); err != nil {
 			return nil, false, fmt.Errorf("no system keyring and no key file: %w", err)
 		}
 		keyFile = true
+	} else if err != nil {
+		// A keyring exists but failed (locked, still starting, access
+		// refused): saving fails rather than quietly using the key file.
+		return nil, false, fmt.Errorf("%w (is the keyring unlocked?)", err)
 	}
 	g, err := aead(k)
 	if err != nil {

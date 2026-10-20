@@ -103,16 +103,17 @@
   async function save() {
     saving = true
     await attempt(async () => {
-      if (startup && !startup.viaWindowsSettings && startupOn !== startup.enabled) {
-        await SetStartup(startupOn)
-        startup.enabled = startupOn
-      }
       await SaveSettings(main.Settings.createFrom({
         ...s!,
         forwardedPort: Number(s!.forwardedPort) || 0,
         downLimitKB: Number(s!.downLimitKB) || 0,
         upLimitKB: Number(s!.upLimitKB) || 0,
       }))
+      // After the settings saved, so a refused save doesn't half-apply.
+      if (startup && !startup.viaWindowsSettings && startupOn !== startup.enabled) {
+        await SetStartup(startupOn)
+        startup.enabled = startupOn
+      }
       onClose()
     })
     saving = false
@@ -140,8 +141,9 @@
           {#if vpnChanged}<p class="note">Saving will reconnect the VPN. Torrents pick up where they left off.</p>{/if}
           {#if keyringMissing}
             <p class="muted small">
-              No system keyring (KWallet or GNOME Keyring) is running, so VPN keys and sign-ins are
-              encrypted with a key file only your user can read. Start a keyring for stronger protection.
+              No system keyring (KWallet, GNOME Keyring or another Secret Service) is available, so saved
+              secrets (VPN keys and sign-ins, the search API key, paired phones) are encrypted with a key file
+              only your user can read. Start a keyring for stronger protection.
             </p>
           {/if}
         </fieldset>

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Without a keyring, secrets go into files encrypted with a private key file,
@@ -22,7 +23,7 @@ func TestKeyFileFallback(t *testing.T) {
 	})
 	keyFilePath = func() (string, error) { return keyPath, nil }
 	fileKeyV = nil
-	keyringKey = func() ([]byte, error) { return nil, errors.New("no keyring") }
+	keyringKey = func() ([]byte, error) { return nil, errNoKeyring }
 
 	if !KeyringMissing() {
 		t.Error("KeyringMissing false without a keyring")
@@ -59,6 +60,64 @@ func TestKeyFileFallback(t *testing.T) {
 	keyringKey = func() ([]byte, error) { return nil, errors.New("keyring locked") }
 	if _, err := ReadFile(path); err == nil {
 		t.Error("keyring file read without the keyring")
+	}
+}
+
+// A keyring that exists but fails (locked, still starting, access refused)
+// never makes secrets fall back to the key file, and doesn't count as missing.
+func TestKeyringErrorNoFallback(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "secret.key")
+	oldPath, oldKeyring := keyFilePath, keyringKey
+	t.Cleanup(func() {
+		keyFilePath, keyringKey = oldPath, oldKeyring
+		fileKeyV = nil
+	})
+	keyFilePath = func() (string, error) { return keyPath, nil }
+	fileKeyV = nil
+	keyringKey = func() ([]byte, error) { return nil, errors.New("keyring locked") }
+
+	if KeyringMissing() {
+		t.Error("a locked keyring counted as missing")
+	}
+	if err := WriteFile(filepath.Join(t.TempDir(), "s.json"), []byte("x")); err == nil {
+		t.Error("saved without the keyring")
+	}
+	if _, err := os.Stat(keyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("key file created: %v", err)
+	}
+}
+
+// A keyring error is retried after keyRetry, not kept for the whole session.
+func TestKeyringRetry(t *testing.T) {
+	oldLoad := loadKeyringKey
+	t.Cleanup(func() {
+		loadKeyringKey = oldLoad
+		keyMu.Lock()
+		key, keyErr, keyErrAt = nil, nil, time.Time{}
+		keyMu.Unlock()
+	})
+	keyMu.Lock()
+	key, keyErr = nil, nil
+	keyMu.Unlock()
+	calls := 0
+	loadKeyringKey = func() ([]byte, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("still starting")
+		}
+		return bytes.Repeat([]byte{1}, 32), nil
+	}
+	if _, err := keyringKey(); err == nil {
+		t.Fatal("first call should fail")
+	}
+	if _, err := keyringKey(); err == nil || calls != 1 {
+		t.Fatalf("error not reused within keyRetry (calls %d)", calls)
+	}
+	keyMu.Lock()
+	keyErrAt = time.Now().Add(-keyRetry - time.Second)
+	keyMu.Unlock()
+	if k, err := keyringKey(); err != nil || len(k) != 32 || calls != 2 {
+		t.Fatalf("not retried: %v (calls %d)", err, calls)
 	}
 }
 

@@ -876,7 +876,8 @@ func (a *App) GetSettings() SettingsView {
 	v.Scanner, v.ScannerAvailable = scan.Scanner()
 	v.KeyringMissing = secret.KeyringMissing()
 	a.mu.Unlock()
-	for id, acc := range a.loadAccounts() {
+	accs, _ := a.loadAccounts()
+	for id, acc := range accs {
 		v.Accounts[id] = acc.Display
 	}
 	if data, err := secret.ReadFile(a.customConfPath()); err == nil {

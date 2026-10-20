@@ -9,10 +9,12 @@ Shark BiteTorrent doesn't collect, store or share any information about you. The
 Everything the app keeps is stored only on your own device:
 
 - your settings and download list;
-- your VPN sign-ins or imported WireGuard configuration, encrypted with your operating system's protection (Windows DPAPI, or the macOS/Linux keychain);
-- the address and API key of your own Prowlarr or Jackett, if you connect one (also encrypted).
+- your VPN sign-ins or imported WireGuard configuration, encrypted with your operating system's protection (Windows DPAPI, or a key kept in the macOS Keychain or your Linux desktop's keyring);
+- the address and API key of your own Prowlarr or Jackett, if you connect one, and the phones you pair for remote control (also encrypted).
 
-Uninstalling the app and deleting its settings folder removes all of it.
+On a Linux desktop with no keyring (some tiling window managers), the encryption key is instead kept in a file in the same settings folder that only your user account can read, and Settings says so. In that case anyone who gets a copy of the whole folder (a backup, say) can decrypt it.
+
+Uninstalling the app and deleting its settings folder removes all of it. If you turned on **Start when I sign in**, turn it off first: on macOS and Linux its sign-in entry lives outside the settings folder (the Windows uninstaller removes it for you).
 
 ## Who the app talks to
 

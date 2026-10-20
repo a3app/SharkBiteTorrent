@@ -17,12 +17,22 @@ import (
 
 func (a *App) accountsPath() string { return filepath.Join(a.configDir, "accounts.json") }
 
-func (a *App) loadAccounts() map[string]*vpnprov.Account {
+// loadAccounts returns the stored accounts. An error means accounts.json
+// exists but couldn't be read (keyring locked, damaged), so it mustn't be
+// saved over.
+func (a *App) loadAccounts() (map[string]*vpnprov.Account, error) {
 	accs := map[string]*vpnprov.Account{}
-	if data, err := secret.ReadFile(a.accountsPath()); err == nil {
-		json.Unmarshal(data, &accs)
+	data, err := secret.ReadFile(a.accountsPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return accs, nil
 	}
-	return accs
+	if err == nil {
+		err = json.Unmarshal(data, &accs)
+	}
+	if err != nil {
+		return accs, fmt.Errorf("couldn't read the saved VPN sign-ins (%v)", err)
+	}
+	return accs, nil
 }
 
 func (a *App) saveAccounts(accs map[string]*vpnprov.Account) error {
@@ -31,7 +41,8 @@ func (a *App) saveAccounts(accs map[string]*vpnprov.Account) error {
 }
 
 func (a *App) account(provider string) *vpnprov.Account {
-	return a.loadAccounts()[provider]
+	accs, _ := a.loadAccounts()
+	return accs[provider]
 }
 
 // --- Bound to the frontend ---
@@ -71,6 +82,12 @@ func (a *App) LoginVpnAccount(provider string, creds map[string]string) (LoginRe
 	if !ok {
 		return LoginResult{}, fmt.Errorf("unknown provider %q", provider)
 	}
+	// Checked before signing in, so a failure can't leave a new device
+	// registered at the provider and forgotten here.
+	accs, err := a.loadAccounts()
+	if err != nil {
+		return LoginResult{}, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	acc, err := p.Login(ctx, creds)
@@ -81,7 +98,6 @@ func (a *App) LoginVpnAccount(provider string, creds map[string]string) (LoginRe
 	if err != nil {
 		return LoginResult{}, err
 	}
-	accs := a.loadAccounts()
 	if old := accs[provider]; old != nil {
 		p.Logout(ctx, old) // free the previous device/session slot
 	}
@@ -95,7 +111,10 @@ func (a *App) LoginVpnAccount(provider string, creds map[string]string) (LoginRe
 // LogoutVpnAccount signs out and forgets the stored credentials. If that
 // account was in use, the app falls back to WARP.
 func (a *App) LogoutVpnAccount(provider string) error {
-	accs := a.loadAccounts()
+	accs, err := a.loadAccounts()
+	if err != nil {
+		return err
+	}
 	acc := accs[provider]
 	if acc == nil {
 		return nil
@@ -106,7 +125,6 @@ func (a *App) LogoutVpnAccount(provider string) error {
 		cancel()
 	}
 	delete(accs, provider)
-	var err error
 	if len(accs) == 0 {
 		err = os.Remove(a.accountsPath())
 	} else {
