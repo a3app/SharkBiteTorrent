@@ -454,11 +454,20 @@ func (a *App) DownloadUpdate(version string, allowDirect bool) (DownloadedUpdate
 		os.Remove(tmp)
 		return out, errors.New("the download didn't match the release's signed checksum, so it was deleted")
 	}
-	final := freeName(dir, asset)
-	if err := os.Rename(tmp, final); err != nil {
-		os.Remove(tmp)
-		return out, err
+	// os.Link fails if the name was taken meanwhile (rename would replace it).
+	var final string
+	for {
+		final = freeName(dir, asset)
+		err := os.Link(tmp, final)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, os.ErrExist) {
+			os.Remove(tmp)
+			return out, err
+		}
 	}
+	os.Remove(tmp)
 	platform.RevealPath(final, false)
 	return DownloadedUpdate{Path: final, Hint: installHint(final)}, nil
 }
@@ -470,6 +479,18 @@ func cleanUpdateTemp() {
 	for _, d := range dirs {
 		if fi, err := os.Stat(d); err == nil && time.Since(fi.ModTime()) > time.Hour {
 			os.RemoveAll(d)
+		}
+	}
+	// And unfinished update downloads (Linux, macOS) left in Downloads by a
+	// download that was cut off.
+	if home, err := os.UserHomeDir(); err == nil {
+		for _, pattern := range []string{"sharkbitetorrent-*.download", "SharkBiteTorrent-*.download"} {
+			files, _ := filepath.Glob(filepath.Join(home, "Downloads", pattern))
+			for _, f := range files {
+				if fi, err := os.Lstat(f); err == nil && fi.Mode().IsRegular() && time.Since(fi.ModTime()) > time.Hour {
+					os.Remove(f)
+				}
+			}
 		}
 	}
 }

@@ -33,9 +33,10 @@ var (
 type systemKey struct{}
 
 // WithSystem marks ctx so lookups made with it use the computer's DNS in
-// any mode: for a deliberately direct connection (WARP registration) whose
-// library has no resolver setting but passes the context through. Other
-// lookups in the process are unaffected.
+// any mode, the tunnel's included: for a deliberately direct connection
+// (WARP registration, which connects directly anyway) whose library has no
+// resolver setting but passes the context through. Other lookups in the
+// process are unaffected.
 func WithSystem(ctx context.Context) context.Context {
 	return context.WithValue(ctx, systemKey{}, true)
 }

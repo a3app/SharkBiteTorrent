@@ -118,9 +118,10 @@ type savedTorrent struct {
 	// so it waits until the user starts it. It isn't given to the engine
 	// until then: nothing (trackers, DHT, peers) is contacted. Name and Size
 	// are what the link or file says, for showing it meanwhile.
-	Confirm bool   `json:"confirm,omitempty"`
-	Name    string `json:"name,omitempty"`
-	Size    int64  `json:"size,omitempty"`
+	Confirm  bool           `json:"confirm,omitempty"`
+	Name     string         `json:"name,omitempty"`
+	Size     int64          `json:"size,omitempty"`
+	Warnings []scan.Warning `json:"warnings,omitempty"` // from a .torrent's file list, shown before Start
 	// Scan is the antivirus result once the torrent finished (nil = not yet).
 	Scan *scanRecord `json:"scan,omitempty"`
 }
@@ -757,7 +758,7 @@ func (a *App) ListTorrents() []engine.Status {
 	a.mu.Lock()
 	for _, s := range a.saved {
 		if s.Confirm {
-			list = append(list, engine.Status{Hash: s.Hash, Name: scan.StripBidiControls(s.Name), Size: s.Size, State: "paused"})
+			list = append(list, engine.Status{Hash: s.Hash, Name: scan.StripBidiControls(s.Name), Size: s.Size, State: "paused", Warnings: s.Warnings})
 		}
 	}
 	a.mu.Unlock()
@@ -810,9 +811,15 @@ func (a *App) addSourceFrom(src string, external bool) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", filepath.Base(src), err)
 		}
-		if info, err := mi.UnmarshalInfo(); err == nil {
-			pending = savedTorrent{Hash: mi.HashInfoBytes().HexString(), Name: info.BestName(), Size: info.TotalLength()}
+		info, err := mi.UnmarshalInfo()
+		if err != nil {
+			return fmt.Errorf("%s: not a valid .torrent file: %w", filepath.Base(src), err)
 		}
+		var files []scan.File
+		for _, f := range info.UpvertedFiles() {
+			files = append(files, scan.File{Path: f.DisplayPath(&info), Size: f.Length})
+		}
+		pending = savedTorrent{Hash: mi.HashInfoBytes().HexString(), Name: info.BestName(), Size: info.TotalLength(), Warnings: scan.Inspect(files)}
 		// Keep our own copy so the torrent survives the original being deleted.
 		dst := filepath.Join(a.configDir, "torrents", mi.HashInfoBytes().HexString()+".torrent")
 		if !strings.EqualFold(src, dst) {
@@ -1361,7 +1368,16 @@ func (a *App) GetPieceMap(hash string) ([]engine.PieceRun, error) {
 // servers to allow from vpn-endpoint afterwards, and removes both. Normal
 // use keeps no record of which servers were used.
 func (a *App) recordEndpoint(ep string) {
-	if _, err := os.Stat(filepath.Join(a.configDir, "leakcheck-active")); err != nil {
+	flagFile := filepath.Join(a.configDir, "leakcheck-active")
+	fi, err := os.Stat(flagFile)
+	if err != nil {
+		return
+	}
+	if time.Since(fi.ModTime()) > 6*time.Hour {
+		// Left behind by a check that didn't finish (no run takes this
+		// long): not a reason to keep recording servers.
+		os.Remove(flagFile)
+		os.Remove(filepath.Join(a.configDir, "vpn-endpoint"))
 		return
 	}
 	f, err := os.OpenFile(filepath.Join(a.configDir, "vpn-endpoint"), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)

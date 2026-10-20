@@ -151,6 +151,7 @@ func run() int {
 	if *app {
 		readEndpoints = startEndpointRecording()
 	}
+	defer func() { stopEndpointRecording() }()
 
 	restore, err := startAuditing()
 	if err != nil {
@@ -164,6 +165,7 @@ func run() int {
 		<-sig
 		fmt.Println("\ninterrupted")
 		restore()
+		stopEndpointRecording()
 		os.Exit(130)
 	}()
 	time.Sleep(time.Second) // let the audit policy take effect
@@ -510,10 +512,14 @@ func startEndpointRecording() (read func() []string) {
 	flagFile, list := filepath.Join(dir, "leakcheck-active"), filepath.Join(dir, "vpn-endpoint")
 	os.Remove(list)
 	os.WriteFile(flagFile, nil, 0o600)
-	return func() []string {
-		b, _ := os.ReadFile(list)
+	// However the check ends (an error, Ctrl+C), the app stops recording.
+	stopEndpointRecording = func() {
 		os.Remove(flagFile)
 		os.Remove(list)
+	}
+	return func() []string {
+		b, _ := os.ReadFile(list)
+		stopEndpointRecording()
 		var out []string
 		for _, l := range strings.Fields(string(b)) {
 			out = append(out, normalizeHostPort(l))
@@ -521,6 +527,10 @@ func startEndpointRecording() (read func() []string) {
 		return out
 	}
 }
+
+// stopEndpointRecording removes the files startEndpointRecording made; run
+// on every way out (deferred in run, and by the Ctrl+C handlers).
+var stopEndpointRecording = func() {}
 
 // endpointSet is the servers the tunnel may send to: the one known before
 // the run plus those the app recorded.

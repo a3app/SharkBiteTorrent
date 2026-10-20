@@ -146,6 +146,7 @@ func runLinux(secs int, selftest, app bool, exe, endpointFlag, childWarp string)
 	if app {
 		readEndpoints = startEndpointRecording()
 	}
+	defer func() { stopEndpointRecording() }()
 
 	fmt.Println("YOU: if sudo asks for your password, type it (it's needed for the firewall counters and the private DNS setup).")
 	if err := sudoInteractive("-v"); err != nil {
@@ -231,6 +232,7 @@ read go || exit 1; exec setpriv --reuid="$2" --regid="$3" --init-groups --inh-ca
 		fmt.Println("\ninterrupted")
 		stop()
 		cleanup()
+		stopEndpointRecording()
 		os.Exit(130)
 	}()
 

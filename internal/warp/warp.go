@@ -60,9 +60,6 @@ func Reregister(path string) (*Account, error) {
 	return acc, nil
 }
 
-// Register creates a new free WARP device with a freshly generated key.
-// The API call goes through wgcf, which mimics the official app's TLS
-// fingerprint and headers (Cloudflare rejects plain Go clients with 429).
 var directOnce sync.Once
 
 // directDNS makes wgcf's connections (a deliberate direct call: it's how a
@@ -78,6 +75,9 @@ func directDNS() {
 	}
 }
 
+// Register creates a new free WARP device with a freshly generated key.
+// The API call goes through wgcf, which mimics the official app's TLS
+// fingerprint and headers (Cloudflare rejects plain Go clients with 429).
 func Register() (*Account, error) {
 	priv, err := wireguard.NewPrivateKey()
 	if err != nil {

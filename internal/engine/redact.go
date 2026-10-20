@@ -12,6 +12,7 @@ import (
 // system journal, so the library's logs go through redactingLogger.
 
 var (
+	magnetLink  = regexp.MustCompile(`magnet:\?[^\s"']*`)
 	urlQuery    = regexp.MustCompile(`(\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s?#"']*)\?[^\s#"']*`)
 	longSegment = regexp.MustCompile(`/[A-Za-z0-9_-]{16,}(/|\b)`)
 )
@@ -19,6 +20,7 @@ var (
 // Redact removes query strings and passkey-like path segments from URLs
 // (for anything logged that may contain a torrent source or tracker).
 func Redact(s string) string {
+	s = magnetLink.ReplaceAllString(s, "magnet:?…") // its tr= parameters can carry passkeys
 	s = urlQuery.ReplaceAllString(s, "$1?…")
 	return longSegment.ReplaceAllString(s, "/…$1")
 }

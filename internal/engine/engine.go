@@ -318,13 +318,13 @@ func limitOf(n int64) rate.Limit {
 }
 
 type AddOptions struct {
-	Source  string // magnet link or path to a .torrent file
-	Dir     string // folder to save data in
+	Source string // magnet link or path to a .torrent file
+	Dir    string // folder to save data in
 	// Adopt: the torrent comes from the app's saved list; if it has no
 	// ownership record (saved by an older version), its existing files are
 	// adopted as its own (see ownership.go).
-	Adopt bool
-	Skipped []int  // file indexes not to download
+	Adopt   bool
+	Skipped []int // file indexes not to download
 	Paused  bool
 	// Recheck verifies data already on disk before downloading. Set it when
 	// restoring a torrent after a restart: the storage forgets the progress of
