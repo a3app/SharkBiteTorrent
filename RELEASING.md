@@ -23,7 +23,9 @@ Changes go to `main` as they're made (each user-visible one noted under **Unrele
 # bump wails.json productVersion and packaging/arch/PKGBUILD pkgver, commit
 git tag -a vX.Y.Z -m "Shark BiteTorrent X.Y.Z" && git push origin vX.Y.Z
 # wait for the Release workflow (creates a draft), then on the maintainer's computer:
-go run ./cmd/releasekey publish vX.Y.Z   # checks build provenance + hashes, signs, publishes
+git checkout vX.Y.Z                     # publish refuses anything but a clean checkout of the tag
+go run ./cmd/releasekey publish vX.Y.Z   # asks for the key's password; checks build provenance + hashes, signs, publishes
+git checkout main
 ```
 
 Check the draft's release notes before publishing.

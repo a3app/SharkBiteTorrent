@@ -3,8 +3,8 @@
 // account or a release's files are tampered with.
 //
 // The private key never goes into git or GitHub: it's kept on the
-// maintainer's computer, encrypted with the OS (DPAPI on Windows, the
-// keyring elsewhere), plus a password-protected backup kept offline.
+// maintainer's computer as a password-protected minisign key, plus a
+// password-protected backup kept offline.
 //
 //	go run ./cmd/releasekey init              new key; writes release.pub (commit it)
 //	go run ./cmd/releasekey backup <file>     password-protected copy for safekeeping
@@ -82,24 +82,80 @@ func usage() {
 	os.Exit(2)
 }
 
+// The key is stored as a standard password-protected minisign key (the same
+// format as a backup), so nothing else on the computer can use it: not the
+// torrent app, which shares the OS keyring entry older versions used.
+
+// loadKey asks for the key's password. A key saved by an older version
+// (encrypted with the app's keyring key) is moved to a password once.
 func loadKey() (minisign.PrivateKey, error) {
 	var k minisign.PrivateKey
-	data, err := secret.ReadFile(keyPath())
+	data, err := os.ReadFile(keyPath())
 	if err != nil {
 		return k, fmt.Errorf("no signing key on this computer (%v); run init or restore", err)
 	}
-	return k, k.UnmarshalText(data)
+	if !bytes.HasPrefix(data, []byte("untrusted comment:")) {
+		plain, err := secret.ReadFile(keyPath())
+		if err != nil {
+			return k, err
+		}
+		if err := k.UnmarshalText(plain); err != nil {
+			return k, err
+		}
+		fmt.Fprintln(os.Stderr, "The signing key is now protected by its own password. Choose one (you'll type it for every publish).")
+		if err := saveKey(k); err != nil {
+			return k, err
+		}
+		return k, nil
+	}
+	p, err := password("Signing key password: ")
+	if err != nil {
+		return k, err
+	}
+	return minisign.DecryptKey(p, data)
 }
 
+// saveKey asks for a new password and writes the encrypted key.
 func saveKey(k minisign.PrivateKey) error {
-	text, err := k.MarshalText()
+	p, err := newPassword("New password for the signing key: ")
+	if err != nil {
+		return err
+	}
+	enc, err := minisign.EncryptKey(p, k)
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(keyPath()), 0o700); err != nil {
 		return err
 	}
-	return secret.WriteFile(keyPath(), text)
+	return writeFileAtomic(keyPath(), enc)
+}
+
+func writeFileAtomic(path string, data []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// newPassword asks twice for a password of at least 12 characters.
+func newPassword(prompt string) (string, error) {
+	p1, err := password(prompt)
+	if err != nil {
+		return "", err
+	}
+	if len(p1) < 12 {
+		return "", errors.New("use at least 12 characters")
+	}
+	p2, err := password("Again: ")
+	if err != nil {
+		return "", err
+	}
+	if p1 != p2 {
+		return "", errors.New("passwords don't match")
+	}
+	return p1, nil
 }
 
 func writePub(k minisign.PrivateKey) error {
@@ -125,7 +181,7 @@ func initKey() error {
 	if err := writePub(priv); err != nil {
 		return err
 	}
-	fmt.Printf("Key %X saved (encrypted) to %s\nPublic key written to %s; commit it.\nNow make a backup: go run ./cmd/releasekey backup <file>\n", priv.ID(), keyPath(), pubKeyFile)
+	fmt.Printf("Key %X saved (password-protected) to %s\nPublic key written to %s; commit it.\nNow make a backup: go run ./cmd/releasekey backup <file>\n", priv.ID(), keyPath(), pubKeyFile)
 	return nil
 }
 
@@ -141,19 +197,9 @@ func backup(file string) error {
 	if err != nil {
 		return err
 	}
-	p1, err := password("Backup password: ")
+	p1, err := newPassword("Backup password: ")
 	if err != nil {
 		return err
-	}
-	if len(p1) < 12 {
-		return errors.New("use at least 12 characters")
-	}
-	p2, err := password("Again: ")
-	if err != nil {
-		return err
-	}
-	if p1 != p2 {
-		return errors.New("passwords don't match")
 	}
 	enc, err := minisign.EncryptKey(p1, k)
 	if err != nil {
@@ -171,6 +217,9 @@ func backup(file string) error {
 }
 
 func restore(file string) error {
+	if _, err := os.Stat(keyPath()); err == nil {
+		return fmt.Errorf("a key already exists at %s; move it away first if you really mean to replace it", keyPath())
+	}
 	data, err := os.ReadFile(file)
 	if err != nil {
 		return err
@@ -198,6 +247,20 @@ func publish(tag string) error {
 	if !tagPattern.MatchString(tag) {
 		return fmt.Errorf("not a release tag: %q", tag)
 	}
+	// The commit this computer's tag points to is what we trust; the draft's
+	// files must provably come from it. This tool must be that code too
+	// (go run builds it from the checkout), so the checkout must be the tag,
+	// unmodified.
+	commit, err := gitOut("rev-parse", tag+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("tag %s isn't in this repository: %w", tag, err)
+	}
+	if head, err := gitOut("rev-parse", "HEAD"); err != nil || head != commit {
+		return fmt.Errorf("check out the tag first (git checkout %s), so this tool runs the released code", tag)
+	}
+	if dirty, err := gitOut("status", "--porcelain"); err != nil || dirty != "" {
+		return errors.New("the checkout has local changes; publish from a clean checkout of the tag")
+	}
 	k, err := loadKey()
 	if err != nil {
 		return err
@@ -212,13 +275,6 @@ func publish(tag string) error {
 	}
 	if !pub.Equal(k.Public()) {
 		return errors.New("this computer's key doesn't match release.pub")
-	}
-
-	// The commit this computer's tag points to is what we trust; the draft's
-	// files must provably come from it.
-	commit, err := gitOut("rev-parse", tag+"^{commit}")
-	if err != nil {
-		return fmt.Errorf("tag %s isn't in this repository: %w", tag, err)
 	}
 
 	dir, err := os.MkdirTemp("", "releasekey-")
@@ -252,7 +308,13 @@ func publish(tag string) error {
 	if err := gh("release", "upload", tag, sigPath, "--repo", repo, "--clobber"); err != nil {
 		return err
 	}
-	if err := gh("release", "edit", tag, "--repo", repo, "--draft=false", "--latest"); err != nil {
+	// A pre-release (v0.3.0-rc1) mustn't become "latest": the app's update
+	// check follows /releases/latest.
+	flags := []string{"release", "edit", tag, "--repo", repo, "--draft=false", "--latest"}
+	if strings.Contains(tag, "-") {
+		flags = []string{"release", "edit", tag, "--repo", repo, "--draft=false", "--prerelease", "--latest=false"}
+	}
+	if err := gh(flags...); err != nil {
 		return err
 	}
 	fmt.Printf("Published %s with a signed %s.\n", tag, sumsAsset)
