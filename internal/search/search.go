@@ -333,21 +333,27 @@ func Fetch(ctx context.Context, c Config, r Result, tunnel Dialer) (source strin
 // LocalServers looks for Prowlarr or Jackett installed on this computer and
 // returns their address and API key from their own settings files.
 func LocalServers() []Config {
-	var dirs []string
+	var prowlarrFiles, jackettFiles []string
 	switch runtime.GOOS {
 	case "windows":
-		dirs = []string{os.Getenv("ProgramData")}
+		if d := os.Getenv("ProgramData"); d != "" {
+			prowlarrFiles = []string{filepath.Join(d, "Prowlarr", "config.xml")}
+			jackettFiles = []string{filepath.Join(d, "Jackett", "ServerConfig.json")}
+		}
 	default:
 		if home, err := os.UserHomeDir(); err == nil {
-			dirs = []string{filepath.Join(home, ".config")}
+			prowlarrFiles = []string{filepath.Join(home, ".config", "Prowlarr", "config.xml")}
+			jackettFiles = []string{filepath.Join(home, ".config", "Jackett", "ServerConfig.json")}
+		}
+		if runtime.GOOS == "linux" {
+			// Prowlarr installed as a system service (its install script, the
+			// Arch/AUR packages) keeps its world-readable settings here.
+			prowlarrFiles = append(prowlarrFiles, "/var/lib/prowlarr/config.xml")
 		}
 	}
 	var out []Config
-	for _, d := range dirs {
-		if d == "" {
-			continue
-		}
-		if b, err := os.ReadFile(filepath.Join(d, "Prowlarr", "config.xml")); err == nil {
+	for _, f := range prowlarrFiles {
+		if b, err := os.ReadFile(f); err == nil {
 			var x struct {
 				Port    int    `xml:"Port"`
 				URLBase string `xml:"UrlBase"`
@@ -359,9 +365,12 @@ func LocalServers() []Config {
 					port = 9696
 				}
 				out = append(out, Config{Kind: Prowlarr, URL: fmt.Sprintf("http://localhost:%d%s", port, strings.TrimRight(x.URLBase, "/")), APIKey: x.APIKey})
+				break
 			}
 		}
-		if b, err := os.ReadFile(filepath.Join(d, "Jackett", "ServerConfig.json")); err == nil {
+	}
+	for _, f := range jackettFiles {
+		if b, err := os.ReadFile(f); err == nil {
 			var j struct {
 				Port     int    `json:"Port"`
 				APIKey   string `json:"APIKey"`
@@ -373,6 +382,7 @@ func LocalServers() []Config {
 					port = 9117
 				}
 				out = append(out, Config{Kind: Jackett, URL: fmt.Sprintf("http://localhost:%d%s", port, strings.TrimRight(j.BasePath, "/")), APIKey: j.APIKey})
+				break
 			}
 		}
 	}
