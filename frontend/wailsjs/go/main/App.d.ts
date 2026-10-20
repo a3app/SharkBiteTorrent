@@ -88,6 +88,8 @@ export function ResumeAll():Promise<void>;
 
 export function SaveSettings(arg1:main.Settings):Promise<void>;
 
+export function ScanFully(arg1:string):Promise<void>;
+
 export function SearchTorrents(arg1:string,arg2:string):Promise<Array<search.Result>>;
 
 export function SetFilesWanted(arg1:string,arg2:Array<number>,arg3:boolean):Promise<void>;

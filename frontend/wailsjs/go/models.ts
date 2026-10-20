@@ -89,6 +89,8 @@ export namespace engine {
 	    scanEngine: string;
 	    threats: string[];
 	    scanError: string;
+	    tooLarge: string[];
+	    canScanFully: boolean;
 	    verifying: boolean;
 	    verifyProgress: number;
 	    verified?: VerifyResult;
@@ -116,6 +118,8 @@ export namespace engine {
 	        this.scanEngine = source["scanEngine"];
 	        this.threats = source["threats"];
 	        this.scanError = source["scanError"];
+	        this.tooLarge = source["tooLarge"];
+	        this.canScanFully = source["canScanFully"];
 	        this.verifying = source["verifying"];
 	        this.verifyProgress = source["verifyProgress"];
 	        this.verified = this.convertValues(source["verified"], VerifyResult);

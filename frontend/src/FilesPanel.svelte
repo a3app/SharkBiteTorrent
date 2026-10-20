@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { GetFiles, SetFilesWanted } from '../wailsjs/go/main/App.js'
+  import { GetFiles, SetFilesWanted, ScanFully } from '../wailsjs/go/main/App.js'
   import type { engine } from '../wailsjs/go/models'
   import { bytes } from './format'
   import PieceMap from './PieceMap.svelte'
@@ -11,6 +11,15 @@
   const noneWanted = $derived(files.every(f => !f.wanted))
   const warnings = $derived(torrent.warnings ?? [])
   const flagged = $derived(new Set(warnings.map(w => w.file)))
+  const tooLarge = $derived(torrent.tooLarge ?? [])
+
+  async function scanFully() {
+    try {
+      await ScanFully(torrent.hash)
+    } catch (e) {
+      onError(String(e))
+    }
+  }
 
   // Set when the panel closes or switches torrent, so a request still in
   // flight (e.g. for a torrent just removed) doesn't report an error.
@@ -72,6 +81,19 @@
         </div>
       {:else if torrent.scanState === 'error'}
         <div class="muted">Not scanned for malware: {torrent.scanError}.</div>
+      {:else if torrent.scanState === 'toolarge'}
+        <div class="caution">
+          ⚠ Too large to scan for malware: {tooLarge.join(', ')}.
+          {#if files.length > tooLarge.length}{torrent.scanEngine} found no threats in the other files.{/if}
+        </div>
+        {#if torrent.canScanFully}
+          <div>
+            <button class="link" onclick={scanFully}>Scan fully</button>
+            <span class="muted">(files up to 2 GB; can take a few minutes)</span>
+          </div>
+        {:else}
+          <div class="muted">{torrent.scanEngine} can't scan files over 2 GB.</div>
+        {/if}
       {/if}
       {#if torrent.verifying}
         <div class="muted">Verifying files on disk against the torrent's piece hashes… {Math.floor(torrent.verifyProgress * 100)}%</div>
@@ -154,6 +176,7 @@
   .safety .caution { color: var(--warn); }
   .safety .threat { color: var(--err); font-weight: 600; }
   .safety .ok { color: var(--ok); }
+  .safety .link { background: none; border: none; padding: 0; color: var(--accent); text-decoration: underline; }
   .flag { color: var(--warn); font-weight: 700; margin-right: 5px; }
   .list { overflow: auto; flex: 1; }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -21,7 +22,11 @@ type scanRecord struct {
 	Clean   bool     `json:"clean"`
 	Threats []string `json:"threats,omitempty"`
 	Error   string   `json:"error,omitempty"`
-	At      int64    `json:"at"` // unix seconds
+	// TooLarge: files ClamAV skipped because of their size; CanScanFully:
+	// "Scan fully" would check at least one of them.
+	TooLarge     []string `json:"tooLarge,omitempty"`
+	CanScanFully bool     `json:"canScanFully,omitempty"`
+	At           int64    `json:"at"` // unix seconds
 	// SFV is the .sfv check, if the torrent has one.
 	SFV *engine.SFVStatus `json:"sfv,omitempty"`
 }
@@ -92,27 +97,8 @@ func (a *App) checkFinished(ctx context.Context, eng *engine.Engine, t engine.St
 	case !available:
 		rec.Error = name + " isn't installed"
 	default:
-		a.mu.Lock()
-		if a.scanning == nil {
-			a.scanning = map[string]bool{}
-		}
-		a.scanning[t.Hash] = true
-		a.mu.Unlock()
-
-		sctx, cancel := context.WithTimeout(ctx, 2*time.Hour)
-		res, err := scan.ScanPath(sctx, p)
-		cancel()
-
-		a.mu.Lock()
-		delete(a.scanning, t.Hash)
-		a.mu.Unlock()
-		if ctx.Err() != nil {
+		if !a.runScan(ctx, t.Hash, p, false, rec) {
 			return // app quitting or VPN reconnecting: try again next time
-		}
-		if err != nil {
-			rec.Error = err.Error()
-		} else {
-			rec.Clean, rec.Threats = res.Clean, res.Threats
 		}
 	}
 
@@ -127,11 +113,89 @@ func (a *App) checkFinished(ctx context.Context, eng *engine.Engine, t engine.St
 		runtime.EventsEmit(a.ctx, "error", fmt.Sprintf(
 			"⚠ “%s”: %d file(s) don't match the torrent's .sfv checksums: %v", t.Name, len(sfvRes.Bad), sfvRes.Bad))
 	}
+	a.warnThreats(t.Name, rec)
+}
+
+// runScan scans p with the antivirus into rec, showing the torrent as
+// scanning meanwhile. It returns false if ctx ended first.
+func (a *App) runScan(ctx context.Context, hash, p string, full bool, rec *scanRecord) bool {
+	a.mu.Lock()
+	if a.scanning == nil {
+		a.scanning = map[string]bool{}
+	}
+	a.scanning[hash] = true
+	a.mu.Unlock()
+
+	sctx, cancel := context.WithTimeout(ctx, 2*time.Hour)
+	res, err := scan.ScanPath(sctx, p, full)
+	cancel()
+
+	a.mu.Lock()
+	delete(a.scanning, hash)
+	a.mu.Unlock()
+	if ctx.Err() != nil {
+		return false
+	}
+	if err != nil {
+		rec.Error = err.Error()
+	} else {
+		rec.Clean, rec.Threats = res.Clean, res.Threats
+		rec.TooLarge, rec.CanScanFully = res.TooLarge, res.CanScanFully
+	}
+	return true
+}
+
+func (a *App) warnThreats(name string, rec *scanRecord) {
 	if len(rec.Threats) > 0 {
 		runtime.EventsEmit(a.ctx, "error", fmt.Sprintf(
 			"⚠ %s found a threat in “%s”: %v. Don't open its files; consider removing it with its files.",
-			rec.Engine, t.Name, rec.Threats))
+			rec.Engine, name, rec.Threats))
 	}
+}
+
+// ScanFully scans a finished torrent again with the antivirus's size limits
+// raised, for files the normal scan skipped. It returns at once; progress
+// and the result show in the torrent list.
+func (a *App) ScanFully(hash string) error {
+	eng, err := a.engine()
+	if err != nil {
+		return err
+	}
+	p, _, ok := eng.ContentPath(hash)
+	if !ok {
+		return errors.New("torrent not found")
+	}
+	a.mu.Lock()
+	ctx := a.verifyCtx
+	s := a.savedFor(hash)
+	if s == nil || s.Scan == nil || !s.Scan.CanScanFully || a.scanning[hash] {
+		a.mu.Unlock()
+		return errors.New("nothing to scan")
+	}
+	rec := &scanRecord{Engine: s.Scan.Engine, At: time.Now().Unix(), SFV: s.Scan.SFV}
+	a.mu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	go func() {
+		if !a.runScan(ctx, hash, p, true, rec) {
+			return
+		}
+		a.mu.Lock()
+		if s := a.savedFor(hash); s != nil {
+			s.Scan = rec
+			a.writeSaved()
+		}
+		a.mu.Unlock()
+		name := hash
+		for _, t := range eng.List() {
+			if t.Hash == hash {
+				name = t.Name
+			}
+		}
+		a.warnThreats(name, rec)
+	}()
+	return nil
 }
 
 // checkSFV checks the torrent's .sfv file(s), if it has any; nil if not.
@@ -245,6 +309,8 @@ func (a *App) withScans(list []engine.Status) []engine.Status {
 			t.ScanState, t.Threats = "threat", s.Scan.Threats
 		case s.Scan.Error != "":
 			t.ScanState, t.ScanError = "error", s.Scan.Error
+		case len(s.Scan.TooLarge) > 0:
+			t.ScanState, t.TooLarge, t.CanScanFully = "toolarge", s.Scan.TooLarge, s.Scan.CanScanFully
 		case s.Scan.Clean:
 			t.ScanState = "clean"
 		}

@@ -10,6 +10,12 @@ type Result struct {
 	Engine  string   `json:"engine"` // e.g. "Microsoft Defender", "ClamAV"
 	Clean   bool     `json:"clean"`
 	Threats []string `json:"threats,omitempty"`
+	// TooLarge lists files the antivirus skipped because of its size limits
+	// (ClamAV). Clean then only means nothing was found in the rest.
+	TooLarge []string `json:"tooLarge,omitempty"`
+	// CanScanFully: a full scan (ScanPath with full set) would check at
+	// least one of the TooLarge files.
+	CanScanFully bool `json:"canScanFully,omitempty"`
 }
 
 // eachFile calls fn for p, or for every regular file under p if it's a folder.

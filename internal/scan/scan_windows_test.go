@@ -22,7 +22,7 @@ func TestDefenderClean(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	for _, p := range []string{f, dir} {
-		res, err := ScanPath(ctx, p)
+		res, err := ScanPath(ctx, p, false)
 		if err != nil || !res.Clean || len(res.Threats) != 0 {
 			t.Fatalf("%s: %+v, %v", p, res, err)
 		}

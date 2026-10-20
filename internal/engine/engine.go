@@ -553,10 +553,14 @@ type Status struct {
 	// Warnings from the file list (see scan.Inspect), known before downloading.
 	Warnings []scan.Warning `json:"warnings"`
 	// Antivirus scan of the finished files; filled in by the app.
-	ScanState  string   `json:"scanState"` // "", scanning, clean, threat, error
+	ScanState  string   `json:"scanState"` // "", scanning, clean, threat, error, toolarge
 	ScanEngine string   `json:"scanEngine"`
 	Threats    []string `json:"threats"`
 	ScanError  string   `json:"scanError"`
+	// toolarge: files the antivirus skipped for their size; CanScanFully if
+	// App.ScanFully would check at least one of them.
+	TooLarge     []string `json:"tooLarge"`
+	CanScanFully bool     `json:"canScanFully"`
 	// "Verify files" (see Engine.Verify): progress while running, then the
 	// last result. Bad pieces are downloaded again automatically.
 	Verifying      bool          `json:"verifying"`

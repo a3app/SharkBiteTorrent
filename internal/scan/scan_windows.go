@@ -26,8 +26,9 @@ func Scanner() (string, bool) {
 
 // ScanPath scans a file or folder with Microsoft Defender. Remediation is
 // disabled: Defender reports but doesn't quarantine, and the app tells the
-// user (real-time protection still acts on its own as usual).
-func ScanPath(ctx context.Context, p string) (Result, error) {
+// user (real-time protection still acts on its own as usual). Defender has
+// no size limits, so full makes no difference.
+func ScanPath(ctx context.Context, p string, full bool) (Result, error) {
 	res := Result{Engine: "Microsoft Defender"}
 	cmd := exec.CommandContext(ctx, mpCmdRun(), "-Scan", "-ScanType", "3", "-File", p, "-DisableRemediation")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000} // CREATE_NO_WINDOW

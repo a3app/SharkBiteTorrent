@@ -166,6 +166,10 @@ export function SaveSettings(arg1) {
   return window['go']['main']['App']['SaveSettings'](arg1);
 }
 
+export function ScanFully(arg1) {
+  return window['go']['main']['App']['ScanFully'](arg1);
+}
+
 export function SearchTorrents(arg1, arg2) {
   return window['go']['main']['App']['SearchTorrents'](arg1, arg2);
 }
