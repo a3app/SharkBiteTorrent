@@ -85,6 +85,7 @@ export namespace engine {
 	    peers: number;
 	    seeds: number;
 	    warnings: scan.Warning[];
+	    problem: string;
 	    scanState: string;
 	    scanEngine: string;
 	    threats: string[];
@@ -115,6 +116,7 @@ export namespace engine {
 	        this.peers = source["peers"];
 	        this.seeds = source["seeds"];
 	        this.warnings = this.convertValues(source["warnings"], scan.Warning);
+	        this.problem = source["problem"];
 	        this.scanState = source["scanState"];
 	        this.scanEngine = source["scanEngine"];
 	        this.threats = source["threats"];

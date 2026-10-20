@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/anacrolix/torrent/segments"
@@ -31,13 +32,104 @@ import (
 //
 // Files are written at their final names. Handles are closed and unfinished
 // buffers dropped when the torrent is dropped, so files can be deleted after.
+//
+// The store only writes into files it created for this torrent: if a file
+// at one of the torrent's paths already exists and isn't ours (no ownership
+// marker and no finished pieces), the torrent is blocked instead.
 type fileStore struct {
-	dir string // download folder for this torrent
-	pc  storage.PieceCompletion
+	dir      string // download folder for this torrent
+	pc       storage.PieceCompletion
+	ownedDir string // ownership markers, one per info hash; "" skips the check
+
+	mu      sync.Mutex
+	blocked error // set by OpenTorrent if the torrent mustn't write
 }
 
-func newFileStore(dir string, pc storage.PieceCompletion) *fileStore {
-	return &fileStore{dir: dir, pc: pc}
+func newFileStore(dir string, pc storage.PieceCompletion, ownedDir string) *fileStore {
+	return &fileStore{dir: dir, pc: pc, ownedDir: ownedDir}
+}
+
+// Blocked reports why the torrent may not write its files, if it may not.
+func (s *fileStore) Blocked() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.blocked
+}
+
+func (s *fileStore) block(err error) {
+	s.mu.Lock()
+	s.blocked = err
+	s.mu.Unlock()
+}
+
+// torrentPaths returns where each of the torrent's files goes under dir.
+// It refuses names that could leave dir, hide among the user's own files
+// (a top-level ".ssh" or ".bashrc" in a home folder), name the download
+// folder itself ("" or "."), or mean something special to the OS (Windows
+// device names like CON, ":" streams, trailing dots and spaces).
+func torrentPaths(dir string, info *metainfo.Info) ([]string, error) {
+	name := info.BestName()
+	if !safeName(name) || strings.HasPrefix(name, ".") {
+		return nil, fmt.Errorf("the torrent's name %q isn't safe to use as a file name", name)
+	}
+	var out []string
+	for _, fi := range info.UpvertedFiles() {
+		parts := []string{dir, name}
+		if info.IsDir() {
+			for _, c := range fi.BestPath() {
+				if !safeName(c) {
+					return nil, fmt.Errorf("the torrent has a file name that isn't safe: %q", strings.Join(fi.BestPath(), "/"))
+				}
+				parts = append(parts, c)
+			}
+		}
+		p := filepath.Join(parts...)
+		if !isSub(dir, p) || p == filepath.Clean(dir) {
+			return nil, fmt.Errorf("unsafe file path in torrent: %q", p)
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// safeName reports whether c is usable as one file or folder name.
+func safeName(c string) bool {
+	return c != "" && c != "." && filepath.IsLocal(c) &&
+		!strings.ContainsAny(c, `/\:`) && strings.IndexFunc(c, unicode.IsControl) < 0 &&
+		!strings.HasSuffix(c, ".") && !strings.HasSuffix(c, " ")
+}
+
+// claim checks that the torrent may write its files. A marker records that
+// the files are this app's, so restarts and re-adding keep working.
+func (s *fileStore) claim(ih metainfo.Hash, info *metainfo.Info, paths []string) error {
+	if s.ownedDir == "" {
+		return nil
+	}
+	marker := filepath.Join(s.ownedDir, ih.HexString())
+	if _, err := os.Stat(marker); err == nil {
+		return nil
+	}
+	if !anyComplete(s.pc, ih, info.NumPieces()) { // finished pieces: ours, from before markers
+		for _, p := range paths {
+			if _, err := os.Lstat(p); err == nil {
+				rel, _ := filepath.Rel(s.dir, p)
+				return fmt.Errorf("%q already exists in the download folder, and Shark BiteTorrent only writes into files it created. Move it away or choose another download folder, then add the torrent again", rel)
+			}
+		}
+	}
+	if err := os.MkdirAll(s.ownedDir, 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(marker, nil, 0o600)
+}
+
+func anyComplete(pc storage.PieceCompletion, ih metainfo.Hash, n int) bool {
+	for i := range n {
+		if c, err := pc.Get(metainfo.PieceKey{InfoHash: ih, Index: i}); err == nil && c.Ok && c.Complete {
+			return true
+		}
+	}
+	return false
 }
 
 const (
@@ -56,25 +148,19 @@ func (s *fileStore) OpenTorrent(_ context.Context, info *metainfo.Info, ih metai
 		handles: map[int]*handlePool{},
 		bufs:    map[int]*pieceBuf{},
 	}
+	paths, err := torrentPaths(s.dir, info)
+	if err == nil {
+		err = s.claim(ih, info, paths)
+	}
+	if err != nil {
+		// Blocked: no file is opened (see acquire), and the engine stops
+		// the torrent and shows why.
+		s.block(err)
+		ft.blocked = err
+		paths = make([]string, len(info.UpvertedFiles()))
+	}
+	ft.paths = paths
 	for _, fi := range info.UpvertedFiles() {
-		parts := []string{s.dir, info.BestName()}
-		if info.IsDir() {
-			parts = append(parts, fi.BestPath()...)
-		}
-		p := filepath.Join(parts...)
-		if !isSub(s.dir, p) {
-			return storage.TorrentImpl{}, fmt.Errorf("unsafe file path in torrent: %q", p)
-		}
-		// Older versions downloaded into "<name>.part" and renamed on
-		// completion; adopt those so in-progress downloads carry over. Their
-		// pieces aren't in the completion database yet, so the library
-		// verifies them once.
-		if _, err := os.Stat(p); errors.Is(err, fs.ErrNotExist) {
-			if _, err := os.Stat(p + ".part"); err == nil {
-				os.Rename(p+".part", p)
-			}
-		}
-		ft.paths = append(ft.paths, p)
 		ft.lengths = append(ft.lengths, fi.Length)
 	}
 	ft.freed = sync.NewCond(&ft.mu)
@@ -98,6 +184,7 @@ type fileTorrent struct {
 	index   segments.Index
 	paths   []string
 	lengths []int64
+	blocked error // see fileStore.claim; no file is opened if set
 
 	mu       sync.Mutex
 	freed    *sync.Cond          // signalled when a handle is released
@@ -135,6 +222,9 @@ type handlePool struct {
 func (t *fileTorrent) acquire(i int, create bool) (*os.File, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.blocked != nil {
+		return nil, t.blocked
+	}
 	for {
 		if t.closed {
 			return nil, errors.New("torrent storage closed")
@@ -389,6 +479,9 @@ func (p *filePiece) Completion() storage.Completion {
 	}
 	if !c.Ok || !c.Complete {
 		return c
+	}
+	if p.t.blocked != nil {
+		return storage.Completion{Ok: true, Complete: false}
 	}
 	ext := segments.Extent{Start: p.p.Offset(), Length: p.p.Length()}
 	for i, e := range p.t.index.LocateIter(ext) {

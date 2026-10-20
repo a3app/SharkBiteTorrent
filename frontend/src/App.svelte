@@ -181,7 +181,7 @@
   }
 
   const stateLabel: Record<string, string> = {
-    metadata: 'Fetching metadata', 'needs-torrent-file': '⚠ Needs .torrent file', downloading: 'Downloading', seeding: 'Seeding', paused: 'Paused',
+    metadata: 'Fetching metadata', 'needs-torrent-file': '⚠ Needs .torrent file', blocked: '⚠ Stopped', downloading: 'Downloading', seeding: 'Seeding', paused: 'Paused',
   }
 
   const limitText = $derived.by(() => {
@@ -328,11 +328,11 @@
                   <span>{(t.progress * 100).toFixed(1)}%</span>
                 </td>
                 <td
-                  class:warn={t.state === 'needs-torrent-file'}
+                  class:warn={t.state === 'needs-torrent-file' || t.state === 'blocked'}
                   class:threat={t.scanState === 'threat'}
                   title={t.state === 'needs-torrent-file'
                     ? "Peers are connected but won't share the file list. This usually means a private torrent, which can't start from a magnet link. Download its .torrent file and open that instead."
-                    : ''}
+                    : t.state === 'blocked' ? t.problem : ''}
                 >{statusText(t)}</td>
                 <td>{rate(t.downRate)}</td>
                 <td>{rate(t.upRate)}</td>

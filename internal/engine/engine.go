@@ -55,6 +55,7 @@ type Engine struct {
 	tun      *tunnel.Tunnel
 	down, up *rate.Limiter
 	pc       storage.PieceCompletion // shared by all torrents; persists progress
+	ownedDir string                  // fileStore ownership markers ("" without StateDir)
 
 	mu      sync.Mutex
 	entries map[metainfo.Hash]*entry
@@ -64,7 +65,7 @@ type Engine struct {
 type entry struct {
 	t         *torrent.Torrent
 	dir       string
-	storage   storage.ClientImpl
+	storage   *fileStore
 	paused    bool
 	skipped   map[int]bool // file indexes the user doesn't want
 	added     time.Time
@@ -113,6 +114,7 @@ func New(tun *tunnel.Tunnel, opts Options) (*Engine, error) {
 	}
 	e.SetLimits(opts.DownLimit, opts.UpLimit)
 	if opts.StateDir != "" {
+		e.ownedDir = filepath.Join(opts.StateDir, "owned")
 		pc, err := storage.NewBoltPieceCompletion(opts.StateDir)
 		if err != nil {
 			return nil, fmt.Errorf("opening download progress database: %w", err)
@@ -220,6 +222,7 @@ func newDirect(opts Options) (*Engine, error) {
 	}
 	e.SetLimits(opts.DownLimit, opts.UpLimit)
 	if opts.StateDir != "" {
+		e.ownedDir = filepath.Join(opts.StateDir, "owned")
 		pc, err := storage.NewBoltPieceCompletion(opts.StateDir)
 		if err != nil {
 			return nil, fmt.Errorf("opening download progress database: %w", err)
@@ -342,7 +345,7 @@ func (e *Engine) Add(o AddOptions) (string, error) {
 		e.mu.Unlock()
 		return spec.InfoHash.HexString(), nil
 	}
-	st := newFileStore(o.Dir, e.pc)
+	st := newFileStore(o.Dir, e.pc, e.ownedDir)
 	spec.Storage = st
 	en := &entry{dir: o.Dir, storage: st, paused: o.Paused, skipped: map[int]bool{}, added: time.Now()}
 	for _, i := range o.Skipped {
@@ -366,6 +369,11 @@ func (e *Engine) Add(o AddOptions) (string, error) {
 	go func() {
 		select {
 		case <-t.GotInfo():
+			if st.Blocked() != nil {
+				t.DisallowDataDownload() // its files aren't safe to write (shown in the list)
+				t.DisallowDataUpload()
+				return
+			}
 			if o.Recheck {
 				recheck(en)
 			}
@@ -425,6 +433,9 @@ func (e *Engine) Resume(hash string) error {
 	if err != nil {
 		return err
 	}
+	if err := en.storage.Blocked(); err != nil {
+		return err
+	}
 	e.mu.Lock()
 	en.paused = false
 	e.mu.Unlock()
@@ -433,26 +444,25 @@ func (e *Engine) Resume(hash string) error {
 	return nil
 }
 
-// Remove drops the torrent. If deleteFiles is set, its downloaded data
-// (including .part files) is deleted too.
+// Remove drops the torrent. If deleteFiles is set, its downloaded files are
+// deleted too: exactly the files it wrote, then any of its folders left
+// empty. Never a whole folder, which may hold other things (another torrent
+// with the same name, the user's own files).
 func (e *Engine) Remove(hash string, deleteFiles bool) error {
 	en, err := e.find(hash)
 	if err != nil {
 		return err
 	}
 	var paths []string
-	if info := en.t.Info(); info != nil && deleteFiles {
-		name := info.BestName()
-		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
-			return fmt.Errorf("refusing to delete files for torrent with unsafe name %q", name)
+	info := en.t.Info()
+	if info != nil && deleteFiles && en.storage.Blocked() == nil {
+		if paths, err = torrentPaths(en.dir, info); err != nil {
+			return err
 		}
-		p := filepath.Join(en.dir, name)
-		paths = []string{p, p + ".part"}
 	}
 	e.mu.Lock()
 	delete(e.entries, en.t.InfoHash())
 	e.mu.Unlock()
-	info := en.t.Info()
 	en.t.Drop() // closes the storage, releasing its file handles
 	if info != nil {
 		// Forget its progress, so re-adding it later starts clean.
@@ -460,13 +470,27 @@ func (e *Engine) Remove(hash string, deleteFiles bool) error {
 			e.pc.Set(metainfo.PieceKey{InfoHash: en.t.InfoHash(), Index: i}, false)
 		}
 	}
+	if !deleteFiles {
+		return nil // the marker stays: re-adding may use these files again
+	}
+	if e.ownedDir != "" && en.storage.Blocked() == nil {
+		os.Remove(filepath.Join(e.ownedDir, en.t.InfoHash().HexString()))
+	}
 
+	return removeFiles(en.dir, paths)
+}
+
+// removeFiles deletes paths (files inside dir), then their folders that are
+// left empty, deepest first, never dir itself or anything outside it.
+func removeFiles(dir string, paths []string) error {
 	var errs []error
+	dirs := map[string]bool{}
 	for _, p := range paths {
 		// Windows can hold file handles briefly after Drop; retry a little.
 		var err error
 		for range 10 {
-			if err = os.RemoveAll(p); err == nil {
+			if err = os.Remove(p); err == nil || errors.Is(err, os.ErrNotExist) {
+				err = nil
 				break
 			}
 			time.Sleep(200 * time.Millisecond)
@@ -474,6 +498,18 @@ func (e *Engine) Remove(hash string, deleteFiles bool) error {
 		if err != nil {
 			errs = append(errs, err)
 		}
+		for d := filepath.Dir(p); d != filepath.Clean(dir) && isSub(dir, d); d = filepath.Dir(d) {
+			dirs[d] = true
+		}
+	}
+	// Deepest first; os.Remove only removes empty folders.
+	sorted := make([]string, 0, len(dirs))
+	for d := range dirs {
+		sorted = append(sorted, d)
+	}
+	sort.Slice(sorted, func(i, j int) bool { return len(sorted[i]) > len(sorted[j]) })
+	for _, d := range sorted {
+		os.Remove(d)
 	}
 	return errors.Join(errs...)
 }
@@ -552,6 +588,8 @@ type Status struct {
 	Seeds    int     `json:"seeds"`
 	// Warnings from the file list (see scan.Inspect), known before downloading.
 	Warnings []scan.Warning `json:"warnings"`
+	// Problem: why the torrent is stopped (state "blocked").
+	Problem string `json:"problem"`
 	// Antivirus scan of the finished files; filled in by the app.
 	ScanState  string   `json:"scanState"` // "", scanning, clean, threat, error, toolarge
 	ScanEngine string   `json:"scanEngine"`
@@ -650,7 +688,10 @@ func (e *Engine) List() []Status {
 				row.Progress = 1
 			}
 		}
+		blocked := en.storage.Blocked()
 		switch {
+		case blocked != nil:
+			row.State, row.Problem = "blocked", blocked.Error()
 		case en.paused:
 			row.State = "paused"
 		case en.checking.Load():
@@ -797,6 +838,9 @@ func (e *Engine) FilePaths(hash string) (map[string]string, error) {
 	if info == nil {
 		return nil, errors.New("the torrent's file list isn't known yet")
 	}
+	if _, err := torrentPaths(en.dir, info); err != nil {
+		return nil, err
+	}
 	root := filepath.Join(en.dir, info.BestName())
 	out := map[string]string{}
 	e.mu.Lock()
@@ -826,6 +870,9 @@ func (e *Engine) ContentPath(hash string) (path string, isDir bool, ok bool) {
 	info := en.t.Info()
 	if info == nil {
 		return en.dir, true, false
+	}
+	if _, err := torrentPaths(en.dir, info); err != nil {
+		return "", false, false // an unsafe name could point at the download folder itself
 	}
 	return filepath.Join(en.dir, info.BestName()), info.IsDir(), true
 }

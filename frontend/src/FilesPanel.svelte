@@ -71,8 +71,11 @@
     <b title={torrent.name}>{torrent.name || torrent.hash}</b>
     <span class="muted">{files.length} file{files.length === 1 ? '' : 's'}</span>
   </div>
-  {#if warnings.length > 0 || torrent.scanState || torrent.verified || torrent.verifying || torrent.sfv}
+  {#if warnings.length > 0 || torrent.scanState || torrent.verified || torrent.verifying || torrent.sfv || torrent.problem}
     <div class="safety">
+      {#if torrent.problem}
+        <div class="caution">⚠ Stopped: {torrent.problem}</div>
+      {/if}
       {#each warnings as w (w.file)}
         <div class="caution">⚠ <b>{w.file}</b>: {w.reason}</div>
       {/each}
