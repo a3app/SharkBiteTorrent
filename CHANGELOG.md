@@ -2,7 +2,7 @@
 
 What changed in each release of Shark BiteTorrent. The release notes on GitHub are taken from this file, so every release's section should say what users will notice.
 
-## [Unreleased]
+## [0.2.36] - 2026-10-19
 
 ### Fixed
 - Removing some torrents (such as CachyOS's) closed the app. These torrents also list web mirrors, and the torrent library crashes when one is removed while it's using them. Mirrors (web seeds) are now turned off; downloads come from peers as usual.
