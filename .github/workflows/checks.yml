@@ -48,3 +48,36 @@ jobs:
         run: scripts/check-webview2-patch.sh
       - name: govulncheck (known vulnerabilities in code the app calls)
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  # The Linux and macOS code (build-tagged files: keyring, autostart, file
+  # associations, ClamAV, leakcheck) is tested on its own platform.
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with: { go-version-file: go.mod }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 24 }
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config
+      - name: Frontend build (the Go code embeds it)
+        working-directory: frontend
+        run: npm ci && npm run build
+      - run: go vet -tags webkit2_41 ./...
+      - run: go test -short -tags webkit2_41 ./...
+
+  macos:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with: { go-version-file: go.mod }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 24 }
+      - name: Frontend build (the Go code embeds it)
+        working-directory: frontend
+        run: npm ci && npm run build
+      - run: go vet ./...
+      - run: go test -short ./...

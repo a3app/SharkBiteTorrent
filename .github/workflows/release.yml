@@ -27,7 +27,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with: { go-version-file: go.mod }
+        # No cache: a release must not build from a cache another workflow wrote.
+        with: { go-version-file: go.mod, cache: false }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 24 }
       - name: Set version from tag
@@ -36,11 +37,16 @@ jobs:
         run: |
           sed -i "s/\"productVersion\": \"[^\"]*\"/\"productVersion\": \"${GITHUB_REF_NAME#v}\"/" wails.json
       - run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
-      - run: choco install nsis --version=3.13.0 -y --no-progress
+      - name: Install NSIS 3.13 (official zip, checked against a pinned SHA-256)
+        shell: bash
+        run: |
+          curl -sSfL -o nsis.zip "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.13/nsis-3.13.zip"
+          echo "ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8  nsis.zip" | sha256sum -c -
+          unzip -q nsis.zip -d "$RUNNER_TEMP"
       - name: Build
         shell: bash
         run: |
-          export PATH="$PATH:/c/Program Files (x86)/NSIS"
+          export PATH="$PATH:$RUNNER_TEMP/nsis-3.13"
           wails build -clean -trimpath -ldflags "-s -w" -nsis -installscope user
           ls -la build/bin
           go run scripts/check-pe-imports.go build/bin/SharkBiteTorrent.exe
@@ -62,7 +68,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with: { go-version-file: go.mod }
+        # No cache: a release must not build from a cache another workflow wrote.
+        with: { go-version-file: go.mod, cache: false }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 24 }
       - name: Install build dependencies
@@ -88,6 +95,9 @@ jobs:
           cp build/appicon.png "dist/$name/sharkbitetorrent.png"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           cp packaging/arch/PKGBUILD dist/
+          # The shipped PKGBUILD checks the tarball (the repo copy says SKIP).
+          sum=$(sha256sum "dist/$name.tar.gz" | cut -d' ' -f1)
+          sed -i "s/^sha256sums=.*/sha256sums=('$sum')/" dist/PKGBUILD
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-tarball
@@ -99,7 +109,9 @@ jobs:
     # Wraps the same binary in a pacman package for Arch / CachyOS.
     needs: linux
     runs-on: ubuntu-24.04
-    container: archlinux:base-devel
+    # Pinned by digest (base-devel-20261004.0.606936), so a changed tag can't
+    # change what builds the package.
+    container: archlinux:base-devel@sha256:996c3a1d6b0d87b01242f6fcd8cfa3ad3eece1a67ab5c8f108e20af1d7b97bdd
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with: { name: linux-tarball, path: pkg }
@@ -133,7 +145,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with: { go-version-file: go.mod }
+        # No cache: a release must not build from a cache another workflow wrote.
+        with: { go-version-file: go.mod, cache: false }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 24 }
       - name: Set version from tag
@@ -159,7 +172,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with: { go-version-file: go.mod }
+        # No cache: a release must not build from a cache another workflow wrote.
+        with: { go-version-file: go.mod, cache: false }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 24 }
       - name: Set version from tag
@@ -232,7 +246,9 @@ jobs:
           # A draft: the maintainer signs SHA256SUMS.txt on their own computer
           # (go run ./cmd/releasekey publish <tag>), which also publishes it.
           # The in-app updater only installs releases with a valid signature.
-          gh release create "$GITHUB_REF_NAME" artifacts/* --draft \
+          pre=""
+          case "$GITHUB_REF_NAME" in *-*) pre="--prerelease";; esac # v0.3.0-rc1
+          gh release create "$GITHUB_REF_NAME" artifacts/* --draft $pre \
             --repo "$GITHUB_REPOSITORY" \
             --title "Shark BiteTorrent $v" \
             --notes-file notes.md
