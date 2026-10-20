@@ -40,15 +40,19 @@ func SetStartup(exe string, on bool) error {
 		}
 		return nil
 	}
+	execPath, err := desktopExec(exe)
+	if err != nil {
+		return err
+	}
 	entry := fmt.Sprintf(`[Desktop Entry]
 Type=Application
 Name=Shark BiteTorrent
 Comment=Start Shark BiteTorrent in the tray
-Exec="%s" %s
+Exec=%s %s
 Icon=sharkbitetorrent
 Terminal=false
 X-GNOME-Autostart-enabled=true
-`, exe, AutostartArg)
+`, execPath, AutostartArg)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
@@ -61,7 +65,7 @@ func RefreshStartup(exe string) {
 		return
 	}
 	if m := execLine.FindSubmatch(b); m != nil {
-		if _, err := os.Stat(string(m[1])); err != nil && StartupEnabled() {
+		if _, err := os.Stat(string(m[1])); err != nil && StartupEnabled() && !inWorldWritableDir(exe) {
 			SetStartup(exe, true)
 		}
 	}

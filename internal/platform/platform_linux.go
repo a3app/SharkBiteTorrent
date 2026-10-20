@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"sharkbite/internal/systool"
 )
@@ -30,17 +31,30 @@ func desktopPath() string {
 	return filepath.Join(dir, "applications", desktopID)
 }
 
+// desktopExec quotes exe for a .desktop Exec= line. Paths with characters
+// that format treats specially are refused rather than escaped.
+func desktopExec(exe string) (string, error) {
+	if strings.ContainsAny(exe, "\"`$\\%") || strings.IndexFunc(exe, unicode.IsControl) >= 0 {
+		return "", fmt.Errorf("the app's path %q has characters a desktop entry can't hold (\" ` $ \\ %%); move the app to another folder", exe)
+	}
+	return `"` + exe + `"`, nil
+}
+
 func RegisterAssociations(exe string) error {
+	execPath, err := desktopExec(exe)
+	if err != nil {
+		return err
+	}
 	entry := fmt.Sprintf(`[Desktop Entry]
 Type=Application
 Name=Shark BiteTorrent
 Comment=BitTorrent client with a built-in VPN
-Exec="%s" %%u
+Exec=%s %%u
 Icon=sharkbitetorrent
 Terminal=false
 Categories=Network;FileTransfer;P2P;
 MimeType=%s;
-`, exe, strings.Join(mimeTypes, ";"))
+`, execPath, strings.Join(mimeTypes, ";"))
 	p := desktopPath()
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err

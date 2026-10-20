@@ -62,7 +62,7 @@ func RefreshStartup(exe string) {
 		return
 	}
 	if m := agentProgram.FindSubmatch(b); m != nil {
-		if _, err := os.Stat(html.UnescapeString(string(m[1]))); err != nil {
+		if _, err := os.Stat(html.UnescapeString(string(m[1]))); err != nil && !inWorldWritableDir(exe) {
 			SetStartup(exe, true)
 		}
 	}
