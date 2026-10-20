@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -258,6 +259,9 @@ type preparedConn struct {
 	account      string   // and with which account (see accountKey)
 	realIP, home string
 	conn         *vpnprov.Connection
+	// customEndpoint: a WireGuard config's server name, resolved through the
+	// VPN that's still up when switching ("" if not needed or no VPN was up).
+	customEndpoint string
 }
 
 // prepareConn does the steps of connecting that talk to the provider's API
@@ -290,7 +294,49 @@ func (a *App) prepareConn(set Settings) (*preparedConn, error) {
 		}
 		p.conn = c
 	}
+	if set.VpnProvider == "custom" {
+		p.customEndpoint = a.resolveThroughTunnel()
+	}
 	return p, nil
+}
+
+// resolveThroughTunnel looks up the imported WireGuard config's server name
+// through the running VPN, so switching doesn't ask the system's DNS. With
+// no VPN up (first connect) it returns "" and the tunnel resolves the name
+// itself with the system's DNS (see PRIVACY.md).
+func (a *App) resolveThroughTunnel() string {
+	a.mu.Lock()
+	tun := a.tun
+	a.mu.Unlock()
+	if tun == nil {
+		return ""
+	}
+	data, err := secret.ReadFile(a.customConfPath())
+	if err != nil {
+		return ""
+	}
+	cfg, err := tunnel.ParseWGQuick(string(data))
+	if err != nil {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(cfg.Endpoint)
+	if err != nil || net.ParseIP(host) != nil {
+		return "" // already an address
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	addrs, err := tun.Net().LookupContextHost(ctx, host)
+	if err != nil || len(addrs) == 0 {
+		return ""
+	}
+	pick := addrs[0]
+	for _, ad := range addrs { // IPv4 works on more networks
+		if ip := net.ParseIP(ad); ip != nil && ip.To4() != nil {
+			pick = ad
+			break
+		}
+	}
+	return net.JoinHostPort(pick, port)
 }
 
 // accountKey identifies a signed-in account, so a connection prepared with
@@ -360,6 +406,9 @@ func (a *App) connectPrepared(prep *preparedConn) {
 		if cfg, err = tunnel.ParseWGQuick(string(data)); err != nil {
 			fail(err)
 			return
+		}
+		if prep.customEndpoint != "" {
+			cfg.Endpoint = prep.customEndpoint
 		}
 	case "account":
 		cfg = conn.Config

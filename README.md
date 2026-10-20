@@ -98,7 +98,7 @@ flowchart LR
 
 1. **WireGuard runs inside the app.** `wireguard-go` is paired with gVisor's userspace network stack, the same approach Tailscale uses. The app gets a private, in-memory network interface that the operating system doesn't know about.
 2. **The torrent engine only has that interface.** All of `anacrolix/torrent`'s own sockets (TCP, uTP, DHT, UPnP, WebRTC) are disabled, and the app supplies tunnel-backed replacements for peer connections, HTTP and UDP trackers and DHT. (Web seeds, HTTP mirrors listed in some torrents, are turned off: the library crashes when such a torrent is removed.)
-3. **DNS goes through the tunnel too.** Every hostname lookup in the process goes to the VPN's DNS server, so your ISP doesn't see which trackers you contact.
+3. **DNS goes through the tunnel too.** Every lookup the torrent engine makes (trackers, DHT bootstrap) goes to the VPN's DNS server, so your ISP doesn't see which trackers you contact; while the VPN is reconnecting, those lookups are blocked rather than sent to your ISP. The few things that deliberately use your normal connection, listed in [PRIVACY.md](PRIVACY.md), look names up with your system's DNS.
 4. **Verification before anything starts.** After connecting, the app fetches its exit IP through the tunnel and checks it: `warp=on` for WARP, and for other providers, an IP different from your real one. Only then does the engine start.
 
 We checked this with the OS's own socket list: while downloading, the app's **only** real network socket is the WireGuard UDP socket to the VPN server.
