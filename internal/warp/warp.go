@@ -3,9 +3,12 @@
 package warp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
+	"sync"
 
 	"github.com/ViRb3/wgcf/v2/cloudflare"
 	"github.com/ViRb3/wgcf/v2/wireguard"
@@ -60,14 +63,27 @@ func Reregister(path string) (*Account, error) {
 // Register creates a new free WARP device with a freshly generated key.
 // The API call goes through wgcf, which mimics the official app's TLS
 // fingerprint and headers (Cloudflare rejects plain Go clients with 429).
+var directOnce sync.Once
+
+// directDNS makes wgcf's connections (a deliberate direct call: it's how a
+// WARP tunnel comes to exist) look Cloudflare's API up with the computer's
+// DNS. wgcf's dialer has no resolver setting, but it passes the request's
+// context on to the lookup, which dnsroute.WithSystem marks; nothing else
+// in the process is affected.
+func directDNS() {
+	t := cloudflare.DefaultTransport
+	dial := t.DialTLSContext
+	t.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dial(dnsroute.WithSystem(ctx), network, addr)
+	}
+}
+
 func Register() (*Account, error) {
 	priv, err := wireguard.NewPrivateKey()
 	if err != nil {
 		return nil, err
 	}
-	// A deliberate direct call (how a WARP tunnel comes to exist), and wgcf's
-	// dialer has no resolver setting, so let default lookups through.
-	defer dnsroute.AllowSystem()()
+	directOnce.Do(directDNS)
 	r, err := cloudflare.Register(priv.Public(), "PC")
 	if err != nil {
 		return nil, fmt.Errorf("warp register: %w", err)

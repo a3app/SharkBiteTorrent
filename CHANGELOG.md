@@ -10,7 +10,7 @@ What changed in each release of Shark BiteTorrent. The release notes on GitHub a
 
 ### Fixed
 - The check for disguised programs catches more tricks: names ending in a dot or space ("movie.mp4.exe."), invisible characters that reverse text so "gpj.exe" shows as "exe.jpg" (also removed from the names the app shows), and more risky file types (.url, .scf, .chm, disk images, macro documents, scripts).
-- HTTPS trackers' certificates are now checked (the torrent library skipped the check), so nobody between the VPN and a private tracker can read your passkey. Tracker addresses in the app's logs no longer include passkeys.
+- HTTPS trackers' certificates are now checked (the torrent library skipped the check), with or without the VPN, so nobody in between can read a private tracker's passkey. Tracker addresses in the app's logs no longer include passkeys.
 - The app's window is now restricted to the app's own content (a Content-Security-Policy), so it can never load anything from the internet, on any platform.
 - Windows: **Update now** installs into the folder the app is in. If you'd installed it somewhere other than the default, updates used to go to the default folder, leaving the old copy behind. The installer also waits for the app to close before forcing it, so it doesn't interrupt saving your torrent list.
 - Magnet links and .torrent files opened from your browser or file manager now wait for you, with a banner to **Start** or **Remove** them: nothing is contacted (trackers, peers) until you press Start, so a web page can't start a download, or make the app announce itself to a tracker, on its own. Dropping a file on the window or adding from inside the app starts it right away, as before.

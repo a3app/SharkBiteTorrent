@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync/atomic"
 	"testing"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -11,13 +12,13 @@ import (
 
 func TestModes(t *testing.T) {
 	t.Cleanup(UseSystem)
-	var tunneled bool
+	var tunneled atomic.Bool // A and AAAA lookups run at once
 	UseTunnel(func(context.Context, string) (net.Conn, error) {
-		tunneled = true
+		tunneled.Store(true)
 		return nil, errors.New("test tunnel")
 	})
 	net.DefaultResolver.LookupHost(context.Background(), "tracker.example.org")
-	if !tunneled {
+	if !tunneled.Load() {
 		t.Error("tunnel mode didn't use the tunnel")
 	}
 
@@ -25,13 +26,9 @@ func TestModes(t *testing.T) {
 	if _, err := dial(context.Background(), "udp", "192.0.2.1:53"); !errors.Is(err, errNone) {
 		t.Errorf("none mode dialed: %v", err)
 	}
-	done := AllowSystem()
-	if _, err := dial(context.Background(), "udp", "192.0.2.1:53"); errors.Is(err, errNone) {
-		t.Error("AllowSystem didn't allow")
-	}
-	done()
-	if _, err := dial(context.Background(), "udp", "192.0.2.1:53"); !errors.Is(err, errNone) {
-		t.Error("still allowed after done")
+	// Only lookups marked WithSystem get through.
+	if _, err := dial(WithSystem(context.Background()), "udp", "192.0.2.1:53"); errors.Is(err, errNone) {
+		t.Error("WithSystem didn't allow")
 	}
 }
 

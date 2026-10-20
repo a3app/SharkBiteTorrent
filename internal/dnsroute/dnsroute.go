@@ -25,11 +25,20 @@ import (
 )
 
 var (
-	mu      sync.Mutex
-	tunnel  func(ctx context.Context, network string) (net.Conn, error) // nil: not Tunnel mode
-	none    bool
-	allowed int // AllowSystem calls in progress
+	mu     sync.Mutex
+	tunnel func(ctx context.Context, network string) (net.Conn, error) // nil: not Tunnel mode
+	none   bool
 )
+
+type systemKey struct{}
+
+// WithSystem marks ctx so lookups made with it use the computer's DNS in
+// any mode: for a deliberately direct connection (WARP registration) whose
+// library has no resolver setting but passes the context through. Other
+// lookups in the process are unaffected.
+func WithSystem(ctx context.Context) context.Context {
+	return context.WithValue(ctx, systemKey{}, true)
+}
 
 func init() {
 	net.DefaultResolver = &net.Resolver{PreferGo: true, Dial: dial}
@@ -39,8 +48,11 @@ var errNone = errors.New("DNS is off while the VPN isn't connected")
 
 func dial(ctx context.Context, network, addr string) (net.Conn, error) {
 	mu.Lock()
-	t, off := tunnel, none && allowed == 0
+	t, off := tunnel, none
 	mu.Unlock()
+	if ctx.Value(systemKey{}) != nil {
+		t, off = nil, false
+	}
 	switch {
 	case t != nil:
 		c, err := t(ctx, network)
@@ -74,20 +86,6 @@ func UseSystem() {
 	mu.Lock()
 	tunnel, none = nil, false
 	mu.Unlock()
-}
-
-// AllowSystem lets default lookups use the computer's DNS while a
-// deliberately direct operation runs (WARP registration, whose library has
-// no resolver setting) even in None mode; call the returned func after.
-func AllowSystem() (done func()) {
-	mu.Lock()
-	allowed++
-	mu.Unlock()
-	return func() {
-		mu.Lock()
-		allowed--
-		mu.Unlock()
-	}
 }
 
 // searchFilter drops queries for names under the computer's DNS search

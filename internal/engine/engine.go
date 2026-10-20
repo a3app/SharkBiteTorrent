@@ -240,6 +240,8 @@ func newDirect(opts Options) (*Engine, error) {
 	cfg.UploadRateLimiter = e.up
 	cfg.DisableUTP = true // as in VPN mode: no uTP (see README)
 	cfg.DisableWebtorrent = true
+	// HTTPS trackers' certificates are checked here too (see trackertls.go).
+	cfg.TrackerDialContext = verifiedTrackerDial((&net.Dialer{Timeout: 30 * time.Second}).DialContext)
 	cfg.ListenPort = 0 // a free port; UPnP maps whichever we get
 
 	cl, err := torrent.NewClient(cfg)
