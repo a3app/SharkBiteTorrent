@@ -74,6 +74,9 @@ func TestClaim(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Closed before the temporary folder is deleted: Windows can't
+		// delete files that are still open.
+		t.Cleanup(func() { impl.Close() })
 		return st, impl
 	}
 
@@ -184,9 +187,11 @@ func TestClaimRefusesLinkedFolder(t *testing.T) {
 		t.Skip("symlinks unavailable:", err)
 	}
 	st := newFileStore(dir, storage.NewMapPieceCompletion(), owned, false)
-	if _, err := st.OpenTorrent(t.Context(), multiInfo("Music", []string{"new.mp3"}), hashN(8)); err != nil {
+	impl, err := st.OpenTorrent(t.Context(), multiInfo("Music", []string{"new.mp3"}), hashN(8))
+	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { impl.Close() })
 	if st.Blocked() == nil {
 		t.Error("torrent allowed to write through a linked folder")
 	}
