@@ -198,28 +198,31 @@
 {/if}
 
 <label class="radio">
-  <input type="radio" bind:group={s.vpnProvider} value="custom" disabled={!endpoint} />
+  <input type="radio" bind:group={s.vpnProvider} value="custom" />
   <span>
     <b>WireGuard config file</b>
     {#if endpoint}
       <span class="muted">· {endpoint}</span>
     {:else}
-      <span class="muted">works with any provider; import the .conf they give you.</span>
+      <span class="muted">works with any provider.</span>
     {/if}
   </span>
 </label>
-<div class="sub">
-  <div class="row">
-    <button onclick={importConf}>{endpoint ? 'Replace' : 'Import'} WireGuard config…</button>
+{#if s.vpnProvider === 'custom'}
+  <div class="sub">
+    <div class="row">
+      <button class:primary={!endpoint} onclick={importConf}>{endpoint ? 'Replace' : 'Import'} WireGuard config…</button>
+      {#if !endpoint}<span class="muted">the .conf file your VPN provider gives you</span>{/if}
+    </div>
+    {#if endpoint}
+      <label class="row">
+        <span class="lbl">Forwarded port</span>
+        <input type="number" min="0" max="65535" bind:value={s.forwardedPort} class="short" />
+        <span class="muted">If your provider forwards a port to you. 0 = off.</span>
+      </label>
+    {/if}
   </div>
-  {#if s.vpnProvider === 'custom'}
-    <label class="row">
-      <span class="lbl">Forwarded port</span>
-      <input type="number" min="0" max="65535" bind:value={s.forwardedPort} class="short" />
-      <span class="muted">If your provider forwards a port to you. 0 = off.</span>
-    </label>
-  {/if}
-</div>
+{/if}
 
 <label class="radio">
   <input type="radio" bind:group={s.vpnProvider} value="none" />

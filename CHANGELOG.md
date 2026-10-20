@@ -8,6 +8,7 @@ What changed in each release of Shark BiteTorrent. The release notes on GitHub a
 - **Start when I sign in** (Settings → Desktop): Shark BiteTorrent starts in the background at sign-in, in the tray, without opening its window. Works on Windows, Linux (KDE, GNOME and others) and macOS. In the Microsoft Store version, turn it on in Windows Settings → Apps → Startup (the option links there).
 
 ### Fixed
+- Settings → VPN: **WireGuard config file** can be chosen before a config is imported; choosing it shows the Import button (before, the option was greyed out until you found the button below it).
 - Linux: on desktops without a keyring (Hyprland, Sway, i3, …) the app couldn't save the WARP account or VPN sign-ins, so it couldn't connect. It now keeps its encryption key in a file only you can read, and Settings says so. With KWallet or GNOME Keyring nothing changes.
 - Linux: **Find Prowlarr or Jackett on this computer** now finds Prowlarr running as a system service (installed with its install script or the Arch/AUR package), not only one run from your own account.
 - Linux and macOS: malware scans of finished downloads always failed ("ClamAV scan failed (exit code 2)") when ClamAV's background service wasn't running, which is the default on Arch, CachyOS and others. The app now runs ClamAV's standalone scanner, and scan errors show ClamAV's own message (for example, that its virus definitions haven't been downloaded yet).
