@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 
 	"github.com/anacrolix/torrent/metainfo"
@@ -44,7 +45,8 @@ type fileStore struct {
 	ownedDir string // ownership markers, one per info hash; "" skips the check
 
 	mu      sync.Mutex
-	blocked error // set by OpenTorrent if the torrent mustn't write
+	blocked error        // set by OpenTorrent if the torrent mustn't write
+	ft      *fileTorrent // the torrent's storage, once opened
 }
 
 func newFileStore(dir string, pc storage.PieceCompletion, ownedDir string) *fileStore {
@@ -166,6 +168,9 @@ func (s *fileStore) OpenTorrent(_ context.Context, info *metainfo.Info, ih metai
 		ft.lengths = append(ft.lengths, fi.Length)
 	}
 	ft.freed = sync.NewCond(&ft.mu)
+	s.mu.Lock()
+	s.ft = ft
+	s.mu.Unlock()
 	return storage.TorrentImpl{
 		Piece: func(p metainfo.Piece) storage.PieceImpl {
 			return &filePiece{t: ft, p: p}
@@ -195,6 +200,7 @@ type fileTorrent struct {
 	buffered int64
 	seq      uint64 // allocation order, to evict the oldest buffer
 	closed   bool
+	inUse    int // handles handed out and not yet released
 }
 
 // pieceBuf holds a piece's blocks until it's complete. have marks which
@@ -239,6 +245,7 @@ func (t *fileTorrent) acquire(i int, create bool) (*os.File, error) {
 		if n := len(pool.idle); n > 0 {
 			f := pool.idle[n-1]
 			pool.idle = pool.idle[:n-1]
+			t.inUse++
 			return f, nil
 		}
 		if pool.open < handlesPerFile {
@@ -247,6 +254,7 @@ func (t *fileTorrent) acquire(i int, create bool) (*os.File, error) {
 				return nil, err
 			}
 			pool.open++
+			t.inUse++
 			return f, nil
 		}
 		t.freed.Wait()
@@ -256,12 +264,34 @@ func (t *fileTorrent) acquire(i int, create bool) (*os.File, error) {
 func (t *fileTorrent) release(i int, f *os.File) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.inUse--
 	if t.closed {
 		f.Close()
+		t.freed.Broadcast() // waitReleased
 		return
 	}
 	t.handles[i].idle = append(t.handles[i].idle, f)
 	t.freed.Signal()
+}
+
+// waitReleased waits (up to timeout) until the closed torrent's last file
+// handle is closed. Deleting a file that's still open fails on Windows and,
+// on an SMB share, leaves a ".__smbfile_silly" file and can stall the share.
+func (s *fileStore) waitReleased(timeout time.Duration) {
+	s.mu.Lock()
+	t := s.ft
+	s.mu.Unlock()
+	if t == nil {
+		return
+	}
+	deadline := time.Now().Add(timeout)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for t.inUse > 0 && time.Now().Before(deadline) {
+		t.mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+		t.mu.Lock()
+	}
 }
 
 // openFile opens (or creates) file i. Called with t.mu held.

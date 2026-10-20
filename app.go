@@ -859,7 +859,21 @@ func (a *App) Remove(hash string, deleteFiles bool) error {
 	if err != nil {
 		return err
 	}
-	rmErr := eng.Remove(hash, deleteFiles)
+	// Deleting files can take a while (waiting for the torrent's files to
+	// close, a slow network share), so the list doesn't wait for it: past a
+	// moment, Remove returns and any problem is reported when it's done.
+	done := make(chan error, 1)
+	go func() { done <- eng.Remove(hash, deleteFiles) }()
+	var rmErr error
+	select {
+	case rmErr = <-done:
+	case <-time.After(1500 * time.Millisecond):
+		go func() {
+			if err := <-done; err != nil && !errors.Is(err, engine.ErrNotFound) {
+				a.notifyError(fmt.Errorf("removed, but some files couldn't be deleted: %w", err))
+			}
+		}()
+	}
 	if errors.Is(rmErr, engine.ErrNotFound) {
 		rmErr = nil // already removed (a second click while the first finished)
 	}

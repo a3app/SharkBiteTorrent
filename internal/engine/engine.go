@@ -487,6 +487,7 @@ func (e *Engine) Remove(hash string, deleteFiles bool) error {
 		os.Remove(filepath.Join(e.ownedDir, en.t.InfoHash().HexString()))
 	}
 
+	en.storage.waitReleased(10 * time.Second) // no file is deleted while still open
 	return errors.Join(pathErr, removeFiles(en.dir, paths))
 }
 
