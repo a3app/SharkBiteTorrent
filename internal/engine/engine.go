@@ -590,6 +590,9 @@ type Status struct {
 	Warnings []scan.Warning `json:"warnings"`
 	// Problem: why the torrent is stopped (state "blocked").
 	Problem string `json:"problem"`
+	// Confirm: added from outside the app, waiting for the user to start
+	// it; filled in by the app.
+	Confirm bool `json:"confirm"`
 	// Antivirus scan of the finished files; filled in by the app.
 	ScanState  string   `json:"scanState"` // "", scanning, clean, threat, error, toolarge
 	ScanEngine string   `json:"scanEngine"`

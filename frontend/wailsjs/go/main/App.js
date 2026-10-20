@@ -206,6 +206,10 @@ export function StartRemotePairing(arg1) {
   return window['go']['main']['App']['StartRemotePairing'](arg1);
 }
 
+export function StartTorrent(arg1) {
+  return window['go']['main']['App']['StartTorrent'](arg1);
+}
+
 export function VerifyTorrent(arg1) {
   return window['go']['main']['App']['VerifyTorrent'](arg1);
 }

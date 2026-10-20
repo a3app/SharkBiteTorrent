@@ -43,7 +43,7 @@ It works out of the box with **free Cloudflare WARP**, so there's protection fro
 - 🔒 **Encrypted secrets**: WARP keys, VPN sign-ins and imported configs are encrypted on disk.
 
 **Torrents**
-- Magnet links and `.torrent` files: paste, open, drag and drop, or click a magnet link in your browser.
+- Magnet links and `.torrent` files: paste, open, drag and drop, or click a magnet link in your browser (links from outside the app wait for you to press **Start**, so a web page can't start a download by itself).
 - **Choose which files to download** in a torrent.
 - **Piece map**: a qBittorrent-style bar showing which pieces are done, downloading, being checked, missing or skipped.
 - **Remote control from your phone** (Settings → Remote control, off by default): scan a QR code to pair, then add magnets or `.torrent` files, search, and pause or remove torrents from your phone's browser on the home Wi-Fi. It only runs on the home network you paired on (off on café/hotel/work Wi-Fi) and only answers devices on it; downloads still happen on the computer, through its VPN. Plain HTTP, so others on your Wi-Fi could see its traffic. Optional **Tailscale access** makes it reachable from anywhere by devices signed in to your own Tailscale account, encrypted by Tailscale.

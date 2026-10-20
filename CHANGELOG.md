@@ -8,6 +8,7 @@ What changed in each release of Shark BiteTorrent. The release notes on GitHub a
 - **Start when I sign in** (Settings → Desktop): Shark BiteTorrent starts in the background at sign-in, in the tray, without opening its window. Works on Windows, Linux (KDE, GNOME and others) and macOS. In the Microsoft Store version, turn it on in Windows Settings → Apps → Startup (the option links there); that version opens its window at sign-in.
 
 ### Fixed
+- Magnet links and .torrent files opened from your browser or file manager are now added **paused**, with a banner to **Start** or **Remove** them, so a web page can't start a download on its own. Dropping a file on the window or adding from inside the app starts it right away, as before.
 - Files you tick after a torrent has finished are now scanned for malware (and marked as downloaded from the internet) too; before, only what was there the first time was. Files are marked as soon as they're created. After updating, finished torrents are checked once more.
 - Search: a Prowlarr or Jackett that isn't on this computer, your home network or Tailscale (a seedbox, say) was contacted over your normal connection. It now goes through the VPN. Downloading a result through a redirect no longer passes your Prowlarr/Jackett API key on to the site it redirects to.
 - **Check for updates** and **Update now** no longer use your normal connection by themselves when the VPN is down: the app asks first. It also refuses to "update" to an older version.

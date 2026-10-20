@@ -68,8 +68,8 @@ func main() {
 		// macOS delivers magnet links and opened .torrent files as events
 		// (declared via "protocols"/"fileAssociations" in wails.json).
 		Mac: &mac.Options{
-			OnUrlOpen:  func(u string) { app.handleArgs([]string{u}) },
-			OnFileOpen: func(p string) { app.handleArgs([]string{p}) },
+			OnUrlOpen:  func(u string) { app.handleArgs([]string{u}, true) },
+			OnFileOpen: func(p string) { app.handleArgs([]string{p}, true) },
 		},
 		DragAndDrop: &options.DragAndDrop{
 			EnableFileDrop:     true,

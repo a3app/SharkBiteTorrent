@@ -3,7 +3,7 @@
   import {
     GetVpnStatus, ListTorrents, AddMagnet, PickTorrentFile, GetSettings,
     Pause, Resume, Remove, Reconnect, OpenFolder, ChooseDownloadDir,
-    InstallUpdate, SkipUpdate, OpenURL, VerifyTorrent,
+    InstallUpdate, SkipUpdate, OpenURL, VerifyTorrent, StartTorrent,
   } from '../wailsjs/go/main/App.js'
   import { EventsOn, OnFileDrop } from '../wailsjs/runtime/runtime.js'
   import type { engine, main } from '../wailsjs/go/models'
@@ -253,6 +253,17 @@
     <button onclick={() => sel && run(() => Pause(sel.hash))} disabled={!sel || sel.state === 'paused'}>Pause</button>
     <button onclick={() => { removing = sel ?? null; deleteFiles = false }} disabled={!sel}>Remove…</button>
   </div>
+
+  {#each torrents.filter(t => t.confirm) as t (t.hash)}
+    <div class="update" role="status">
+      <span>
+        🧲 Added from outside the app (a link or file you opened):
+        <b>{t.name || 'fetching its name…'}</b>{t.size ? ` (${bytes(t.size)})` : ''}. It's paused until you start it.
+      </span>
+      <button class="primary" onclick={() => run(() => StartTorrent(t.hash))}>Start</button>
+      <button onclick={() => run(() => Remove(t.hash, false))}>Remove</button>
+    </div>
+  {/each}
 
   {#if update}
     <div class="update" role="status">

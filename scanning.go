@@ -307,6 +307,9 @@ func (a *App) withScans(list []engine.Status) []engine.Status {
 	defer a.mu.Unlock()
 	for i := range list {
 		t := &list[i]
+		if s := a.savedFor(t.Hash); s != nil {
+			t.Confirm = s.Confirm
+		}
 		if r, ok := a.sfvResults[t.Hash]; ok {
 			t.SFV = r
 		}

@@ -108,4 +108,6 @@ export function SkipUpdate(arg1:string):Promise<void>;
 
 export function StartRemotePairing(arg1:boolean):Promise<main.RemotePairing>;
 
+export function StartTorrent(arg1:string):Promise<void>;
+
 export function VerifyTorrent(arg1:string):Promise<void>;

@@ -42,7 +42,7 @@ type App struct {
 	vpn         VpnStatus
 	saved       []savedTorrent
 	settings    Settings
-	pending     []string // magnets/.torrent paths received before the VPN was up
+	pending     []pendingSource // magnets/.torrent paths received before the VPN was up
 	quitting    bool
 	scanning    map[string]bool // torrents being scanned right now
 	proxy       *socks.Server   // local SOCKS5 proxy into the tunnel, for Prowlarr/Jackett
@@ -111,6 +111,9 @@ type savedTorrent struct {
 	Dir     string `json:"dir"`
 	Skipped []int  `json:"skipped,omitempty"`
 	Paused  bool   `json:"paused"`
+	// Confirm: added from outside the app (a browser, the file association),
+	// so it waits, paused, until the user starts it.
+	Confirm bool `json:"confirm,omitempty"`
 	// Scan is the antivirus result once the torrent finished (nil = not yet).
 	Scan *scanRecord `json:"scan,omitempty"`
 }
@@ -130,12 +133,12 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.loadSettings()
 	a.loadSaved()
-	a.handleArgs(os.Args[1:])
+	a.handleArgs(os.Args[1:], true)
 	if !storeBuild {
 		platform.RefreshStartup(a.exe) // the app moved: keep sign-in start working
 	}
 	search.SetTunnel(a.searchDial) // a search server that isn't local goes through the VPN
-	runtime.OnFileDrop(ctx, func(_, _ int, paths []string) { a.handleArgs(paths) })
+	runtime.OnFileDrop(ctx, func(_, _ int, paths []string) { a.handleArgs(paths, false) })
 	go a.runTray()
 	go a.connect()
 	a.startProxy()
@@ -192,15 +195,22 @@ func (a *App) showWindow() {
 // onSecondInstance receives the args of a second launch, e.g. when a magnet
 // link is clicked in the browser while the app is already running.
 func (a *App) onSecondInstance(data options.SecondInstanceData) {
-	a.handleArgs(data.Args)
+	a.handleArgs(data.Args, true)
 	if a.ctx != nil {
 		a.showWindow()
 	}
 }
 
+type pendingSource struct {
+	src      string
+	external bool
+}
+
 // handleArgs adds magnet links and .torrent files passed on the command line,
-// via the file association, or dropped on the window.
-func (a *App) handleArgs(args []string) {
+// via the file association, or dropped on the window. external ones (not
+// dropped by the user) are added paused, waiting for the user to start them:
+// any web page can open a magnet link.
+func (a *App) handleArgs(args []string, external bool) {
 	for _, arg := range args {
 		if !strings.HasPrefix(arg, "magnet:") && !strings.EqualFold(filepath.Ext(arg), ".torrent") {
 			continue
@@ -208,11 +218,11 @@ func (a *App) handleArgs(args []string) {
 		a.mu.Lock()
 		ready := a.eng != nil
 		if !ready {
-			a.pending = append(a.pending, arg)
+			a.pending = append(a.pending, pendingSource{arg, external})
 		}
 		a.mu.Unlock()
 		if ready {
-			if err := a.addSource(arg); err != nil {
+			if err := a.addSourceFrom(arg, external); err != nil {
 				a.notifyError(err)
 			}
 		}
@@ -455,8 +465,8 @@ func (a *App) startEngine(tun *tunnel.Tunnel, eng *engine.Engine, st VpnStatus) 
 			runtime.LogWarningf(a.ctx, "restore %s: %v", s.Hash, err)
 		}
 	}
-	for _, src := range pending {
-		if err := a.addSource(src); err != nil {
+	for _, p := range pending {
+		if err := a.addSourceFrom(p.src, p.external); err != nil {
 			a.notifyError(err)
 		}
 	}
@@ -702,7 +712,11 @@ func (a *App) PickTorrentFile() error {
 }
 
 // addSource adds a magnet link or .torrent path into the current download folder.
-func (a *App) addSource(src string) error {
+func (a *App) addSource(src string) error { return a.addSourceFrom(src, false) }
+
+// addSourceFrom adds a torrent; an external one waits paused for the user
+// (savedTorrent.Confirm).
+func (a *App) addSourceFrom(src string, external bool) error {
 	eng, err := a.engine()
 	if err != nil {
 		return err
@@ -727,7 +741,7 @@ func (a *App) addSource(src string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	hash, err := eng.Add(engine.AddOptions{Source: src, Dir: dir})
+	hash, err := eng.Add(engine.AddOptions{Source: src, Dir: dir, Paused: external})
 	if err != nil {
 		return err
 	}
@@ -738,9 +752,12 @@ func (a *App) addSource(src string) error {
 			return nil
 		}
 	}
-	a.saved = append(a.saved, savedTorrent{Hash: hash, Source: src, Dir: dir})
+	a.saved = append(a.saved, savedTorrent{Hash: hash, Source: src, Dir: dir, Paused: external, Confirm: external})
 	return a.writeSaved()
 }
+
+// StartTorrent starts a torrent that was added from outside the app.
+func (a *App) StartTorrent(hash string) error { return a.setPaused(hash, false) }
 
 func (a *App) Pause(hash string) error  { return a.setPaused(hash, true) }
 func (a *App) Resume(hash string) error { return a.setPaused(hash, false) }
@@ -758,7 +775,12 @@ func (a *App) setPaused(hash string, paused bool) error {
 	if err != nil {
 		return err
 	}
-	a.updateSaved(hash, func(s *savedTorrent) { s.Paused = paused })
+	a.updateSaved(hash, func(s *savedTorrent) {
+		s.Paused = paused
+		if !paused {
+			s.Confirm = false // resumed: the user has accepted it
+		}
+	})
 	return nil
 }
 
@@ -772,7 +794,7 @@ func (a *App) PauseAll() {
 
 func (a *App) ResumeAll() {
 	for _, t := range a.ListTorrents() {
-		if t.State == "paused" {
+		if t.State == "paused" && !t.Confirm { // added from outside: the user starts those
 			a.Resume(t.Hash)
 		}
 	}
