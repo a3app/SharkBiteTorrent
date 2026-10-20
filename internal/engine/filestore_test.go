@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"bytes"
+	"crypto/sha1"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -194,5 +196,37 @@ func TestClaimRefusesLinkedFolder(t *testing.T) {
 	t.Cleanup(func() { impl.Close() })
 	if st.Blocked() == nil {
 		t.Error("torrent allowed to write through a linked folder")
+	}
+}
+
+// A piece that's complete and correct in memory when the torrent closes is
+// written and recorded, not thrown away (on a slow NAS a backlog of them
+// built up, and quitting lost them); one that fails its hash isn't.
+func TestCloseWritesFinishedPieces(t *testing.T) {
+	dir := t.TempDir()
+	pc := storage.NewMapPieceCompletion()
+	good := bytes.Repeat([]byte("g"), 16<<10)
+	sum := sha1.Sum(good)
+	info := &metainfo.Info{Name: "f.bin", PieceLength: 16 << 10, Length: 32 << 10, Pieces: append(sum[:], make([]byte, 20)...)}
+	st := newFileStore(dir, pc, "", false)
+	impl, err := st.OpenTorrent(t.Context(), info, hashN(9))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A first write creates the file; then each piece is only buffered.
+	if _, err := impl.Piece(info.Piece(0)).WriteAt(good, 0); err != nil {
+		t.Fatal(err)
+	}
+	impl.Piece(info.Piece(1)).WriteAt(bytes.Repeat([]byte("b"), 16<<10), 0) // wrong data for piece 1's hash
+	if err := impl.Close(); err != nil {
+		t.Fatal(err)
+	}
+	c0, _ := pc.Get(metainfo.PieceKey{InfoHash: hashN(9), Index: 0})
+	c1, _ := pc.Get(metainfo.PieceKey{InfoHash: hashN(9), Index: 1})
+	if !c0.Complete || c1.Complete {
+		t.Fatalf("piece 0 recorded %v (want true), piece 1 %v (want false)", c0.Complete, c1.Complete)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "f.bin")); !bytes.Equal(b[:16<<10], good) {
+		t.Error("piece 0's data wasn't written")
 	}
 }

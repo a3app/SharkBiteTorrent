@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"crypto/sha1"
 	"errors"
 	"fmt"
 	"io"
@@ -48,6 +49,14 @@ type fileStore struct {
 	mu      sync.Mutex
 	blocked error        // set if the torrent mustn't write (shown in the list)
 	ft      *fileTorrent // the torrent's storage, once opened
+	removed bool         // being removed: don't write out buffered pieces on close
+}
+
+// dropping tells the store its torrent is being removed, before it's closed.
+func (s *fileStore) dropping() {
+	s.mu.Lock()
+	s.removed = true
+	s.mu.Unlock()
 }
 
 // files are the torrent's files that exist, as regular files, at its paths
@@ -182,15 +191,16 @@ type fileTorrent struct {
 	lengths []int64
 	blocked error // see fileStore.claim; no file is opened if set
 
-	mu       sync.Mutex
-	freed    *sync.Cond          // signalled when a handle is released
-	handles  map[int]*handlePool // open handles, by file index
-	bufs     map[int]*pieceBuf   // unfinished pieces, by piece index
-	buffered int64
-	seq      uint64 // allocation order, to evict the oldest buffer
-	closed   bool
-	inUse    int         // handles handed out and not yet released, plus MarkCompletes running
-	busy     map[int]int // handles in use, by file index
+	mu            sync.Mutex
+	freed         *sync.Cond          // signalled when a handle is released
+	handles       map[int]*handlePool // open handles, by file index
+	bufs          map[int]*pieceBuf   // unfinished pieces, by piece index
+	buffered      int64
+	seq           uint64 // allocation order, to evict the oldest buffer
+	closed        bool
+	inUse         int         // handles handed out and not yet released, plus MarkCompletes running
+	closeTimedOut bool        // close stopped waiting for inUse
+	busy          map[int]int // handles in use, by file index
 }
 
 // pieceBuf holds a piece's blocks until it's complete. have marks which
@@ -339,9 +349,31 @@ func (t *fileTorrent) openFile(i int, create bool) (*os.File, error) {
 
 func (t *fileTorrent) close() error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.closed = true
+	bufs := t.bufs
 	t.bufs, t.buffered = map[int]*pieceBuf{}, 0 // unfinished pieces are re-downloaded later
+	t.mu.Unlock()
+	t.store.mu.Lock()
+	removed := t.store.removed
+	t.store.mu.Unlock()
+	deadline := time.Now().Add(20 * time.Second)
+	if !removed {
+		t.writeFinished(bufs, deadline)
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	// Let pieces already being written finish and record themselves before
+	// the progress database is closed after this (within the same budget).
+	timer := time.AfterFunc(time.Until(deadline), func() {
+		t.mu.Lock()
+		t.closeTimedOut = true
+		t.freed.Broadcast()
+		t.mu.Unlock()
+	})
+	defer timer.Stop()
+	for t.inUse > 0 && !t.closeTimedOut {
+		t.freed.Wait()
+	}
 	var errs []error
 	for i, pool := range t.handles {
 		for _, f := range pool.idle {
@@ -351,6 +383,60 @@ func (t *fileTorrent) close() error {
 	}
 	t.freed.Broadcast()
 	return errors.Join(errs...)
+}
+
+// writeFinished writes out, and records as finished, pieces that were
+// complete in memory when the torrent closed. Pieces are written when the
+// library marks them complete, and on a slow disk (a NAS) a backlog of
+// complete, hash-checked pieces waiting for that built up to maxBuffered;
+// quitting threw it away, so up to 256 MB downloaded again after a restart.
+// Each piece's hash is checked here first; nothing unverified is recorded.
+func (t *fileTorrent) writeFinished(bufs map[int]*pieceBuf, deadline time.Time) {
+	for idx, buf := range bufs {
+		if time.Now().After(deadline) {
+			return // the rest downloads again: quitting mustn't hang
+		}
+		piece := t.info.Piece(idx)
+		want := piece.V1Hash()
+		if !want.Ok || int64(len(buf.data)) < piece.Length() || !covered(buf, 0, int(piece.Length())) {
+			continue
+		}
+		data := buf.data[:piece.Length()]
+		if sha1.Sum(data) != want.Value {
+			continue
+		}
+		ext := segments.Extent{Start: piece.Offset(), Length: piece.Length()}
+		ok, n := true, int64(0)
+		for i, e := range t.index.LocateIter(ext) {
+			if e.Length == 0 {
+				continue
+			}
+			// Its own path: the torrent passed its check (blocked ones have
+			// nothing buffered). The file may not exist yet if this is its
+			// first piece to reach the disk.
+			_, statErr := os.Stat(t.paths[i])
+			if os.MkdirAll(filepath.Dir(t.paths[i]), 0o755) != nil {
+				ok = false
+				break
+			}
+			f, err := os.OpenFile(t.paths[i], os.O_WRONLY|os.O_CREATE, 0o644)
+			if err == nil && statErr != nil {
+				scan.MarkDownloaded(t.paths[i])
+			}
+			if err == nil {
+				_, err = f.WriteAt(data[n:n+e.Length], e.Start)
+				f.Close()
+			}
+			if err != nil {
+				ok = false
+				break
+			}
+			n += e.Length
+		}
+		if ok {
+			t.pc.Set(metainfo.PieceKey{InfoHash: t.ih, Index: idx}, true)
+		}
+	}
 }
 
 type filePiece struct {
@@ -519,11 +605,13 @@ func (p *filePiece) MarkComplete() error {
 			return err // not marked complete; the library will retry the piece
 		}
 	}
-	p.t.mu.Lock()
-	closed := p.t.closed
-	p.t.mu.Unlock()
-	if closed {
-		// Removed meanwhile: don't leave a "complete" record behind.
+	p.t.store.mu.Lock()
+	removed := p.t.store.removed
+	p.t.store.mu.Unlock()
+	if removed {
+		// Removed meanwhile: don't leave a "complete" record behind. (On a
+		// normal close the piece is recorded: its data is written, and close
+		// waits for this, so quitting doesn't lose finished pieces.)
 		return errors.New("torrent storage closed")
 	}
 	return p.t.pc.Set(p.key(), true)

@@ -479,6 +479,7 @@ func (e *Engine) Remove(hash string, deleteFiles bool) error {
 	en.removing = true
 	e.mu.Unlock()
 	ih := en.t.InfoHash()
+	en.storage.dropping() // no point writing out what's about to be deleted
 	defer func() {
 		e.mu.Lock()
 		if e.entries[ih] == en {

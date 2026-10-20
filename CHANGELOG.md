@@ -2,6 +2,11 @@
 
 What changed in each release of Shark BiteTorrent. The release notes on GitHub are taken from this file, so every release's section should say what users will notice.
 
+## [Unreleased]
+
+### Fixed
+- Quitting or restarting the app while downloading to a slow drive (a NAS, especially) lost part of the progress: pieces already downloaded and checked, but still being written, weren't recorded, so they downloaded again (in a test, 54% dropped to 37%). They're now written and recorded before the app closes, after checking each one, so a restart keeps what was downloaded.
+
 ## [0.2.37] - 2026-10-20
 
 ### Added
