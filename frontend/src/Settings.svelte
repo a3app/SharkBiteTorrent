@@ -3,6 +3,7 @@
     GetSettings, SaveSettings, ChooseDirectory,
     RegisterAssociations, OpenDefaultAppsSettings, GetAbout, OpenURL,
     CheckForUpdates, InstallUpdate, GetReleaseNotes,
+    GetStartup, SetStartup, OpenStartupSettings,
   } from '../wailsjs/go/main/App.js'
   import { main, type platform } from '../wailsjs/go/models'
   import VpnSettings from './VpnSettings.svelte'
@@ -32,6 +33,15 @@
   const referralNames = $derived(referralIds.map(id => providerNames[id] ?? id).join(' and '))
 
   GetAbout().then(a => (about = a))
+
+  // "Start when I sign in" lives in the OS (registry / autostart file), so
+  // it's read from there and applied on Save like everything else.
+  let startup = $state<main.StartupStatus | null>(null)
+  let startupOn = $state(false)
+  GetStartup().then(v => {
+    startup = v
+    startupOn = v.enabled
+  })
   let currentNotes = $state<main.ReleaseNote[]>([])
   let showCurrentNotes = $state(false)
   GetReleaseNotes().then(n => (currentNotes = n ?? []))
@@ -91,6 +101,10 @@
   async function save() {
     saving = true
     await attempt(async () => {
+      if (startup && !startup.viaWindowsSettings && startupOn !== startup.enabled) {
+        await SetStartup(startupOn)
+        startup.enabled = startupOn
+      }
       await SaveSettings(main.Settings.createFrom({
         ...s!,
         forwardedPort: Number(s!.forwardedPort) || 0,
@@ -158,6 +172,17 @@
 
         <fieldset>
           <legend>Desktop</legend>
+          {#if startup?.viaWindowsSettings}
+            <p class="muted small">
+              To start Shark BiteTorrent when you sign in, turn it on in
+              <button class="link" onclick={() => OpenStartupSettings()}>Windows Settings → Apps → Startup</button>.
+            </p>
+          {:else if startup}
+            <label class="check">
+              <input type="checkbox" bind:checked={startupOn} />
+              <span>Start Shark BiteTorrent in the background when I sign in</span>
+            </label>
+          {/if}
           <label class="check">
             <input type="checkbox" bind:checked={s.closeToTray} />
             <span>Closing the window keeps Shark BiteTorrent running in the tray</span>

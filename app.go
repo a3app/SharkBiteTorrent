@@ -130,6 +130,9 @@ func (a *App) startup(ctx context.Context) {
 	a.loadSettings()
 	a.loadSaved()
 	a.handleArgs(os.Args[1:])
+	if !storeBuild {
+		platform.RefreshStartup(a.exe) // the app moved: keep sign-in start working
+	}
 	runtime.OnFileDrop(ctx, func(_, _ int, paths []string) { a.handleArgs(paths) })
 	go a.runTray()
 	go a.connect()

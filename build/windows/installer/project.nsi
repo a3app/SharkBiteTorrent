@@ -149,6 +149,8 @@ Section "uninstall"
 
     # Remove magnet/.torrent registrations that still point at this app.
     ExecWait '"$INSTDIR\${PRODUCT_EXECUTABLE}" --unregister-associations'
+    # And the "start when I sign in" entry, if it was turned on.
+    ExecWait '"$INSTDIR\${PRODUCT_EXECUTABLE}" --remove-startup'
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
 

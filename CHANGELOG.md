@@ -2,6 +2,11 @@
 
 What changed in each release of Shark BiteTorrent. The release notes on GitHub are taken from this file, so every release's section should say what users will notice.
 
+## [Unreleased]
+
+### Added
+- **Start when I sign in** (Settings → Desktop): Shark BiteTorrent starts in the background at sign-in, in the tray, without opening its window. Works on Windows, Linux (KDE, GNOME and others) and macOS. In the Microsoft Store version, turn it on in Windows Settings → Apps → Startup (the option links there).
+
 ## [0.2.36] - 2026-10-19
 
 ### Fixed

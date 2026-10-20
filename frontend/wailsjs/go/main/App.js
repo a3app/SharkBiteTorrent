@@ -74,6 +74,10 @@ export function GetSettings() {
   return window['go']['main']['App']['GetSettings']();
 }
 
+export function GetStartup() {
+  return window['go']['main']['App']['GetStartup']();
+}
+
 export function GetVpnRegions(arg1) {
   return window['go']['main']['App']['GetVpnRegions'](arg1);
 }
@@ -112,6 +116,10 @@ export function OpenDefaultAppsSettings() {
 
 export function OpenFolder(arg1) {
   return window['go']['main']['App']['OpenFolder'](arg1);
+}
+
+export function OpenStartupSettings() {
+  return window['go']['main']['App']['OpenStartupSettings']();
 }
 
 export function OpenURL(arg1) {
@@ -176,6 +184,10 @@ export function SetRemoteTailscale(arg1) {
 
 export function SetSearchProxy(arg1) {
   return window['go']['main']['App']['SetSearchProxy'](arg1);
+}
+
+export function SetStartup(arg1) {
+  return window['go']['main']['App']['SetStartup'](arg1);
 }
 
 export function SkipUpdate(arg1) {

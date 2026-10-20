@@ -19,8 +19,12 @@ import (
 var assets embed.FS
 
 func main() {
+	// Started at sign-in (Settings → Desktop): run in the tray, no window.
+	// A second launch (Start menu, a magnet link) shows the window.
+	autostart := len(os.Args) == 2 && os.Args[1] == platform.AutostartArg
+
 	// Called by the installer/uninstaller; do the work and exit without a window.
-	if len(os.Args) == 2 && strings.HasPrefix(os.Args[1], "--") {
+	if len(os.Args) == 2 && strings.HasPrefix(os.Args[1], "--") && !autostart {
 		exe, _ := os.Executable()
 		var err error
 		switch os.Args[1] {
@@ -28,6 +32,8 @@ func main() {
 			err = platform.RegisterAssociations(exe)
 		case "--unregister-associations":
 			err = platform.UnregisterAssociations(exe)
+		case "--remove-startup":
+			err = platform.SetStartup(exe, false)
 		default:
 			err = fmt.Errorf("unknown option %s", os.Args[1])
 		}
@@ -49,6 +55,7 @@ func main() {
 			Assets: assets,
 		},
 		BackgroundColour: &options.RGBA{R: 24, G: 26, B: 31, A: 1},
+		StartHidden:      autostart,
 		OnStartup:        app.startup,
 		OnShutdown:       app.shutdown,
 		OnBeforeClose:    app.beforeClose,

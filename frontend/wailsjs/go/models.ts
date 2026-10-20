@@ -549,6 +549,20 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class StartupStatus {
+	    enabled: boolean;
+	    viaWindowsSettings: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new StartupStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.viaWindowsSettings = source["viaWindowsSettings"];
+	    }
+	}
 	export class UpdateInfo {
 	    current: string;
 	    latest: string;

@@ -42,6 +42,8 @@ export function GetSearchStatus():Promise<main.SearchStatus>;
 
 export function GetSettings():Promise<main.SettingsView>;
 
+export function GetStartup():Promise<main.StartupStatus>;
+
 export function GetVpnRegions(arg1:string):Promise<Array<vpnprov.Region>>;
 
 export function GetVpnStatus():Promise<main.VpnStatus>;
@@ -61,6 +63,8 @@ export function LogoutVpnAccount(arg1:string):Promise<void>;
 export function OpenDefaultAppsSettings():Promise<void>;
 
 export function OpenFolder(arg1:string):Promise<void>;
+
+export function OpenStartupSettings():Promise<void>;
 
 export function OpenURL(arg1:string):Promise<void>;
 
@@ -93,6 +97,8 @@ export function SetRemote(arg1:boolean,arg2:number):Promise<main.RemoteStatus>;
 export function SetRemoteTailscale(arg1:boolean):Promise<main.RemoteStatus>;
 
 export function SetSearchProxy(arg1:boolean):Promise<main.ProxyStatus>;
+
+export function SetStartup(arg1:boolean):Promise<void>;
 
 export function SkipUpdate(arg1:string):Promise<void>;
 

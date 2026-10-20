@@ -6,7 +6,8 @@
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap uap3 rescap">
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  IgnorableNamespaces="uap uap3 rescap desktop">
 
   <Identity
     Name="SharkByteSoftware.SharkBiteTorrent"
@@ -55,6 +56,11 @@
             </uap:SupportedFileTypes>
           </uap:FileTypeAssociation>
         </uap:Extension>
+        <!-- "Start when I sign in": off until the user turns it on in
+             Settings → Apps → Startup (a packaged app can't use the Run key). -->
+        <desktop:Extension Category="windows.startupTask" Executable="SharkBiteTorrent.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="SharkBiteTorrentStartup" Enabled="false" DisplayName="Shark BiteTorrent" />
+        </desktop:Extension>
       </Extensions>
     </Application>
   </Applications>
