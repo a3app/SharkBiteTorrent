@@ -87,16 +87,11 @@ func (a *App) checkFinished(ctx context.Context, eng *engine.Engine, t engine.St
 	}
 	scan.MarkDownloaded(p)
 
-	sfvRes := a.checkSFV(ctx, eng, t.Hash)
-	if ctx.Err() != nil {
-		return
-	}
-
 	a.mu.Lock()
 	enabled := a.settings.ScanDownloads
 	a.mu.Unlock()
 	name, available := scan.Scanner()
-	rec := &scanRecord{Engine: name, At: time.Now().Unix(), SFV: sfvRes, Done: t.Done}
+	rec := &scanRecord{Engine: name, At: time.Now().Unix(), Done: t.Done}
 	switch {
 	case !enabled:
 		rec.Error = "scanning is turned off in Settings"
@@ -107,6 +102,12 @@ func (a *App) checkFinished(ctx context.Context, eng *engine.Engine, t engine.St
 			return // app quitting or VPN reconnecting: try again next time
 		}
 	}
+	// After the antivirus scan, so a torrent's .sfv can't hold it up.
+	sfvRes := a.checkSFV(ctx, eng, t.Hash)
+	if ctx.Err() != nil {
+		return
+	}
+	rec.SFV = sfvRes
 
 	a.mu.Lock()
 	if s := a.savedFor(t.Hash); s != nil {

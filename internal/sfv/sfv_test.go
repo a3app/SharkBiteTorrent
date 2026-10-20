@@ -51,3 +51,25 @@ func TestCheck(t *testing.T) {
 		t.Fatalf("got %+v", res)
 	}
 }
+
+// A hostile .sfv listing one file thousands of times, plus many made-up
+// names, hashes the file once and keeps short lists.
+func TestCheckLimits(t *testing.T) {
+	dir := t.TempDir()
+	big := filepath.Join(dir, "a.bin")
+	os.WriteFile(big, []byte("data"), 0o644)
+	var b strings.Builder
+	for i := 0; i < 5000; i++ {
+		b.WriteString("a.bin 00000000\n")
+		fmt.Fprintf(&b, "missing%d.bin 00000000\n", i)
+	}
+	sfvPath := filepath.Join(dir, "x.sfv")
+	os.WriteFile(sfvPath, []byte(b.String()), 0o644)
+	res, err := Check(context.Background(), map[string]string{"a.bin": big, "x.sfv": sfvPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Bad) != 1 || len(res.Missing) != maxListed+1 || !strings.HasPrefix(res.Missing[maxListed], "…and ") {
+		t.Errorf("bad %d, missing %d (%q)", len(res.Bad), len(res.Missing), res.Missing[len(res.Missing)-1])
+	}
+}

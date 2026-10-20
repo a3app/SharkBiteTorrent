@@ -65,11 +65,31 @@ func Find(files map[string]string) []string {
 	return out
 }
 
+// Limits, so a malicious .sfv (the same big file listed thousands of times,
+// or millions of made-up names) can't keep the app hashing or bloat the saved
+// torrent list: each file is hashed once, entries past maxEntries are
+// ignored, and at most maxListed names are kept per list.
+const (
+	maxEntries = 10000
+	maxListed  = 50
+)
+
 // Check verifies every .sfv among files. files maps each file's path inside
 // the torrent (forward slashes) to where it is on disk. Names in an .sfv are
 // relative to its own folder.
-func Check(ctx context.Context, files map[string]string) (Result, error) {
-	var res Result
+func Check(ctx context.Context, files map[string]string) (res Result, err error) {
+	var moreBad, moreMissing int
+	defer func() {
+		if moreBad > 0 {
+			res.Bad = append(res.Bad, fmt.Sprintf("…and %d more", moreBad))
+		}
+		if moreMissing > 0 {
+			res.Missing = append(res.Missing, fmt.Sprintf("…and %d more", moreMissing))
+		}
+	}()
+	seen := map[string]bool{}   // entries already checked (by path in the torrent)
+	crcs := map[string]uint32{} // CRCs already computed (by file on disk)
+	entriesLeft := maxEntries
 	lower := map[string]string{} // case-insensitive fallback, as on Windows
 	for rel, disk := range files {
 		lower[strings.ToLower(rel)] = disk
@@ -87,22 +107,39 @@ func Check(ctx context.Context, files map[string]string) (Result, error) {
 		dir := path.Dir(sfvRel)
 		for _, e := range entries {
 			rel := path.Clean(path.Join(dir, e.Name))
+			if seen[rel] {
+				continue
+			}
+			seen[rel] = true
+			if entriesLeft--; entriesLeft < 0 {
+				return res, nil
+			}
 			disk, ok := files[rel]
 			if !ok {
 				disk, ok = lower[strings.ToLower(rel)]
 			}
 			if !ok {
-				res.Missing = append(res.Missing, rel)
+				if len(res.Missing) < maxListed {
+					res.Missing = append(res.Missing, rel)
+				} else {
+					moreMissing++
+				}
 				continue
 			}
-			got, err := fileCRC(ctx, disk)
-			if err != nil {
-				return res, err
+			got, done := crcs[disk]
+			if !done {
+				var err error
+				if got, err = fileCRC(ctx, disk); err != nil {
+					return res, err
+				}
+				crcs[disk] = got
 			}
 			if got == e.CRC {
 				res.Checked++
-			} else {
+			} else if len(res.Bad) < maxListed {
 				res.Bad = append(res.Bad, rel)
+			} else {
+				moreBad++
 			}
 		}
 	}
