@@ -2,6 +2,7 @@ package secret
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"unsafe"
 
@@ -12,16 +13,22 @@ import (
 // user can't trivially decrypt our blobs by calling CryptUnprotectData.
 var entropy = []byte("SharkBiteTorrent secret store")
 
-func protect(plain []byte) ([]byte, error) {
+// KeyringMissing is for Settings: Windows always has DPAPI.
+func KeyringMissing() bool { return false }
+
+func protect(plain []byte) ([]byte, bool, error) {
 	var out windows.DataBlob
 	if err := windows.CryptProtectData(blob(plain), nil, blob(entropy), 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &out); err != nil {
-		return nil, fmt.Errorf("encrypt: %w", err)
+		return nil, false, fmt.Errorf("encrypt: %w", err)
 	}
 	defer windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data)))
-	return bytes.Clone(unsafe.Slice(out.Data, out.Size)), nil
+	return bytes.Clone(unsafe.Slice(out.Data, out.Size)), false, nil
 }
 
-func unprotect(cipher []byte) ([]byte, error) {
+func unprotect(cipher []byte, keyFile bool) ([]byte, error) {
+	if keyFile {
+		return nil, errors.New("decrypt: this file was encrypted on Linux or macOS")
+	}
 	var out windows.DataBlob
 	if err := windows.CryptUnprotectData(blob(cipher), nil, blob(entropy), 0, nil, windows.CRYPTPROTECT_UI_FORBIDDEN, &out); err != nil {
 		return nil, fmt.Errorf("decrypt (was this file created by another Windows user?): %w", err)

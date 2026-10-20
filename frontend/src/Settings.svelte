@@ -20,6 +20,7 @@
   let assoc = $state<platform.AssocStatus>({ supported: false, magnet: false, torrent: false, canOpenSettings: false })
   let scanner = $state("")
   let scannerAvailable = $state(false)
+  let keyringMissing = $state(false)
   let error = $state('')
   let saving = $state(false)
   let about = $state<main.About | null>(null)
@@ -71,6 +72,7 @@
     assoc = v.assoc
     scanner = v.scanner
     scannerAvailable = v.scannerAvailable
+    keyringMissing = v.keyringMissing
   })
 
   const vpnChanged = $derived(
@@ -136,6 +138,12 @@
           <legend>VPN</legend>
           <VpnSettings {s} bind:endpoint bind:accounts onError={e => (error = e)} />
           {#if vpnChanged}<p class="note">Saving will reconnect the VPN. Torrents pick up where they left off.</p>{/if}
+          {#if keyringMissing}
+            <p class="muted small">
+              No system keyring (KWallet or GNOME Keyring) is running, so VPN keys and sign-ins are
+              encrypted with a key file only your user can read. Start a keyring for stronger protection.
+            </p>
+          {/if}
         </fieldset>
 
         <fieldset>

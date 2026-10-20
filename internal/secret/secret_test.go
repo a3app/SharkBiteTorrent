@@ -18,7 +18,7 @@ func TestRoundTrip(t *testing.T) {
 	if bytes.Contains(raw, []byte("super secret")) {
 		t.Fatal("plaintext found in encrypted file")
 	}
-	if !strings.HasPrefix(string(raw), header) {
+	if !encrypted(raw) {
 		t.Fatal("missing header")
 	}
 	got, err := ReadFile(path)
@@ -38,7 +38,7 @@ func TestPlaintextUpgraded(t *testing.T) {
 		t.Fatalf("got %q, %v", got, err)
 	}
 	raw, _ := os.ReadFile(path)
-	if !bytes.HasPrefix(raw, []byte(header)) || bytes.Contains(raw, []byte("plaintext-token")) {
+	if !encrypted(raw) || bytes.Contains(raw, []byte("plaintext-token")) {
 		t.Fatal("file was not re-encrypted")
 	}
 	if got, err := ReadFile(path); err != nil || !bytes.Equal(got, plain) {
@@ -48,11 +48,18 @@ func TestPlaintextUpgraded(t *testing.T) {
 
 func TestTamperedFails(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "t.json")
-	WriteFile(path, []byte("x"))
+	if err := WriteFile(path, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
 	raw, _ := os.ReadFile(path)
 	raw[len(raw)-5] ^= 1
 	os.WriteFile(path, raw, 0o600)
 	if _, err := ReadFile(path); err == nil {
 		t.Fatal("expected error for tampered file")
 	}
+}
+
+// encrypted: either header (keyring/DPAPI, or the key file without a keyring).
+func encrypted(raw []byte) bool {
+	return strings.HasPrefix(string(raw), header) || strings.HasPrefix(string(raw), fileHeader)
 }

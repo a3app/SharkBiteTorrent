@@ -114,7 +114,7 @@ We checked this with the OS's own socket list: while downloading, the app's **on
 | **WARP endpoint stored as an IP address** | Some DNS resolvers block `engage.cloudflareclient.com`. A literal IP also avoids a DNS lookup outside the tunnel. |
 | **VPN sign-in only where the provider supports it** | Mullvad, PIA and IVPN publish their login flow in official open-source scripts or clients, and NordVPN issues access tokens for manual setups. Proton and AirVPN have no public API, so they use `.conf` import instead of fragile reverse-engineering. |
 | **Keep `.conf` import for every provider** | Works with any WireGuard provider, and suits people who'd rather not give the app their login. |
-| **Encrypt secrets with the OS key store** | Windows uses DPAPI. macOS and Linux keep a random key in Keychain or the Secret Service (KWallet/GNOME Keyring) and use AES-256-GCM. A copied settings file is unreadable on another account or machine, and the user never has to type a master password. Code running as the same logged-in user can still decrypt, as with browser-saved passwords. |
+| **Encrypt secrets with the OS key store** | Windows uses DPAPI. macOS and Linux keep a random key in Keychain or the Secret Service (KWallet/GNOME Keyring) and use AES-256-GCM (on a Linux desktop with no keyring, the key goes in a file only the user can read, and Settings says so). A copied settings file is unreadable on another account or machine, and the user never has to type a master password. Code running as the same logged-in user can still decrypt, as with browser-saved passwords. |
 | **Plain file I/O instead of memory-mapping** | anacrolix's default memory-maps files and never unmaps them, so Windows kept removed torrents' files locked and "delete files" failed. A tiny `earlyinit` module switches the library to plain I/O before it initializes. |
 | **"Unlimited" speed is a very large finite limit** | With an infinite rate limiter, anacrolix stopped connecting to peers: it saw zero download "tokens" and treated that as no budget. |
 | **Per-user installer (no admin)** | Matches the per-user magnet registration, avoids a UAC prompt, and upgrades in place. |
@@ -212,7 +212,7 @@ tar -C dist -czf packaging/arch/$name.tar.gz $name
 cd packaging/arch && makepkg -si
 ```
 
-Saved VPN logins on Linux need a Secret Service keyring. KDE's KWallet and GNOME Keyring both provide one.
+Saved VPN logins on Linux are best protected by a Secret Service keyring; KDE's KWallet and GNOME Keyring both provide one. Without one (common with Hyprland, Sway or i3), the app still works and keeps its key in `~/.config/SharkBiteTorrent/secret.key`, readable only by you.
 
 ### macOS
 

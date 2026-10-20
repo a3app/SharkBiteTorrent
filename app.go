@@ -865,12 +865,16 @@ type SettingsView struct {
 	// Antivirus the app scans finished downloads with, and whether it's installed.
 	Scanner          string `json:"scanner"`
 	ScannerAvailable bool   `json:"scannerAvailable"`
+	// KeyringMissing: Linux without KWallet/GNOME Keyring, so secrets are
+	// protected by a private key file only.
+	KeyringMissing bool `json:"keyringMissing"`
 }
 
 func (a *App) GetSettings() SettingsView {
 	a.mu.Lock()
 	v := SettingsView{Settings: a.settings, Accounts: map[string]string{}}
 	v.Scanner, v.ScannerAvailable = scan.Scanner()
+	v.KeyringMissing = secret.KeyringMissing()
 	a.mu.Unlock()
 	for id, acc := range a.loadAccounts() {
 		v.Accounts[id] = acc.Display

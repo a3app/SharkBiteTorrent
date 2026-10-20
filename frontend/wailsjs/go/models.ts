@@ -516,6 +516,7 @@ export namespace main {
 	    accounts: Record<string, string>;
 	    scanner: string;
 	    scannerAvailable: boolean;
+	    keyringMissing: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SettingsView(source);
@@ -529,6 +530,7 @@ export namespace main {
 	        this.accounts = source["accounts"];
 	        this.scanner = source["scanner"];
 	        this.scannerAvailable = source["scannerAvailable"];
+	        this.keyringMissing = source["keyringMissing"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

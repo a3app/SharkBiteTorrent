@@ -7,6 +7,9 @@ What changed in each release of Shark BiteTorrent. The release notes on GitHub a
 ### Added
 - **Start when I sign in** (Settings → Desktop): Shark BiteTorrent starts in the background at sign-in, in the tray, without opening its window. Works on Windows, Linux (KDE, GNOME and others) and macOS. In the Microsoft Store version, turn it on in Windows Settings → Apps → Startup (the option links there).
 
+### Fixed
+- Linux: on desktops without a keyring (Hyprland, Sway, i3, …) the app couldn't save the WARP account or VPN sign-ins, so it couldn't connect. It now keeps its encryption key in a file only you can read, and Settings says so. With KWallet or GNOME Keyring nothing changes.
+
 ## [0.2.36] - 2026-10-19
 
 ### Fixed
