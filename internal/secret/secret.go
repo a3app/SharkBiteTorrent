@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // header marks encrypted files, so older plaintext files can be detected and
@@ -28,8 +29,25 @@ const (
 	fileHeader = "SBT-SECRET-v1-keyfile\n" // key file (no keyring)
 )
 
+// pathLocks serializes writes to the same file (a migration in ReadFile and
+// a save can otherwise interleave).
+var pathLocks sync.Map // path → *sync.Mutex
+
+func lockPath(path string) func() {
+	m, _ := pathLocks.LoadOrStore(filepath.Clean(path), &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
 // WriteFile encrypts data and writes it atomically.
 func WriteFile(path string, data []byte) error {
+	defer lockPath(path)()
+	return writeFile(path, data)
+}
+
+// writeFile is WriteFile with the path's lock held.
+func writeFile(path string, data []byte) error {
 	enc, keyFile, err := protect(data)
 	if err != nil {
 		return err
@@ -42,11 +60,24 @@ func WriteFile(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, out, 0o600); err != nil {
+	// A temporary file of its own (0600), so concurrent writers never share one.
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	_, werr := f.Write(out)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		os.Remove(f.Name())
+		return werr
+	}
+	if err := os.Rename(f.Name(), path); err != nil {
+		os.Remove(f.Name())
+		return err
+	}
+	return nil
 }
 
 // ReadFile returns the decrypted contents. A file still in plaintext (from
@@ -76,7 +107,17 @@ func ReadFile(path string) ([]byte, error) {
 	// Saved with the key file while there was no keyring: now that there is
 	// one, move it there (best effort; it stays readable either way).
 	if keyFile && keyringUsable() {
-		WriteFile(path, plain)
+		migrate(path, raw, plain)
 	}
 	return plain, nil
+}
+
+// migrate re-saves a key-file secret with the keyring, unless the file
+// changed since it was read (a newer save must not be overwritten).
+func migrate(path string, raw, plain []byte) {
+	defer lockPath(path)()
+	if now, err := os.ReadFile(path); err != nil || !bytes.Equal(now, raw) {
+		return
+	}
+	writeFile(path, plain)
 }

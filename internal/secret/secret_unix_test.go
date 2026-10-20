@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -143,4 +144,41 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
+}
+
+// Many goroutines reading the same key-file secret while the keyring is
+// back migrate it once, without corrupting it.
+func TestMigrateConcurrent(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "secret.key")
+	oldPath, oldKeyring := keyFilePath, keyringKey
+	t.Cleanup(func() {
+		keyFilePath, keyringKey = oldPath, oldKeyring
+		fileKeyV = nil
+	})
+	keyFilePath = func() (string, error) { return keyPath, nil }
+	fileKeyV = nil
+	keyringKey = func() ([]byte, error) { return nil, errNoKeyring }
+	path := filepath.Join(t.TempDir(), "accounts.json")
+	want := []byte(`{"pia":"x"}`)
+	if err := WriteFile(path, want); err != nil {
+		t.Fatal(err)
+	}
+	keyringKey = func() ([]byte, error) { return bytes.Repeat([]byte{3}, 32), nil }
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if got, err := ReadFile(path); err != nil || !bytes.Equal(got, want) {
+				t.Errorf("read during migration: %q, %v", got, err)
+			}
+		}()
+	}
+	wg.Wait()
+	if got, err := ReadFile(path); err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("after: %q, %v", got, err)
+	}
+	if left, _ := filepath.Glob(path + ".*.tmp"); len(left) > 0 {
+		t.Errorf("temporary files left: %v", left)
+	}
 }
