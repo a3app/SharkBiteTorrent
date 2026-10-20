@@ -25,10 +25,13 @@ import (
 // torrent's with the same name).
 //
 // A file is recorded when the store creates it (O_EXCL), with its identity
-// (device and inode, or Windows' volume serial and file index; see fileID)
-// and size. It counts as ours only while the file at that path still is
-// that file, so a record can't vouch for a different file that later
-// appears at the same path; entries that no longer match are dropped.
+// (device and inode, or Windows' volume serial and file index; see fileID).
+// It counts as ours only while the file at that path still is that file, so
+// a record can't vouch for a different file that later appears at the same
+// path; entries that no longer match are dropped. Size isn't part of the
+// identity: some NAS shares report a pre-sized file's size as only up to
+// its furthest written byte, growing as it downloads. (The size is still
+// written to the record, for reading it.)
 //
 // Records are owned/<info hash>-<folder hash> in the app's data folder: a
 // header naming the folder, then "id<TAB>size<TAB>path" per file, appended
@@ -89,7 +92,7 @@ func loadOwnership(ownedDir string, ih metainfo.Hash, dir string) *ownership {
 			stale = true
 			continue
 		}
-		if id, sz, err := fileID(p); err != nil || id != f[0] || sz != size {
+		if id, _, err := fileID(p); err != nil || id != f[0] {
 			stale = true // gone, or a different file now
 			continue
 		}
@@ -111,8 +114,8 @@ func (o *ownership) has(p string) bool {
 	if !ok {
 		return false
 	}
-	id, size, err := fileID(p)
-	return err == nil && id == r.id && size == r.size
+	id, _, err := fileID(p)
+	return err == nil && id == r.id
 }
 
 // add records a file the store has just created (and sized).
