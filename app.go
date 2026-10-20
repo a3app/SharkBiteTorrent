@@ -860,6 +860,9 @@ func (a *App) Remove(hash string, deleteFiles bool) error {
 		return err
 	}
 	rmErr := eng.Remove(hash, deleteFiles)
+	if errors.Is(rmErr, engine.ErrNotFound) {
+		rmErr = nil // already removed (a second click while the first finished)
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	kept := a.saved[:0]

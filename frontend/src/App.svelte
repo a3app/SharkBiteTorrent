@@ -175,11 +175,21 @@
     if (e.key === 'Escape') menu = null
   }
 
+  // Torrents being removed right now: shown as such, and not removable twice.
+  let removingNow = $state(new Set<string>())
+
+  async function removeTorrent(hash: string, files: boolean) {
+    if (removingNow.has(hash)) return
+    removingNow = new Set([...removingNow, hash])
+    if (selected === hash) selected = null // close its files panel before it's gone
+    await run(() => Remove(hash, files))
+    removingNow = new Set([...removingNow].filter(h => h !== hash))
+  }
+
   function confirmRemove() {
     const t = removing!
     removing = null
-    if (selected === t.hash) selected = null // close its files panel before it's gone
-    run(() => Remove(t.hash, deleteFiles))
+    removeTorrent(t.hash, deleteFiles)
   }
 
   function eta(t: engine.Status): string {
@@ -193,6 +203,7 @@
     if (t.sfv?.checking) return 'Checking .sfv…'
     if (t.state === 'seeding' && t.scanState === 'scanning') return 'Scanning for malware…'
     if (t.scanState === 'threat') return '⚠ Threat found'
+    if (removingNow.has(t.hash)) return 'Removing…'
     if (t.confirm && t.state === 'paused') return 'Waiting for Start'
     return stateLabel[t.state] ?? t.state
   }
@@ -265,7 +276,7 @@
     <span class="sep"></span>
     <button onclick={() => sel && run(() => Resume(sel.hash))} disabled={!sel || sel.state !== 'paused'}>Resume</button>
     <button onclick={() => sel && run(() => Pause(sel.hash))} disabled={!sel || sel.state === 'paused'}>Pause</button>
-    <button onclick={() => { removing = sel ?? null; deleteFiles = false }} disabled={!sel}>Remove…</button>
+    <button onclick={() => { removing = sel ?? null; deleteFiles = false }} disabled={!sel || removingNow.has(sel.hash)}>Remove…</button>
   </div>
 
   {#each torrents.filter(t => t.confirm) as t (t.hash)}
@@ -281,7 +292,7 @@
         </span>
         <button class="primary" onclick={() => run(() => StartTorrent(t.hash))}>Start</button>
       {/if}
-      <button onclick={() => run(() => Remove(t.hash, false))}>Remove</button>
+      <button onclick={() => removeTorrent(t.hash, false)} disabled={removingNow.has(t.hash)}>Remove</button>
     </div>
   {/each}
 

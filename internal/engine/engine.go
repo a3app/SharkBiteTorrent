@@ -410,7 +410,7 @@ func (e *Engine) find(hash string) (*entry, error) {
 	defer e.mu.Unlock()
 	en, ok := e.entries[h]
 	if !ok || en.t == nil {
-		return nil, fmt.Errorf("torrent %s not found", hash)
+		return nil, fmt.Errorf("torrent %s: %w", hash, ErrNotFound)
 	}
 	return en, nil
 }
@@ -444,6 +444,9 @@ func (e *Engine) Resume(hash string) error {
 	return nil
 }
 
+// ErrNotFound: no such torrent (for Remove, already removed).
+var ErrNotFound = errors.New("not found")
+
 // Remove drops the torrent. If deleteFiles is set, its downloaded files are
 // deleted too: exactly the files it wrote, then any of its folders left
 // empty. Never a whole folder, which may hold other things (another torrent
@@ -454,10 +457,12 @@ func (e *Engine) Remove(hash string, deleteFiles bool) error {
 		return err
 	}
 	var paths []string
+	var pathErr error
 	info := en.t.Info()
 	if info != nil && deleteFiles && en.storage.Blocked() == nil {
-		if paths, err = torrentPaths(en.dir, info); err != nil {
-			return err
+		// Unsafe names: the torrent is still removed, its files aren't touched.
+		if paths, pathErr = torrentPaths(en.dir, info); pathErr != nil {
+			paths = nil
 		}
 	}
 	e.mu.Lock()
@@ -465,9 +470,14 @@ func (e *Engine) Remove(hash string, deleteFiles bool) error {
 	e.mu.Unlock()
 	en.t.Drop() // closes the storage, releasing its file handles
 	if info != nil {
-		// Forget its progress, so re-adding it later starts clean.
+		// Forget its progress, so re-adding it later starts clean. Only
+		// finished pieces have anything to forget, and each write is a disk
+		// sync: clearing all of a big torrent's pieces took seconds.
 		for i := range info.NumPieces() {
-			e.pc.Set(metainfo.PieceKey{InfoHash: en.t.InfoHash(), Index: i}, false)
+			key := metainfo.PieceKey{InfoHash: en.t.InfoHash(), Index: i}
+			if c, err := e.pc.Get(key); err == nil && c.Ok && c.Complete {
+				e.pc.Set(key, false)
+			}
 		}
 	}
 	if !deleteFiles {
@@ -477,7 +487,7 @@ func (e *Engine) Remove(hash string, deleteFiles bool) error {
 		os.Remove(filepath.Join(e.ownedDir, en.t.InfoHash().HexString()))
 	}
 
-	return removeFiles(en.dir, paths)
+	return errors.Join(pathErr, removeFiles(en.dir, paths))
 }
 
 // removeFiles deletes paths (files inside dir), then their folders that are
