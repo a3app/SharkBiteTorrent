@@ -1,73 +1,396 @@
 package engine
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
 
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/anacrolix/torrent/storage"
 )
 
-// Before a torrent writes anything in a download folder, claim checks that
-// none of its paths is already taken: a file there is the user's own, or
-// another torrent's, so the torrent is blocked instead of writing into it.
-// Once a torrent passes, a marker (owned/<info hash>-<folder hash> in the
-// app's data folder) records that its files there are its own, so restarts
-// don't block it on its own files. Torrents saved by an older version have
-// no marker yet; they're adopted once, from the saved list (Adopt).
+// ownership records which of a torrent's files this app created in one
+// download folder, so the store only ever writes into and deletes its own
+// files: never a file that was there before (the user's, or another
+// torrent's with the same name), and never one that appeared at the same
+// path later.
 //
-// This is a check at the start, not per file: files that appear at a
-// torrent's paths later (another torrent with the same name downloading at
-// the same time, a file ticked later) aren't caught. Stricter per-file
-// ownership is being worked on separately.
+// A file is recorded when the store creates it (O_EXCL), with its identity
+// (see fileIdentity: creation time, plus the file index on Windows). It
+// counts as ours only while the file at that path still is that file;
+// entries that no longer match are dropped. The folders the store created
+// are recorded too, so Remove prunes only those. Before creating a file the
+// store notes it as pending (with its length), so a crash between creating
+// and recording it doesn't leave the torrent blocked on its own file.
+//
+// Records are owned/<info hash>-<folder hash> in the app's data folder,
+// appended as files are created. Torrents saved by v0.2.36 or older have
+// none; their existing files are adopted once (fileStore.adopt, decided
+// when the saved list is loaded). So are those of torrents that passed
+// v0.2.37's check, which left an empty marker file at the record's path.
+type ownership struct {
+	path string // the record file
+	dir  string // download folder
 
-func markerPath(ownedDir string, ih metainfo.Hash, dir string) string {
+	mu      sync.Mutex
+	owned   map[string]fileIdentity // files, by absolute path
+	dirs    map[string]bool         // folders the store created
+	written bool                    // the record file exists with its header
+	marker  bool                    // instead, an empty v0.2.37 marker: the torrent passed its check then
+}
+
+const ownershipHeader = "sbt-owned 3\t"
+
+func recordPath(ownedDir string, ih metainfo.Hash, dir string) string {
 	sum := sha256.Sum256([]byte(filepath.Clean(dir)))
 	return filepath.Join(ownedDir, ih.HexString()+"-"+hex.EncodeToString(sum[:8]))
 }
 
-// claim checks that the torrent may write its files in s.dir.
+// loadOwnership reads the torrent's record for dir, keeping only entries
+// whose file is still the one recorded (and completing pending ones whose
+// file was created after they were noted). With tidy, the record is
+// rewritten without the entries dropped; only while nothing else is writing
+// to it (never another torrent's, which may be downloading).
+func loadOwnership(ownedDir string, ih metainfo.Hash, dir string, tidy bool) *ownership {
+	o := &ownership{path: recordPath(ownedDir, ih, dir), dir: filepath.Clean(dir), owned: map[string]fileIdentity{}, dirs: map[string]bool{}}
+	b, err := os.ReadFile(o.path)
+	if err != nil {
+		return o
+	}
+	if len(b) == 0 {
+		o.marker = true
+		return o
+	}
+	i := bytes.LastIndexByte(b, '\n')
+	if i < 0 {
+		return o
+	}
+	b = b[:i+1] // a last line without its newline was cut off by a crash
+	sc := bufio.NewScanner(bytes.NewReader(b))
+	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	if !sc.Scan() || !strings.HasPrefix(sc.Text(), ownershipHeader) || filepath.Clean(strings.TrimPrefix(sc.Text(), ownershipHeader)) != o.dir {
+		return o // not a record for this folder (or an older format: not trusted)
+	}
+	o.written = true
+	rewrite := false
+	recorded := map[string]bool{} // paths with an "f" line, current or not
+	pending := map[string]int64{} // noted, by length, and not cancelled
+	for sc.Scan() {
+		f := strings.SplitN(sc.Text(), "\t", 3)
+		if len(f) != 3 {
+			rewrite = true
+			continue
+		}
+		p := filepath.Join(o.dir, filepath.FromSlash(f[2]))
+		if !isSub(o.dir, p) || p == o.dir {
+			rewrite = true
+			continue
+		}
+		switch f[0] {
+		case "f":
+			recorded[p] = true
+			want, err := parseIdentity(f[1])
+			if got, gerr := identityOf(p); err != nil || gerr != nil || !got.same(want) {
+				rewrite = true // gone, or a different file now
+				continue
+			}
+			o.owned[p] = want
+		case "d":
+			o.dirs[p] = true
+		case "p":
+			rewrite = true
+			if n, err := strconv.ParseInt(f[1], 10, 64); err == nil {
+				pending[p] = n
+			}
+		case "x":
+			rewrite = true
+			delete(pending, p)
+		default:
+			rewrite = true
+		}
+	}
+	for p, n := range pending {
+		// Noted just before the store created it, and neither recorded nor
+		// cancelled (the app stopped in between): ours if the file there is
+		// still what the store makes, empty and at its full length (or
+		// reported as empty: a NAS reports sizes up to the furthest byte
+		// written). Not by creation time: a NAS stamps it with its own
+		// clock, seconds off this computer's.
+		if recorded[p] {
+			continue
+		}
+		fi, err := os.Lstat(p)
+		if err != nil || !fi.Mode().IsRegular() || (fi.Size() != n && fi.Size() != 0) {
+			continue
+		}
+		if got, err := identityOf(p); err == nil && got.known() {
+			o.owned[p] = got
+		}
+	}
+	if rewrite && tidy {
+		o.mu.Lock()
+		o.saveLocked()
+		o.mu.Unlock()
+	}
+	return o
+}
+
+// has reports whether the file at p is one the store created.
+func (o *ownership) has(p string) bool {
+	o.mu.Lock()
+	want, ok := o.owned[p]
+	o.mu.Unlock()
+	if !ok {
+		return false
+	}
+	got, err := identityOf(p)
+	return err == nil && got.same(want)
+}
+
+// pending notes that the store is about to create p, length bytes long.
+func (o *ownership) pending(p string, length int64) error {
+	return o.appendLine("p", strconv.FormatInt(length, 10), p)
+}
+
+// cancel withdraws a pending note: the file couldn't be created.
+func (o *ownership) cancel(p string) {
+	o.appendLine("x", "-", p)
+}
+
+// addDir records a folder the store created.
+func (o *ownership) addDir(p string) error {
+	if err := o.appendLine("d", "-", p); err != nil {
+		return err
+	}
+	o.mu.Lock()
+	o.dirs[p] = true
+	o.mu.Unlock()
+	return nil
+}
+
+// add records a file the store has just created.
+func (o *ownership) add(p string) error {
+	id, err := identityOf(p)
+	if err != nil {
+		return err
+	}
+	if !id.known() {
+		return fmt.Errorf("%s: this drive doesn't identify files, so Shark BiteTorrent can't tell its own files from others there", filepath.Dir(p))
+	}
+	if err := o.appendLine("f", id.String(), p); err != nil {
+		return err
+	}
+	o.mu.Lock()
+	o.owned[p] = id // only once it's on disk
+	o.mu.Unlock()
+	return nil
+}
+
+// appendLine adds "kind<TAB>value<TAB>path" to the record, writing the whole
+// record first if it doesn't exist yet (or was deleted meanwhile).
+func (o *ownership) appendLine(kind, value, p string) error {
+	rel, err := filepath.Rel(o.dir, p)
+	if err != nil {
+		return err
+	}
+	line := kind + "\t" + value + "\t" + filepath.ToSlash(rel) + "\n"
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.written {
+		f, err := os.OpenFile(o.path, os.O_WRONLY|os.O_APPEND, 0o600)
+		if err == nil {
+			_, werr := f.WriteString(line)
+			if cerr := f.Close(); werr == nil {
+				werr = cerr
+			}
+			return werr
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	if err := o.saveLocked(); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(o.path, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	_, werr := f.WriteString(line)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	return werr
+}
+
+// adopt records existing files, and the folders between them and the
+// download folder, as ours: torrents saved by an older version.
+func (o *ownership) adopt(paths []string) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, p := range paths {
+		if id, err := identityOf(p); err == nil && id.known() {
+			o.owned[p] = id
+			for d := filepath.Dir(p); d != o.dir && isSub(o.dir, d); d = filepath.Dir(d) {
+				o.dirs[d] = true
+			}
+		}
+	}
+	return o.saveLocked()
+}
+
+// saveLocked rewrites the whole record. Call with o.mu held.
+func (o *ownership) saveLocked() error {
+	var b strings.Builder
+	b.WriteString(ownershipHeader + o.dir + "\n")
+	for _, p := range sortedKeys(o.dirs) {
+		if rel, err := filepath.Rel(o.dir, p); err == nil {
+			b.WriteString("d\t-\t" + filepath.ToSlash(rel) + "\n")
+		}
+	}
+	for _, p := range sortedKeys(o.owned) {
+		if rel, err := filepath.Rel(o.dir, p); err == nil {
+			b.WriteString("f\t" + o.owned[p].String() + "\t" + filepath.ToSlash(rel) + "\n")
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(o.path), 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(o.path), filepath.Base(o.path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	_, werr := f.WriteString(b.String())
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Rename(f.Name(), o.path)
+	}
+	if werr != nil {
+		os.Remove(f.Name())
+		return werr
+	}
+	o.written = true
+	return nil
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// files returns the recorded files that are still the ones created.
+func (o *ownership) files() []string {
+	o.mu.Lock()
+	paths := sortedKeys(o.owned)
+	o.mu.Unlock()
+	out := paths[:0]
+	for _, p := range paths {
+		if o.has(p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// folders returns the folders the store created, deepest first.
+func (o *ownership) folders() []string {
+	o.mu.Lock()
+	out := sortedKeys(o.dirs)
+	o.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
+	return out
+}
+
+func (o *ownership) forget() { os.Remove(o.path) }
+
+// ownedByOthers reports which of paths another torrent's record in the same
+// folder also claims (two torrents sharing a file, as v0.2.36 allowed): such
+// a file mustn't be deleted when one of them is removed.
+func ownedByOthers(ownedDir string, self metainfo.Hash, dir string, paths []string) map[string]bool {
+	sum := sha256.Sum256([]byte(filepath.Clean(dir)))
+	suffix := "-" + hex.EncodeToString(sum[:8])
+	ents, err := os.ReadDir(ownedDir)
+	if err != nil {
+		return nil
+	}
+	shared := map[string]bool{}
+	for _, e := range ents {
+		name := e.Name()
+		if !strings.HasSuffix(name, suffix) || strings.HasPrefix(name, self.HexString()) {
+			continue
+		}
+		var ih metainfo.Hash
+		if ih.FromHexString(strings.TrimSuffix(name, suffix)) != nil {
+			continue
+		}
+		other := loadOwnership(ownedDir, ih, dir, false)
+		for _, p := range paths {
+			if other.has(p) {
+				shared[p] = true
+			}
+		}
+	}
+	return shared
+}
+
+// claim prepares the torrent's ownership record and checks that none of its
+// paths is taken by a file that isn't ours. adopt is for a torrent saved by
+// an older version, with no record yet: what's at its paths is its own.
 func (s *fileStore) claim(ih metainfo.Hash, info *metainfo.Info, paths []string) error {
 	if s.ownedDir == "" {
-		return nil // tests and tools: no markers
+		return nil // tests and tools: no records
 	}
 	os.Remove(filepath.Join(s.ownedDir, ih.HexString())) // pre-release marker: not trusted
-	marker := markerPath(s.ownedDir, ih, s.dir)
-	if _, err := os.Stat(marker); err == nil {
-		return nil // passed before, in this folder
-	}
-	if !s.adopt {
+	o := loadOwnership(s.ownedDir, ih, s.dir, true)
+	if o.written || !s.adopt {
 		if err := noLinkedFolders(s.dir, paths); err != nil {
 			return err
 		}
-		for _, p := range paths {
-			if _, err := os.Lstat(p); err == nil {
-				rel, _ := filepath.Rel(s.dir, p)
-				return fmt.Errorf("%q already exists in the download folder, and Shark BiteTorrent only writes into files it created. Remove this torrent, move the file away (or choose another download folder), then add the torrent again", rel)
-			}
+	}
+	switch {
+	case !o.written && (s.adopt || o.marker):
+		if err := o.adopt(paths); err != nil {
+			return err
 		}
+	case !o.written:
 		// New here: progress recorded for this torrent in another folder
 		// (or before it was removed) doesn't apply to these files.
 		clearComplete(s.pc, ih, info.NumPieces())
-	}
-	if err := os.MkdirAll(s.ownedDir, 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(marker, nil, 0o600)
-}
-
-// clearComplete forgets the torrent's finished pieces (only those: each
-// write is a disk sync).
-func clearComplete(pc storage.PieceCompletion, ih metainfo.Hash, n int) {
-	for i := range n {
-		key := metainfo.PieceKey{InfoHash: ih, Index: i}
-		if c, err := pc.Get(key); err == nil && c.Ok && c.Complete {
-			pc.Set(key, false)
+		// Written now, so "no record" always means "not ours yet", never
+		// "added by this version but nothing created so far".
+		o.mu.Lock()
+		err := o.saveLocked()
+		o.mu.Unlock()
+		if err != nil {
+			return err
 		}
 	}
+	s.mu.Lock()
+	s.own = o
+	s.mu.Unlock()
+	for _, p := range paths {
+		if _, err := os.Lstat(p); err == nil && !o.has(p) {
+			rel, _ := filepath.Rel(s.dir, p)
+			return fmt.Errorf("%q already exists in the download folder, and Shark BiteTorrent only writes into files it created. Remove this torrent, move the file away (or choose another download folder), then add the torrent again", rel)
+		}
+	}
+	return nil
 }
 
 // noLinkedFolders refuses a torrent whose folders inside dir include a link
@@ -85,4 +408,15 @@ func noLinkedFolders(dir string, paths []string) error {
 		}
 	}
 	return nil
+}
+
+// clearComplete forgets the torrent's finished pieces (only those: each
+// write is a disk sync).
+func clearComplete(pc storage.PieceCompletion, ih metainfo.Hash, n int) {
+	for i := range n {
+		key := metainfo.PieceKey{InfoHash: ih, Index: i}
+		if c, err := pc.Get(key); err == nil && c.Ok && c.Complete {
+			pc.Set(key, false)
+		}
+	}
 }

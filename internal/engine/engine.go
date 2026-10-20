@@ -56,7 +56,7 @@ type Engine struct {
 	tun      *tunnel.Tunnel
 	down, up *rate.Limiter
 	pc       storage.PieceCompletion // shared by all torrents; persists progress
-	ownedDir string                  // fileStore ownership markers ("" without StateDir)
+	ownedDir string                  // fileStore ownership records ("" without StateDir)
 
 	mu      sync.Mutex
 	entries map[metainfo.Hash]*entry
@@ -321,7 +321,7 @@ type AddOptions struct {
 	Source string // magnet link or path to a .torrent file
 	Dir    string // folder to save data in
 	// Adopt: the torrent was saved by an older version, which wrote no claim
-	// markers: its existing files are adopted as its own (see ownership.go).
+	// records: its existing files are adopted as its own (see ownership.go).
 	Adopt   bool
 	Skipped []int // file indexes not to download
 	Paused  bool
@@ -495,32 +495,50 @@ func (e *Engine) Remove(hash string, deleteFiles bool) error {
 		// the wait, so a piece finishing meanwhile can't mark itself again.
 		clearComplete(e.pc, ih, info.NumPieces())
 	}
+	own := en.storage.ownership()
+	if own == nil && e.ownedDir != "" {
+		// Never opened this session (a magnet still fetching its file
+		// list): its record on disk says which files it created.
+		own = loadOwnership(e.ownedDir, ih, en.dir, true)
+	}
 	if !deleteFiles {
 		// The files stay, but they're no longer the torrent's: adding it
 		// again is checked like any new torrent (and refused over them).
-		if e.ownedDir != "" {
-			os.Remove(markerPath(e.ownedDir, ih, en.dir))
+		if own != nil {
+			own.forget()
 		}
 		return nil
 	}
-	if info == nil {
-		// Its file list never arrived this session (a magnet still fetching
-		// it), so its paths aren't known: nothing can be deleted safely. The
-		// marker stays, so adding it again isn't blocked on its own files.
+	if own != nil && !own.written {
+		own = nil // no record on disk (or only a v0.2.37 marker): nothing listed
+	}
+	var owned, prune []string
+	switch {
+	case own != nil:
+		owned, prune = own.files(), own.folders()
+	case info == nil:
 		return errors.New("its file list isn't known yet (still fetching it), so its files weren't deleted")
+	default:
+		owned = en.storage.files() // no records (tests and tools)
+	}
+	var shared map[string]bool
+	if e.ownedDir != "" {
+		// Two torrents sharing a file (v0.2.36 allowed it): it stays for
+		// the other one.
+		shared = ownedByOthers(e.ownedDir, ih, en.dir, owned)
 	}
 	var paths []string
-	for _, p := range en.storage.files() {
-		if !stillOpen[p] {
+	for _, p := range owned {
+		if !stillOpen[p] && !shared[p] {
 			paths = append(paths, p)
 		}
 	}
-	err := removeFiles(en.dir, paths)
+	err := removeFiles(en.dir, paths, prune, own == nil)
 	if len(stillOpen) > 0 {
 		return errors.Join(err, fmt.Errorf("%d file(s) were still in use, so they weren't deleted", len(stillOpen)))
 	}
-	if err == nil && e.ownedDir != "" {
-		os.Remove(markerPath(e.ownedDir, ih, en.dir))
+	if err == nil && own != nil {
+		own.forget()
 	}
 	return err
 }
@@ -547,11 +565,16 @@ func (e *Engine) OwnedFiles(hash string) []string {
 	return en.storage.files()
 }
 
-// removeFiles deletes paths (files inside dir), then their folders that are
-// left empty, deepest first, never dir itself or anything outside it.
-func removeFiles(dir string, paths []string) error {
+// removeFiles deletes paths (files inside dir), then the folders in prune
+// that are left empty, deepest first. With parents, also every folder
+// between the files and dir (no ownership records). Never dir itself or
+// anything outside it.
+func removeFiles(dir string, paths, prune []string, parents bool) error {
 	var errs []error
 	dirs := map[string]bool{}
+	for _, d := range prune {
+		dirs[d] = true
+	}
 	for _, p := range paths {
 		// Windows can hold file handles briefly after Drop; retry a little.
 		var err error
@@ -565,14 +588,16 @@ func removeFiles(dir string, paths []string) error {
 		if err != nil {
 			errs = append(errs, err)
 		}
-		for d := filepath.Dir(p); d != filepath.Clean(dir) && isSub(dir, d); d = filepath.Dir(d) {
+		for d := filepath.Dir(p); parents && d != filepath.Clean(dir) && isSub(dir, d); d = filepath.Dir(d) {
 			dirs[d] = true
 		}
 	}
 	// Deepest first; os.Remove only removes empty folders.
 	sorted := make([]string, 0, len(dirs))
 	for d := range dirs {
-		sorted = append(sorted, d)
+		if d != filepath.Clean(dir) && isSub(dir, d) {
+			sorted = append(sorted, d)
+		}
 	}
 	sort.Slice(sorted, func(i, j int) bool { return len(sorted[i]) > len(sorted[j]) })
 	for _, d := range sorted {

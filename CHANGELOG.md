@@ -6,6 +6,7 @@ What changed in each release of Shark BiteTorrent. The release notes on GitHub a
 
 ### Fixed
 - Quitting or restarting the app while downloading to a slow drive (a NAS, especially) lost part of the progress: pieces already downloaded and checked, but still being written, weren't recorded, so they downloaded again (in a test, 54% dropped to 37%). They're now written and recorded before the app closes, after checking each one, so a restart keeps what was downloaded.
+- A torrent now only ever writes into, and deletes, files it created itself, tracked by the file's identity rather than its name. Before, a file it had made that you then deleted and replaced with your own (same name), or that another torrent of the same name shared, could still be written into or deleted with **Remove with files**. Removing with files also leaves alone folders that were already there (only the folders the torrent created are removed, if empty), and works for a magnet link whose file list hadn't arrived yet. Torrents you already have keep their files after the update.
 
 ## [0.2.37] - 2026-10-20
 

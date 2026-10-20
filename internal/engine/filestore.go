@@ -43,10 +43,11 @@ import (
 type fileStore struct {
 	dir      string // download folder for this torrent
 	pc       storage.PieceCompletion
-	ownedDir string // claim markers (see ownership.go); "" skips the check
-	adopt    bool   // a torrent saved by an older version: adopt its files if it has no marker yet
+	ownedDir string // ownership records (see ownership.go); "" skips the checks
+	adopt    bool   // a torrent saved by an older version: adopt its files if it has no record yet
 
 	mu      sync.Mutex
+	own     *ownership   // set by claim; nil without ownedDir
 	blocked error        // set if the torrent mustn't write (shown in the list)
 	ft      *fileTorrent // the torrent's storage, once opened
 	removed bool         // being removed: don't write out buffered pieces on close
@@ -59,14 +60,18 @@ func (s *fileStore) dropping() {
 	s.mu.Unlock()
 }
 
-// files are the torrent's files that exist, as regular files, at its paths
-// (none if it's blocked: its paths are taken by other files).
+// files are the torrent's files that it created (none if it's blocked).
+// Without ownership records: those that exist, as regular files, at its
+// paths.
 func (s *fileStore) files() []string {
 	s.mu.Lock()
-	t, blocked := s.ft, s.blocked
+	t, blocked, own := s.ft, s.blocked, s.own
 	s.mu.Unlock()
 	if t == nil || blocked != nil {
 		return nil
+	}
+	if own != nil {
+		return own.files()
 	}
 	var out []string
 	for _, p := range t.paths {
@@ -75,6 +80,13 @@ func (s *fileStore) files() []string {
 		}
 	}
 	return out
+}
+
+// ownership is the torrent's record of its files, once claimed.
+func (s *fileStore) ownership() *ownership {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.own
 }
 
 func newFileStore(dir string, pc storage.PieceCompletion, ownedDir string, adopt bool) *fileStore {
@@ -161,6 +173,9 @@ func (s *fileStore) OpenTorrent(_ context.Context, info *metainfo.Info, ih metai
 		paths = make([]string, len(info.UpvertedFiles()))
 	}
 	ft.paths = paths
+	s.mu.Lock()
+	ft.own = s.own
+	s.mu.Unlock()
 	for _, fi := range info.UpvertedFiles() {
 		ft.lengths = append(ft.lengths, fi.Length)
 	}
@@ -189,7 +204,8 @@ type fileTorrent struct {
 	index   segments.Index
 	paths   []string
 	lengths []int64
-	blocked error // see fileStore.claim; no file is opened if set
+	blocked error      // see fileStore.claim; no file is opened if set
+	own     *ownership // the store's, fixed once opened; nil without records
 
 	mu            sync.Mutex
 	freed         *sync.Cond          // signalled when a handle is released
@@ -318,33 +334,105 @@ func (s *fileStore) waitReleased(timeout time.Duration) (stillOpen map[string]bo
 func (t *fileTorrent) openFile(i int, create bool) (*os.File, error) {
 	f, err := os.OpenFile(t.paths[i], os.O_RDWR, 0o644)
 	if errors.Is(err, fs.ErrNotExist) && create {
-		if err := os.MkdirAll(filepath.Dir(t.paths[i]), 0o755); err != nil {
-			return nil, err
-		}
-		f, err = os.OpenFile(t.paths[i], os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
-		if err == nil {
-			makeSparse(f) // best effort: unsupported filesystems still work, just slower
-			if err = f.Truncate(t.lengths[i]); err != nil {
-				// Too big for the drive (FAT32), full, over quota: don't
-				// leave a stub behind.
-				f.Close()
-				os.Remove(t.paths[i])
-				return nil, fmt.Errorf("can't create %s: %w", filepath.Base(t.paths[i]), err)
-			}
-		}
-		if err == nil {
-			// Marked as downloaded from the internet from the start, so a
-			// file opened before the torrent finishes is checked by the OS.
-			scan.MarkDownloaded(t.paths[i])
-		}
+		return t.createFile(i)
 	}
 	if err != nil {
-		if f != nil {
-			f.Close()
-		}
+		return nil, err
+	}
+	if err := t.ours(i); err != nil {
+		f.Close()
 		return nil, err
 	}
 	return f, nil
+}
+
+// ours refuses file i if the store didn't create it: it appeared at the
+// torrent's path after the torrent was checked.
+func (t *fileTorrent) ours(i int) error {
+	if t.own == nil || t.own.has(t.paths[i]) {
+		return nil
+	}
+	return fmt.Errorf("%s wasn't created by Shark BiteTorrent, so it won't write into it", filepath.Base(t.paths[i]))
+}
+
+// createFile creates file i, which mustn't exist yet, sparse and sized to
+// its full length, and records it (and any folders made for it) as the
+// torrent's own.
+func (t *fileTorrent) createFile(i int) (*os.File, error) {
+	p := t.paths[i]
+	if t.own != nil {
+		if err := t.own.pending(p, t.lengths[i]); err != nil {
+			return nil, err
+		}
+	}
+	if err := t.mkdirs(filepath.Dir(p)); err != nil {
+		t.cancel(p)
+		return nil, err
+	}
+	f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		t.cancel(p) // there already (someone else's), or can't be made
+		return nil, err
+	}
+	makeSparse(f) // best effort: unsupported filesystems still work, just slower
+	if err = f.Truncate(t.lengths[i]); err != nil {
+		// Too big for the drive (FAT32), full, over quota: don't leave a
+		// stub behind.
+		err = fmt.Errorf("can't create %s: %w", filepath.Base(p), err)
+	} else if t.own != nil {
+		err = t.own.add(p)
+	}
+	if err != nil {
+		f.Close()
+		os.Remove(p)
+		t.cancel(p)
+		return nil, err
+	}
+	// Marked as downloaded from the internet from the start, so a file
+	// opened before the torrent finishes is checked by the OS.
+	scan.MarkDownloaded(p)
+	return f, nil
+}
+
+func (t *fileTorrent) cancel(p string) {
+	if t.own != nil {
+		t.own.cancel(p)
+	}
+}
+
+// mkdirs creates folder d inside the download folder, recording each one it
+// makes, so removing the torrent prunes only folders it created.
+func (t *fileTorrent) mkdirs(d string) error {
+	root := filepath.Clean(t.store.dir)
+	var missing []string
+	for ; d != root && isSub(root, d); d = filepath.Dir(d) {
+		fi, err := os.Lstat(d)
+		if err == nil {
+			if !fi.IsDir() {
+				rel, _ := filepath.Rel(root, d)
+				return fmt.Errorf("%q in the download folder is a link or a file, not a folder", rel)
+			}
+			break
+		}
+		missing = append(missing, d)
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return err
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		if err := os.Mkdir(missing[i], 0o755); err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				continue // made by someone else meanwhile: not ours
+			}
+			return err
+		}
+		if t.own != nil {
+			if err := t.own.addDir(missing[i]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (t *fileTorrent) close() error {
@@ -411,17 +499,15 @@ func (t *fileTorrent) writeFinished(bufs map[int]*pieceBuf, deadline time.Time) 
 			if e.Length == 0 {
 				continue
 			}
-			// Its own path: the torrent passed its check (blocked ones have
-			// nothing buffered). The file may not exist yet if this is its
-			// first piece to reach the disk.
-			_, statErr := os.Stat(t.paths[i])
-			if os.MkdirAll(filepath.Dir(t.paths[i]), 0o755) != nil {
-				ok = false
-				break
-			}
-			f, err := os.OpenFile(t.paths[i], os.O_WRONLY|os.O_CREATE, 0o644)
-			if err == nil && statErr != nil {
-				scan.MarkDownloaded(t.paths[i])
+			// Blocked torrents have nothing buffered. The file may not exist
+			// yet if this is its first piece to reach the disk.
+			f, err := os.OpenFile(t.paths[i], os.O_WRONLY, 0o644)
+			if err == nil {
+				if err = t.ours(i); err != nil {
+					f.Close()
+				}
+			} else if errors.Is(err, fs.ErrNotExist) {
+				f, err = t.createFile(i)
 			}
 			if err == nil {
 				_, err = f.WriteAt(data[n:n+e.Length], e.Start)

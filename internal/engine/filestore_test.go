@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/anacrolix/torrent/storage"
@@ -120,14 +121,14 @@ func TestClaim(t *testing.T) {
 		t.Error("files in another folder taken as the torrent's own")
 	}
 
-	// Saved by an older version (no marker): its files are adopted.
+	// Saved by an older version (no record): its files are adopted.
 	legacy := multiInfo("Old", []string{"old.mkv"})
 	os.MkdirAll(filepath.Join(dir, "Old"), 0o755)
 	os.WriteFile(filepath.Join(dir, "Old", "old.mkv"), []byte("1"), 0o644)
 	if st, _ := open(legacy, hashN(7), dir, false); st.Blocked() == nil {
 		t.Error("files adopted for a torrent not from the saved list")
 	}
-	os.Remove(markerPath(owned, hashN(7), dir))
+	os.Remove(recordPath(owned, hashN(7), dir))
 	if st, _ := open(legacy, hashN(7), dir, true); st.Blocked() != nil || len(st.files()) != 1 {
 		t.Errorf("older version's torrent not adopted: %v %v", st.Blocked(), st.files())
 	}
@@ -142,7 +143,7 @@ func TestRemoveKeepsLinks(t *testing.T) {
 	}
 	f := filepath.Join(dir, "Music", "song.mp3")
 	os.WriteFile(f, []byte("x"), 0o644)
-	if err := removeFiles(dir, []string{f}); err != nil {
+	if err := removeFiles(dir, []string{f}, nil, true); err != nil {
 		t.Fatal(err)
 	}
 	if fi, err := os.Lstat(filepath.Join(dir, "Music")); err != nil || fi.Mode()&os.ModeSymlink == 0 {
@@ -163,7 +164,7 @@ func TestRemoveFilesOnlyOwn(t *testing.T) {
 	own := []string{mk("Season 1/e01.mkv"), mk("Season 1/Subs/e01.srt")}
 	other := mk("Season 1/e02.mkv") // another torrent's file in the same folder
 	mk("Season 1.part")             // unrelated
-	if err := removeFiles(dir, own); err != nil {
+	if err := removeFiles(dir, own, nil, true); err != nil {
 		t.Fatal(err)
 	}
 	for _, p := range own {
@@ -228,5 +229,192 @@ func TestCloseWritesFinishedPieces(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, "f.bin")); !bytes.Equal(b[:16<<10], good) {
 		t.Error("piece 0's data wasn't written")
+	}
+}
+
+// openStore opens info in dir with ownership records in owned, closing it
+// when the test ends.
+func openStore(t *testing.T, dir, owned string, info *metainfo.Info, ih metainfo.Hash) (*fileStore, storage.TorrentImpl) {
+	t.Helper()
+	st := newFileStore(dir, storage.NewMapPieceCompletion(), owned, false)
+	impl, err := st.OpenTorrent(t.Context(), info, ih)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { impl.Close() })
+	return st, impl
+}
+
+// A file the torrent created that's since been replaced (deleted, and a new
+// one made at its path: the user's, or a reused inode) isn't its own: the
+// torrent is blocked over it and never lists it for deleting.
+func TestReplacedFileNotOwned(t *testing.T) {
+	dir, owned := t.TempDir(), t.TempDir()
+	info := multiInfo("Linux", []string{"a.iso"})
+	st, impl := openStore(t, dir, owned, info, hashN(3))
+	if err := writePiece(t, impl, info); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "Linux", "a.iso")
+	if f := st.files(); len(f) != 1 || f[0] != p {
+		t.Fatalf("own file not listed: %v", f)
+	}
+	impl.Close()
+	os.Remove(p)
+	time.Sleep(10 * time.Millisecond) // creation times are at least this fine everywhere tested
+	os.WriteFile(p, []byte("user's"), 0o644)
+	st, _ = openStore(t, dir, owned, info, hashN(3))
+	if st.Blocked() == nil {
+		t.Error("replaced file taken as the torrent's own")
+	}
+	o := loadOwnership(owned, hashN(3), dir, false)
+	if len(o.files()) != 0 {
+		t.Errorf("replaced file still recorded: %v", o.files())
+	}
+}
+
+// A file that appears at one of the torrent's paths after it was checked is
+// never written into.
+func TestNoWriteIntoLaterFile(t *testing.T) {
+	dir, owned := t.TempDir(), t.TempDir()
+	info := multiInfo("Show", []string{"a"}, []string{"b"})
+	_, impl := openStore(t, dir, owned, info, hashN(4))
+	b := filepath.Join(dir, "Show", "b")
+	os.MkdirAll(filepath.Dir(b), 0o755)
+	os.WriteFile(b, []byte("user's"), 0o644)
+	pc := impl.Piece(info.Piece(0))
+	pc.WriteAt([]byte("xy"), 0)
+	if pc.MarkComplete() == nil {
+		t.Error("wrote into a file it didn't create")
+	}
+	if got, _ := os.ReadFile(b); string(got) != "user's" {
+		t.Errorf("file changed: %q", got)
+	}
+}
+
+// Records are per folder: the same torrent in another folder starts clean,
+// and its files in the first folder stay its own there.
+func TestOwnershipPerFolder(t *testing.T) {
+	a, b, owned := t.TempDir(), t.TempDir(), t.TempDir()
+	info := multiInfo("Linux", []string{"a.iso"})
+	_, impl := openStore(t, a, owned, info, hashN(5))
+	writePiece(t, impl, info)
+	impl.Close()
+	st, impl := openStore(t, b, owned, info, hashN(5))
+	if st.Blocked() != nil || writePiece(t, impl, info) != nil {
+		t.Fatalf("second folder: %v", st.Blocked())
+	}
+	impl.Close()
+	for _, d := range []string{a, b} {
+		if st, _ := openStore(t, d, owned, info, hashN(5)); st.Blocked() != nil || len(st.files()) != 1 {
+			t.Errorf("%s: %v %v", d, st.Blocked(), st.files())
+		}
+	}
+}
+
+// A file noted as pending (the app stopped between creating and recording
+// it) is the torrent's own if it's still what the store makes; not if the
+// note was cancelled (the path was taken), or the file has data of another
+// length.
+func TestPendingRecovered(t *testing.T) {
+	dir, owned := t.TempDir(), t.TempDir()
+	mk := func(name string, size int64) string {
+		p := filepath.Join(dir, name)
+		f, _ := os.Create(p)
+		f.Truncate(size)
+		f.Close()
+		return p
+	}
+	o := loadOwnership(owned, hashN(6), dir, true)
+	sized, empty, taken, other := filepath.Join(dir, "sized"), filepath.Join(dir, "empty"), filepath.Join(dir, "taken"), filepath.Join(dir, "other")
+	for _, p := range []string{sized, empty, taken, other} {
+		if o.pending(p, 100) != nil {
+			t.Fatal("pending")
+		}
+	}
+	o.cancel(taken)
+	mk("sized", 100)
+	mk("empty", 0)
+	mk("taken", 100)
+	mk("other", 5)
+	o = loadOwnership(owned, hashN(6), dir, true)
+	for p, want := range map[string]bool{sized: true, empty: true, taken: false, other: false} {
+		if o.has(p) != want {
+			t.Errorf("%s: owned %v", filepath.Base(p), !want)
+		}
+	}
+	// Recorded for good once loaded; the notes are gone.
+	if o = loadOwnership(owned, hashN(6), dir, true); !o.has(sized) {
+		t.Error("recovered file forgotten")
+	}
+	if b, _ := os.ReadFile(o.path); bytes.Contains(b, []byte("p\t")) {
+		t.Errorf("pending notes kept:\n%s", b)
+	}
+}
+
+// A file two torrents' records both claim (v0.2.36 let two torrents share
+// one) is reported, so removing one doesn't delete the other's file.
+func TestOwnedByOthers(t *testing.T) {
+	dir, owned := t.TempDir(), t.TempDir()
+	p := filepath.Join(dir, "same.iso")
+	os.WriteFile(p, []byte("1"), 0o644)
+	for _, ih := range []metainfo.Hash{hashN(9), hashN(10)} {
+		o := loadOwnership(owned, ih, dir, true)
+		if err := o.adopt([]string{p}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !ownedByOthers(owned, hashN(9), dir, []string{p})[p] {
+		t.Error("shared file not reported")
+	}
+	loadOwnership(owned, hashN(10), dir, true).forget()
+	if ownedByOthers(owned, hashN(9), dir, []string{p})[p] {
+		t.Error("file reported shared after the other torrent was removed")
+	}
+}
+
+// Removing deletes the folders the torrent created, not ones that were
+// already there (even empty ones named like it).
+func TestRemovePrunesOnlyCreatedFolders(t *testing.T) {
+	dir, owned := t.TempDir(), t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "Show"), 0o755) // the user's, empty
+	info := multiInfo("Show", []string{"Season 1", "e01.mkv"})
+	st, impl := openStore(t, dir, owned, info, hashN(11))
+	if err := writePiece(t, impl, info); err != nil {
+		t.Fatal(err)
+	}
+	impl.Close()
+	o := st.ownership()
+	if err := removeFiles(dir, o.files(), o.folders(), false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Show", "Season 1")); !os.IsNotExist(err) {
+		t.Error("created folder left behind")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Show")); err != nil {
+		t.Error("the user's folder was removed")
+	}
+}
+
+// A torrent that passed v0.2.37's check (an empty marker at the record's
+// path) keeps its files after upgrading; one without a marker doesn't get
+// them.
+func TestV0237MarkerAdopted(t *testing.T) {
+	dir, owned := t.TempDir(), t.TempDir()
+	p := filepath.Join(dir, "Linux", "a.iso")
+	os.MkdirAll(filepath.Dir(p), 0o755)
+	os.WriteFile(p, []byte("x"), 0o644)
+	info := multiInfo("Linux", []string{"a.iso"})
+	if st, _ := openStore(t, dir, owned, info, hashN(12)); st.Blocked() == nil {
+		t.Fatal("existing file taken without a marker")
+	}
+	os.Remove(recordPath(owned, hashN(12), dir))
+	os.WriteFile(recordPath(owned, hashN(12), dir), nil, 0o600)
+	st, _ := openStore(t, dir, owned, info, hashN(12))
+	if st.Blocked() != nil || len(st.files()) != 1 {
+		t.Fatalf("v0.2.37 torrent not adopted: %v %v", st.Blocked(), st.files())
+	}
+	if o := loadOwnership(owned, hashN(12), dir, false); !o.written || !o.has(p) {
+		t.Error("adoption not recorded")
 	}
 }
