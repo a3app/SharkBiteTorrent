@@ -40,10 +40,13 @@ func (s *fileStore) claim(ih metainfo.Hash, info *metainfo.Info, paths []string)
 		return nil // passed before, in this folder
 	}
 	if !s.adopt {
+		if err := noLinkedFolders(s.dir, paths); err != nil {
+			return err
+		}
 		for _, p := range paths {
 			if _, err := os.Lstat(p); err == nil {
 				rel, _ := filepath.Rel(s.dir, p)
-				return fmt.Errorf("%q already exists in the download folder, and Shark BiteTorrent only writes into files it created. Move it away or choose another download folder, then add the torrent again", rel)
+				return fmt.Errorf("%q already exists in the download folder, and Shark BiteTorrent only writes into files it created. Remove this torrent, move the file away (or choose another download folder), then add the torrent again", rel)
 			}
 		}
 		// New here: progress recorded for this torrent in another folder
@@ -65,4 +68,21 @@ func clearComplete(pc storage.PieceCompletion, ih metainfo.Hash, n int) {
 			pc.Set(key, false)
 		}
 	}
+}
+
+// noLinkedFolders refuses a torrent whose folders inside dir include a link
+// (symlink, or junction on Windows) that's already there: the torrent would
+// write into wherever it points, outside the download folder.
+func noLinkedFolders(dir string, paths []string) error {
+	seen := map[string]bool{}
+	for _, p := range paths {
+		for d := filepath.Dir(p); d != filepath.Clean(dir) && isSub(dir, d) && !seen[d]; d = filepath.Dir(d) {
+			seen[d] = true
+			if fi, err := os.Lstat(d); err == nil && !fi.IsDir() {
+				rel, _ := filepath.Rel(dir, d)
+				return fmt.Errorf("%q in the download folder is a link or a file, not a folder, and the torrent's files would go there. Remove this torrent, move it away (or choose another download folder), then add the torrent again", rel)
+			}
+		}
+	}
+	return nil
 }

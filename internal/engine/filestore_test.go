@@ -175,3 +175,19 @@ func TestRemoveFilesOnlyOwn(t *testing.T) {
 		}
 	}
 }
+
+// A new torrent whose folder inside the download folder is a link (to the
+// user's library elsewhere) is refused: it would write there.
+func TestClaimRefusesLinkedFolder(t *testing.T) {
+	dir, owned, library := t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.Symlink(library, filepath.Join(dir, "Music")); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	st := newFileStore(dir, storage.NewMapPieceCompletion(), owned, false)
+	if _, err := st.OpenTorrent(t.Context(), multiInfo("Music", []string{"new.mp3"}), hashN(8)); err != nil {
+		t.Fatal(err)
+	}
+	if st.Blocked() == nil {
+		t.Error("torrent allowed to write through a linked folder")
+	}
+}

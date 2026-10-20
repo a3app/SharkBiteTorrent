@@ -123,9 +123,11 @@ type savedTorrent struct {
 	Size     int64          `json:"size,omitempty"`
 	Warnings []scan.Warning `json:"warnings,omitempty"` // from a .torrent's file list, shown before Start
 	// Checked: saved by a version that checks a torrent's paths before it
-	// writes (see engine/ownership.go). Entries without it were saved by
-	// v0.2.36 or older, so their existing files are adopted once.
+	// writes (see engine/ownership.go); every entry this version writes has
+	// it. legacy is set when loading an entry without the field, which only
+	// v0.2.36 or older wrote: its existing files are adopted once.
 	Checked bool `json:"checked,omitempty"`
+	legacy  bool
 	// Scan is the antivirus result once the torrent finished (nil = not yet).
 	Scan *scanRecord `json:"scan,omitempty"`
 }
@@ -532,7 +534,7 @@ func (a *App) startEngine(tun *tunnel.Tunnel, eng *engine.Engine, st VpnStatus) 
 			continue // waiting for the user: not given to the engine yet
 		}
 		// Adopt only what an older version saved: its files are its own.
-		_, err := eng.Add(engine.AddOptions{Source: s.Source, Dir: s.Dir, Skipped: s.Skipped, Paused: s.Paused, Adopt: !s.Checked})
+		_, err := eng.Add(engine.AddOptions{Source: s.Source, Dir: s.Dir, Skipped: s.Skipped, Paused: s.Paused, Adopt: s.legacy})
 		if err != nil {
 			runtime.LogWarningf(a.ctx, "%s", engine.Redact(fmt.Sprintf("restore %s: %v", s.Hash, err)))
 		}
@@ -872,12 +874,24 @@ func (a *App) addSourceFrom(src string, external bool) error {
 	if err != nil {
 		return err
 	}
+	return a.recordAdded(hash, src, dir)
+}
+
+// recordAdded saves a torrent the engine has just been given from inside the
+// app (checked: never adopted as an older version's).
+func (a *App) recordAdded(hash, src, dir string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for i := range a.saved {
 		if a.saved[i].Hash == hash {
-			a.saved[i].Confirm = false // also added from inside the app: accepted
-			return a.writeSaved()
+			// Waiting from an outside add, now added from inside the app: the
+			// engine has it as just added (in dir, from src, checked). An
+			// entry already running keeps its own folder, as the engine does.
+			if s := &a.saved[i]; s.Confirm {
+				s.Confirm, s.Checked, s.legacy, s.Dir, s.Source, s.Name, s.Size = false, true, false, dir, src, "", 0
+				return a.writeSaved()
+			}
+			return nil
 		}
 	}
 	a.saved = append(a.saved, savedTorrent{Hash: hash, Source: src, Dir: dir, Checked: true})
@@ -1003,13 +1017,15 @@ func (a *App) Remove(hash string, deleteFiles bool) error {
 	// moment, Remove returns and any problem is reported when it's done.
 	done := make(chan error, 1)
 	go func() {
-		defer func() {
-			a.mu.Lock()
-			delete(a.removing, hash)
-			a.mu.Unlock()
-		}()
 		a.stopWork(hash, 10*time.Second) // a scan, .sfv check or Verify reading its files
-		done <- eng.Remove(hash, deleteFiles)
+		err := eng.Remove(hash, deleteFiles)
+		// Forgotten before the reservation ends, so a VPN reconnect can't
+		// start it again in between.
+		a.forget(hash)
+		a.mu.Lock()
+		delete(a.removing, hash)
+		a.mu.Unlock()
+		done <- err
 	}()
 	var rmErr error
 	select {
@@ -1303,12 +1319,23 @@ func (a *App) writeSettings() error {
 }
 
 func (a *App) loadSaved() {
-	if data, err := os.ReadFile(filepath.Join(a.configDir, "torrents.json")); err == nil {
-		json.Unmarshal(data, &a.saved)
+	data, err := os.ReadFile(filepath.Join(a.configDir, "torrents.json"))
+	if err != nil {
+		return
 	}
+	json.Unmarshal(data, &a.saved)
+	var raw []map[string]json.RawMessage
+	json.Unmarshal(data, &raw)
 	for i := range a.saved {
 		if a.saved[i].Dir == "" { // saved by an older version
 			a.saved[i].Dir = a.settings.DownloadDir
+		}
+		// No "checked" field at all: written by v0.2.36 or older (this
+		// version always writes it, except for torrents still waiting to be
+		// started, which older versions didn't have).
+		if i < len(raw) && !a.saved[i].Confirm {
+			_, has := raw[i]["checked"]
+			a.saved[i].legacy = !has
 		}
 	}
 }

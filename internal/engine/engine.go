@@ -495,7 +495,18 @@ func (e *Engine) Remove(hash string, deleteFiles bool) error {
 		clearComplete(e.pc, ih, info.NumPieces())
 	}
 	if !deleteFiles {
-		return nil // the record stays: re-adding here may use these files again
+		// The files stay, but they're no longer the torrent's: adding it
+		// again is checked like any new torrent (and refused over them).
+		if e.ownedDir != "" {
+			os.Remove(markerPath(e.ownedDir, ih, en.dir))
+		}
+		return nil
+	}
+	if info == nil {
+		// Its file list never arrived this session (a magnet still fetching
+		// it), so its paths aren't known: nothing can be deleted safely. The
+		// marker stays, so adding it again isn't blocked on its own files.
+		return errors.New("its file list isn't known yet (still fetching it), so its files weren't deleted")
 	}
 	var paths []string
 	for _, p := range en.storage.files() {

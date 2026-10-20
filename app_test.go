@@ -81,3 +81,34 @@ func TestExternalTorrentWarnings(t *testing.T) {
 		t.Error("broken .torrent accepted")
 	}
 }
+
+// A torrent waiting from an outside add, then added from inside the app, is
+// checked like any new one, also after a restart: never adopted as if an
+// older version had saved it (the audit's sequence).
+func TestAddedTorrentsNeverLegacy(t *testing.T) {
+	a := &App{configDir: t.TempDir()}
+	a.settings.DownloadDir = t.TempDir()
+	const ih = "0123456789abcdef0123456789abcdef01234567"
+	link := "magnet:?xt=urn:btih:" + ih + "&dn=x"
+	if err := a.addSourceFrom(link, true); err != nil {
+		t.Fatal(err)
+	}
+	other := t.TempDir() // the download folder changed meanwhile
+	if err := a.recordAdded(ih, link, other); err != nil {
+		t.Fatal(err)
+	}
+	b := &App{configDir: a.configDir} // restart
+	b.loadSaved()
+	if len(b.saved) != 1 || b.saved[0].legacy || !b.saved[0].Checked || b.saved[0].Confirm || b.saved[0].Dir != other {
+		t.Fatalf("after restart: %+v", b.saved)
+	}
+
+	// An entry written by v0.2.36 (no "checked" field) is the only legacy one.
+	os.WriteFile(filepath.Join(a.configDir, "torrents.json"),
+		[]byte(`[{"hash":"`+ih+`","source":"`+link+`","dir":"/x","paused":false}]`), 0o600)
+	c := &App{configDir: a.configDir}
+	c.loadSaved()
+	if len(c.saved) != 1 || !c.saved[0].legacy {
+		t.Fatalf("v0.2.36 entry not legacy: %+v", c.saved)
+	}
+}

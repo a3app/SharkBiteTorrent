@@ -429,14 +429,14 @@ func (a *App) markChecked(eng *engine.Engine) {
 	a.mu.Lock()
 	var hashes []string
 	for _, s := range a.saved {
-		if !s.Checked && !s.Confirm {
+		if s.legacy {
 			hashes = append(hashes, s.Hash)
 		}
 	}
 	a.mu.Unlock()
 	for _, h := range hashes {
 		if eng.Claimed(h) {
-			a.updateSaved(h, func(s *savedTorrent) { s.Checked = true })
+			a.updateSaved(h, func(s *savedTorrent) { s.Checked, s.legacy = true, false })
 		}
 	}
 }
