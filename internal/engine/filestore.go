@@ -42,42 +42,30 @@ import (
 type fileStore struct {
 	dir      string // download folder for this torrent
 	pc       storage.PieceCompletion
-	ownedDir string // ownership records (see ownership.go); "" skips the check
-	adopt    bool   // a torrent from the saved list: adopt its files if it has no record yet
+	ownedDir string // claim markers (see ownership.go); "" skips the check
+	adopt    bool   // a torrent saved by an older version: adopt its files if it has no marker yet
 
 	mu      sync.Mutex
 	blocked error        // set if the torrent mustn't write (shown in the list)
 	ft      *fileTorrent // the torrent's storage, once opened
-	own     *ownership   // nil without ownedDir
 }
 
-// ownership returns the torrent's record, nil without one.
-func (s *fileStore) ownership() *ownership {
+// files are the torrent's files that exist, as regular files, at its paths
+// (none if it's blocked: its paths are taken by other files).
+func (s *fileStore) files() []string {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.own
-}
-
-// ownedFiles are the files this torrent created here that still exist.
-func (s *fileStore) ownedFiles() []string {
-	o := s.ownership()
-	if o == nil {
+	t, blocked := s.ft, s.blocked
+	s.mu.Unlock()
+	if t == nil || blocked != nil {
 		return nil
 	}
 	var out []string
-	for _, p := range o.list() {
-		if _, err := os.Lstat(p); err == nil {
+	for _, p := range t.paths {
+		if fi, err := os.Lstat(p); err == nil && fi.Mode().IsRegular() {
 			out = append(out, p)
 		}
 	}
 	return out
-}
-
-// forgetOwnership deletes the record (all of its files were deleted).
-func (s *fileStore) forgetOwnership() {
-	if o := s.ownership(); o != nil {
-		o.forget()
-	}
 }
 
 func newFileStore(dir string, pc storage.PieceCompletion, ownedDir string, adopt bool) *fileStore {
@@ -318,17 +306,7 @@ func (s *fileStore) waitReleased(timeout time.Duration) (stillOpen map[string]bo
 
 // openFile opens (or creates) file i. Called with t.mu held.
 func (t *fileTorrent) openFile(i int, create bool) (*os.File, error) {
-	own := t.store.ownership()
 	f, err := os.OpenFile(t.paths[i], os.O_RDWR, 0o644)
-	if err == nil && own != nil && !own.has(t.paths[i]) {
-		// It appeared after the torrent was claimed (a file ticked later,
-		// another torrent with the same name): not ours to write into.
-		f.Close()
-		rel, _ := filepath.Rel(t.store.dir, t.paths[i])
-		err = fmt.Errorf("%q: %w", rel, errNotOurs)
-		t.store.block(fmt.Errorf("%q already exists in the download folder, and Shark BiteTorrent only writes into files it created. Move it away, then add the torrent again", rel))
-		return nil, err
-	}
 	if errors.Is(err, fs.ErrNotExist) && create {
 		if err := os.MkdirAll(filepath.Dir(t.paths[i]), 0o755); err != nil {
 			return nil, err
@@ -336,14 +314,12 @@ func (t *fileTorrent) openFile(i int, create bool) (*os.File, error) {
 		f, err = os.OpenFile(t.paths[i], os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
 		if err == nil {
 			makeSparse(f) // best effort: unsupported filesystems still work, just slower
-			err = f.Truncate(t.lengths[i])
-		}
-		if err == nil && own != nil {
-			// Recorded once it has its final size (part of its identity).
-			if err = own.add(t.paths[i]); err != nil {
+			if err = f.Truncate(t.lengths[i]); err != nil {
+				// Too big for the drive (FAT32), full, over quota: don't
+				// leave a stub behind.
 				f.Close()
 				os.Remove(t.paths[i])
-				return nil, err
+				return nil, fmt.Errorf("can't create %s: %w", filepath.Base(t.paths[i]), err)
 			}
 		}
 		if err == nil {

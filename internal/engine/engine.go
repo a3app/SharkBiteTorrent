@@ -320,9 +320,8 @@ func limitOf(n int64) rate.Limit {
 type AddOptions struct {
 	Source string // magnet link or path to a .torrent file
 	Dir    string // folder to save data in
-	// Adopt: the torrent comes from the app's saved list; if it has no
-	// ownership record (saved by an older version), its existing files are
-	// adopted as its own (see ownership.go).
+	// Adopt: the torrent was saved by an older version, which wrote no claim
+	// markers: its existing files are adopted as its own (see ownership.go).
 	Adopt   bool
 	Skipped []int // file indexes not to download
 	Paused  bool
@@ -498,14 +497,8 @@ func (e *Engine) Remove(hash string, deleteFiles bool) error {
 	if !deleteFiles {
 		return nil // the record stays: re-adding here may use these files again
 	}
-	owned := en.storage.ownedFiles()
-	if en.storage.ownership() == nil && e.ownedDir != "" {
-		// Its file list never arrived this session (a magnet still fetching
-		// it), so the store never loaded its record: read it here.
-		owned = loadOwnership(e.ownedDir, ih, en.dir).list()
-	}
 	var paths []string
-	for _, p := range owned {
+	for _, p := range en.storage.files() {
 		if !stillOpen[p] {
 			paths = append(paths, p)
 		}
@@ -514,23 +507,32 @@ func (e *Engine) Remove(hash string, deleteFiles bool) error {
 	if len(stillOpen) > 0 {
 		return errors.Join(err, fmt.Errorf("%d file(s) were still in use, so they weren't deleted", len(stillOpen)))
 	}
-	if err == nil {
-		en.storage.forgetOwnership()
-		if e.ownedDir != "" {
-			os.Remove(recordPath(e.ownedDir, ih, en.dir))
-		}
+	if err == nil && e.ownedDir != "" {
+		os.Remove(markerPath(e.ownedDir, ih, en.dir))
 	}
 	return err
 }
 
-// OwnedFiles are the torrent's files that it created and that still exist
-// (for marking them as downloaded: never other files in its folder).
+// Claimed reports that the torrent passed its check (see ownership.go) and
+// can write its files.
+func (e *Engine) Claimed(hash string) bool {
+	en, err := e.find(hash)
+	if err != nil {
+		return false
+	}
+	en.storage.mu.Lock()
+	defer en.storage.mu.Unlock()
+	return en.storage.ft != nil && en.storage.blocked == nil
+}
+
+// OwnedFiles are the torrent's files at its own paths (for marking them as
+// downloaded: never other files in its folder).
 func (e *Engine) OwnedFiles(hash string) []string {
 	en, err := e.find(hash)
 	if err != nil {
 		return nil
 	}
-	return en.storage.ownedFiles()
+	return en.storage.files()
 }
 
 // removeFiles deletes paths (files inside dir), then their folders that are
@@ -562,7 +564,11 @@ func removeFiles(dir string, paths []string) error {
 	}
 	sort.Slice(sorted, func(i, j int) bool { return len(sorted[i]) > len(sorted[j]) })
 	for _, d := range sorted {
-		os.Remove(d)
+		// Only a real, empty folder: os.Remove on a symlink or junction the
+		// user made (named like the torrent) would remove the link itself.
+		if fi, err := os.Lstat(d); err == nil && fi.IsDir() {
+			os.Remove(d)
+		}
 	}
 	return errors.Join(errs...)
 }

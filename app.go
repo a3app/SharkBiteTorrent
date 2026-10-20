@@ -122,6 +122,10 @@ type savedTorrent struct {
 	Name     string         `json:"name,omitempty"`
 	Size     int64          `json:"size,omitempty"`
 	Warnings []scan.Warning `json:"warnings,omitempty"` // from a .torrent's file list, shown before Start
+	// Checked: saved by a version that checks a torrent's paths before it
+	// writes (see engine/ownership.go). Entries without it were saved by
+	// v0.2.36 or older, so their existing files are adopted once.
+	Checked bool `json:"checked,omitempty"`
 	// Scan is the antivirus result once the torrent finished (nil = not yet).
 	Scan *scanRecord `json:"scan,omitempty"`
 }
@@ -512,7 +516,13 @@ func (a *App) startEngine(tun *tunnel.Tunnel, eng *engine.Engine, st VpnStatus) 
 		a.recordEndpoint(tun.Endpoint())
 	}
 	a.vpn = st
-	saved := append([]savedTorrent(nil), a.saved...)
+	var saved []savedTorrent
+	for i := range a.saved {
+		if a.removing[a.saved[i].Hash] {
+			continue // its files are being deleted: not to be started again
+		}
+		saved = append(saved, a.saved[i])
+	}
 	pending := a.pending
 	a.pending = nil
 	a.mu.Unlock()
@@ -521,8 +531,8 @@ func (a *App) startEngine(tun *tunnel.Tunnel, eng *engine.Engine, st VpnStatus) 
 		if s.Confirm {
 			continue // waiting for the user: not given to the engine yet
 		}
-		// Adopt: saved by an older version, its files have no ownership record yet.
-		_, err := eng.Add(engine.AddOptions{Source: s.Source, Dir: s.Dir, Skipped: s.Skipped, Paused: s.Paused, Adopt: true})
+		// Adopt only what an older version saved: its files are its own.
+		_, err := eng.Add(engine.AddOptions{Source: s.Source, Dir: s.Dir, Skipped: s.Skipped, Paused: s.Paused, Adopt: !s.Checked})
 		if err != nil {
 			runtime.LogWarningf(a.ctx, "%s", engine.Redact(fmt.Sprintf("restore %s: %v", s.Hash, err)))
 		}
@@ -870,7 +880,7 @@ func (a *App) addSourceFrom(src string, external bool) error {
 			return a.writeSaved()
 		}
 	}
-	a.saved = append(a.saved, savedTorrent{Hash: hash, Source: src, Dir: dir})
+	a.saved = append(a.saved, savedTorrent{Hash: hash, Source: src, Dir: dir, Checked: true})
 	return a.writeSaved()
 }
 
@@ -909,7 +919,7 @@ func (a *App) StartTorrent(hash string) error {
 	if _, err := eng.Add(engine.AddOptions{Source: src, Dir: dir}); err != nil {
 		return err
 	}
-	a.updateSaved(hash, func(s *savedTorrent) { s.Confirm, s.Paused, s.Name, s.Size = false, false, "", 0 })
+	a.updateSaved(hash, func(s *savedTorrent) { s.Confirm, s.Paused, s.Name, s.Size, s.Checked = false, false, "", 0, true })
 	return nil
 }
 

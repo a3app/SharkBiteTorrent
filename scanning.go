@@ -53,6 +53,7 @@ func (a *App) scanLoop(ctx context.Context) {
 		if err != nil {
 			continue
 		}
+		a.markChecked(eng)
 		for _, t := range eng.List() {
 			if t.State != "seeding" || ctx.Err() != nil {
 				continue
@@ -90,6 +91,9 @@ func (a *App) checkFinished(ctx context.Context, eng *engine.Engine, t engine.St
 	}
 	// Only the torrent's own files: its folder may hold other files too.
 	for _, f := range eng.OwnedFiles(t.Hash) {
+		if ctx.Err() != nil {
+			return // being removed, or quitting: nothing more on its files
+		}
 		scan.MarkDownloaded(f)
 	}
 
@@ -416,5 +420,23 @@ func (a *App) stopWork(hash string, timeout time.Duration) {
 	select {
 	case <-done:
 	case <-time.After(timeout):
+	}
+}
+
+// markChecked flags torrents saved by an older version once they've been
+// claimed (their files adopted), so later starts check them like any other.
+func (a *App) markChecked(eng *engine.Engine) {
+	a.mu.Lock()
+	var hashes []string
+	for _, s := range a.saved {
+		if !s.Checked && !s.Confirm {
+			hashes = append(hashes, s.Hash)
+		}
+	}
+	a.mu.Unlock()
+	for _, h := range hashes {
+		if eng.Claimed(h) {
+			a.updateSaved(h, func(s *savedTorrent) { s.Checked = true })
+		}
 	}
 }

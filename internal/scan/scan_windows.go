@@ -70,6 +70,10 @@ func ScanPath(ctx context.Context, p string, full bool) (Result, error) {
 // Best effort: some network drives don't support the extra stream.
 func MarkDownloaded(p string) {
 	eachFile(p, func(f string) {
+		// Writing the stream would create f if it had just been deleted.
+		if fi, err := os.Lstat(f); err != nil || !fi.Mode().IsRegular() {
+			return
+		}
 		os.WriteFile(f+":Zone.Identifier", []byte("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=about:internet\r\n"), 0o644)
 	})
 }
