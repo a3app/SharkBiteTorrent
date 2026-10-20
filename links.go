@@ -5,8 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"sharkbite/internal/platform"
 )
 
 // Support and sign-up links shown in the app. This is the one place to edit
@@ -82,6 +81,5 @@ func (a *App) OpenURL(link string) error {
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
 		return errors.New("not a web link")
 	}
-	runtime.BrowserOpenURL(a.ctx, link)
-	return nil
+	return platform.OpenURL(link)
 }

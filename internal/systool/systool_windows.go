@@ -32,3 +32,12 @@ func Find(name string) (string, bool) {
 	}
 	return p, true
 }
+
+// ProgramFiles is the Program Files folder, asked from Windows (not the
+// %ProgramFiles% variable, which any parent process can set).
+func ProgramFiles() string {
+	if d, err := windows.KnownFolderPath(windows.FOLDERID_ProgramFiles, 0); err == nil && d != "" {
+		return d
+	}
+	return `C:\Program Files`
+}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sharkbite/internal/systool"
 	"sync"
 	"time"
 )
@@ -42,11 +43,7 @@ func tailscaleBinary() string {
 	var candidates []string
 	switch runtime.GOOS {
 	case "windows":
-		pf := os.Getenv("ProgramFiles")
-		if pf == "" {
-			pf = `C:\Program Files`
-		}
-		candidates = []string{filepath.Join(pf, "Tailscale", "tailscale.exe")}
+		candidates = []string{filepath.Join(systool.ProgramFiles(), "Tailscale", "tailscale.exe")}
 	case "darwin":
 		candidates = []string{"/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/usr/local/bin/tailscale"}
 	default:

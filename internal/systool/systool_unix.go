@@ -9,7 +9,9 @@ import (
 
 // The system's own folders come first, so a system tool is always found
 // there; the local and Homebrew folders are for tools the user installed
-// (ClamAV).
+// (ClamAV, Tailscale's CLI). Those are writable by the user on macOS, so a
+// program running as the user could replace them; that's no more than it
+// could do to the app itself.
 var dirs = []string{
 	"/usr/bin", "/bin", "/usr/sbin", "/sbin",
 	"/usr/local/bin", "/usr/local/sbin", "/opt/homebrew/bin", "/opt/homebrew/sbin",
@@ -25,3 +27,6 @@ func Find(name string) (string, bool) {
 	}
 	return "", false
 }
+
+// ProgramFiles is Windows-only.
+func ProgramFiles() string { return "" }

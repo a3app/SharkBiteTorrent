@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"sharkbite/internal/systool"
 )
 
 func mpCmdRun() string {
-	return filepath.Join(os.Getenv("ProgramFiles"), "Windows Defender", "MpCmdRun.exe")
+	return filepath.Join(systool.ProgramFiles(), "Windows Defender", "MpCmdRun.exe")
 }
 
 // Scanner reports which antivirus ScanPath will use, if any.

@@ -25,3 +25,6 @@ func OpenDefaultAppsSettings() error {
 func RevealPath(path string, _ bool) error {
 	return systool.Command("open", "-R", path).Start()
 }
+
+// OpenURL opens a web link in the default browser.
+func OpenURL(link string) error { return systool.Command("open", link).Start() }

@@ -104,3 +104,7 @@ func RevealPath(path string, isDir bool) error {
 	}
 	return systool.Command("xdg-open", path).Start()
 }
+
+// OpenURL opens a web link in the default browser (xdg-open from a fixed
+// system folder, not PATH).
+func OpenURL(link string) error { return systool.Command("xdg-open", link).Start() }
