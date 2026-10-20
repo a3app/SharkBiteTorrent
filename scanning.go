@@ -187,6 +187,10 @@ func (a *App) ScanFully(hash string) error {
 		return errors.New("nothing to scan")
 	}
 	rec := &scanRecord{Engine: s.Scan.Engine, At: time.Now().Unix(), SFV: s.Scan.SFV, Seen: true}
+	if a.scanning == nil {
+		a.scanning = map[string]bool{}
+	}
+	a.scanning[hash] = true // now, so a second click is refused
 	a.mu.Unlock()
 	if ctx == nil {
 		ctx = context.Background()

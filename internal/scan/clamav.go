@@ -49,10 +49,11 @@ func ScanPath(ctx context.Context, p string, full bool) (Result, error) {
 	args := []string{"--no-summary", "--infected", "--recursive", "--alert-exceeds-max=yes"}
 	if full {
 		limit := fmt.Sprintf("%dM", fullScanLimit>>20)
-		args = append(args, "--max-filesize="+limit, "--max-scansize="+limit)
+		// The default 2-minute time limit would stop a big file partway.
+		args = append(args, "--max-filesize="+limit, "--max-scansize="+limit, "--max-scantime=1800000")
 	}
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, bin, append(args, p)...)
+	cmd := exec.CommandContext(ctx, bin, append(args, "--", p)...)
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	code := 0
