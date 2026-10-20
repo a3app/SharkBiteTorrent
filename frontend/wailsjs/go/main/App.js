@@ -38,6 +38,10 @@ export function DisconnectSearch() {
   return window['go']['main']['App']['DisconnectSearch']();
 }
 
+export function DownloadUpdate(arg1, arg2) {
+  return window['go']['main']['App']['DownloadUpdate'](arg1, arg2);
+}
+
 export function ForgetRemoteHome() {
   return window['go']['main']['App']['ForgetRemoteHome']();
 }

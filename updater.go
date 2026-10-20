@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sharkbite/internal/platform"
 	"strconv"
 	"strings"
 	"time"
@@ -43,6 +44,10 @@ type UpdateInfo struct {
 	// itself (the installed Windows version). Elsewhere the UI links to the
 	// release page.
 	CanInstall bool `json:"canInstall"`
+	// CanDownload: Linux and macOS, where the app downloads the release's
+	// file for this computer, checks it against the release signature and
+	// saves it for the user to install (DownloadUpdate).
+	CanDownload bool `json:"canDownload"`
 	// Direct is true if the check went over the normal connection because
 	// the VPN wasn't up.
 	Direct bool `json:"direct"`
@@ -75,7 +80,7 @@ func (a *App) updateClient(allowDirect bool) (*http.Client, bool, error) {
 }
 
 func (a *App) checkUpdate(ctx context.Context, allowDirect bool) (UpdateInfo, error) {
-	info := UpdateInfo{Current: a.currentVersion(), CanInstall: a.canInstallUpdates()}
+	info := UpdateInfo{Current: a.currentVersion(), CanInstall: a.canInstallUpdates(), CanDownload: a.canDownloadUpdates()}
 	hc, direct, err := a.updateClient(allowDirect)
 	if err != nil {
 		return info, err
@@ -385,4 +390,75 @@ func download(ctx context.Context, hc *http.Client, url, path string) (string, e
 // links back in, so those users get a link to rebuild or download instead.
 func (a *App) canInstallUpdates() bool {
 	return fundingEnabled && !storeBuild && canSelfUpdate(a.exe)
+}
+
+func (a *App) canDownloadUpdates() bool {
+	return fundingEnabled && !storeBuild && updateAsset("0", a.exe) != ""
+}
+
+// DownloadedUpdate is a verified release file saved for the user.
+type DownloadedUpdate struct {
+	Path string `json:"path"`
+	Hint string `json:"hint"` // how to install it
+}
+
+// DownloadUpdate (Linux, macOS) downloads version's file for this computer,
+// checks it against the signed SHA256SUMS.txt like InstallUpdate does, saves
+// it in Downloads and shows it. allowDirect is as for InstallUpdate.
+func (a *App) DownloadUpdate(version string, allowDirect bool) (DownloadedUpdate, error) {
+	var out DownloadedUpdate
+	if !versionPattern.MatchString(version) {
+		return out, fmt.Errorf("not a version number: %q", version)
+	}
+	if !newerVersion(version, a.currentVersion()) {
+		return out, fmt.Errorf("%s isn't newer than this version (%s)", version, a.currentVersion())
+	}
+	asset := updateAsset(version, a.exe)
+	if !a.canDownloadUpdates() || asset == "" {
+		return out, errors.New("download it from the release page")
+	}
+	hc, _, err := a.updateClient(allowDirect)
+	if err != nil {
+		return out, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	base := releasesURL + "/download/v" + version + "/"
+	want, err := signedChecksum(ctx, hc, base, "v"+version, asset)
+	if err != nil {
+		return out, fmt.Errorf("couldn't verify the release: %w", err)
+	}
+	home, _ := os.UserHomeDir()
+	dir := filepath.Join(home, "Downloads")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return out, err
+	}
+	final := filepath.Join(dir, asset)
+	tmp := final + ".download"
+	got, err := download(ctx, hc, base+asset, tmp)
+	if err != nil {
+		os.Remove(tmp)
+		return out, fmt.Errorf("download failed: %w", err)
+	}
+	if !strings.EqualFold(got, want) {
+		os.Remove(tmp)
+		return out, errors.New("the download didn't match the release's signed checksum, so it was deleted")
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		os.Remove(tmp)
+		return out, err
+	}
+	platform.RevealPath(final, false)
+	return DownloadedUpdate{Path: final, Hint: installHint(final)}, nil
+}
+
+// cleanUpdateTemp removes installer folders left by earlier updates (the
+// installer is still running from its folder when the app quits).
+func cleanUpdateTemp() {
+	dirs, _ := filepath.Glob(filepath.Join(os.TempDir(), "sharkbite-update-*"))
+	for _, d := range dirs {
+		if fi, err := os.Stat(d); err == nil && time.Since(fi.ModTime()) > time.Hour {
+			os.RemoveAll(d)
+		}
+	}
 }

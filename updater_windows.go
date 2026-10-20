@@ -44,3 +44,8 @@ func runInstaller(path string) error {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CmdLine: `"` + path + `" /S /D=` + filepath.Dir(exe)}
 	return cmd.Start()
 }
+
+// Windows installs updates itself (InstallUpdate).
+func updateAsset(string, string) string { return "" }
+
+func installHint(string) string { return "" }

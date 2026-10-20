@@ -24,6 +24,8 @@ export function ConnectSearch(arg1:string,arg2:string):Promise<main.SearchStatus
 
 export function DisconnectSearch():Promise<void>;
 
+export function DownloadUpdate(arg1:string,arg2:boolean):Promise<main.DownloadedUpdate>;
+
 export function ForgetRemoteHome():Promise<main.RemoteStatus>;
 
 export function GetAbout():Promise<main.About>;

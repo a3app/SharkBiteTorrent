@@ -14,7 +14,8 @@ open it, macOS blocks it: go to **System Settings → Privacy & Security** and c
 
 Linux and macOS builds are new and less tested than Windows.
 
-**Verify a download:** `SHA256SUMS.txt` is signed with the project's release key,
-[`release.pub`](https://github.com/trevercomb/SharkBiteTorrent/blob/main/release.pub).
-With [minisign](https://jedisct1.github.io/minisign/), run
+**Verify a download:** the app does this for you when it updates (Windows) or downloads an update (Linux, macOS).
+By hand: `SHA256SUMS.txt` is signed with the project's release key, ID `F59273E544BB8BA3`
+([`release.pub`](https://github.com/trevercomb/SharkBiteTorrent/blob/main/release.pub); keep the copy you first trusted,
+and check that a new one has the same ID). With [minisign](https://jedisct1.github.io/minisign/), run
 `minisign -Vm SHA256SUMS.txt -p release.pub`, then `sha256sum -c --ignore-missing SHA256SUMS.txt`.

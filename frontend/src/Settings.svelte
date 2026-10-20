@@ -2,7 +2,7 @@
   import {
     GetSettings, SaveSettings, ChooseDirectory,
     RegisterAssociations, OpenDefaultAppsSettings, GetAbout, OpenURL,
-    CheckForUpdates, InstallUpdate, GetReleaseNotes,
+    CheckForUpdates, InstallUpdate, DownloadUpdate, GetReleaseNotes,
     GetStartup, SetStartup, OpenStartupSettings,
   } from '../wailsjs/go/main/App.js'
   import { main, type platform } from '../wailsjs/go/models'
@@ -52,7 +52,8 @@
   let updateResult = $state<main.UpdateInfo | null>(null)
   // Set when the VPN is down: the user is asked before anything uses the
   // normal connection.
-  let askDirect = $state<'check' | 'install' | null>(null)
+  let askDirect = $state<'check' | 'install' | 'download' | null>(null)
+  let downloaded = $state<main.DownloadedUpdate | null>(null)
   const vpnDown = (e: unknown) => String(e).includes("VPN isn't connected")
 
   async function checkUpdates(direct = false) {
@@ -67,6 +68,19 @@
       else error = String(e)
     }
     checking = false
+  }
+
+  async function downloadUpdate(direct = false) {
+    installing = true
+    askDirect = null
+    error = ''
+    try {
+      downloaded = await DownloadUpdate(updateResult!.latest, direct)
+    } catch (e) {
+      if (vpnDown(e)) askDirect = 'download'
+      else error = String(e)
+    }
+    installing = false
   }
 
   async function installUpdate(direct = false) {
@@ -289,6 +303,10 @@
                     <button class="primary" onclick={() => installUpdate()} disabled={installing}>
                       {installing ? 'Downloading…' : 'Update now'}
                     </button>
+                  {:else if updateResult.canDownload}
+                    <button class="primary" onclick={() => downloadUpdate()} disabled={installing}>
+                      {installing ? 'Downloading…' : 'Download (verified)'}
+                    </button>
                   {:else}
                     <button class="primary" onclick={() => OpenURL(updateResult!.notesURL)}>Download</button>
                   {/if}
@@ -301,10 +319,14 @@
             {#if updateResult?.available && (updateResult.notes ?? []).length > 0}
               <div class="notes-box"><ReleaseNotes notes={updateResult.notes} /></div>
             {/if}
+            {#if downloaded}
+              <p class="ok small">✓ Downloaded and checked against the release signature: {downloaded.path}</p>
+              <p class="small">{downloaded.hint}</p>
+            {/if}
             {#if askDirect}
               <div class="row">
                 <span>The VPN isn't connected. {askDirect === 'check' ? 'Check' : 'Download the update'} over your normal connection instead? GitHub will see your real IP address.</span>
-                <button onclick={() => (askDirect === 'check' ? checkUpdates(true) : installUpdate(true))}>Use normal connection</button>
+                <button onclick={() => (askDirect === 'check' ? checkUpdates(true) : askDirect === 'download' ? downloadUpdate(true) : installUpdate(true))}>Use normal connection</button>
                 <button onclick={() => (askDirect = null)}>Cancel</button>
               </div>
             {/if}

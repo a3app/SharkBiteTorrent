@@ -3,7 +3,7 @@
   import {
     GetVpnStatus, ListTorrents, AddMagnet, PickTorrentFile, GetSettings,
     Pause, Resume, Remove, Reconnect, OpenFolder, ChooseDownloadDir,
-    InstallUpdate, SkipUpdate, OpenURL, VerifyTorrent, StartTorrent,
+    InstallUpdate, DownloadUpdate, SkipUpdate, OpenURL, VerifyTorrent, StartTorrent,
   } from '../wailsjs/go/main/App.js'
   import { EventsOn, OnFileDrop } from '../wailsjs/runtime/runtime.js'
   import type { engine, main } from '../wailsjs/go/models'
@@ -123,15 +123,28 @@
   let update = $state<main.UpdateInfo | null>(null)
   let showNotes = $state(false)
   let installing = $state(false)
-  let askDirect = $state(false) // VPN down: ask before using the normal connection
+  let askDirect = $state<'install' | 'download' | null>(null) // VPN down: ask before using the normal connection
+  let downloaded = $state<main.DownloadedUpdate | null>(null)
+
+  async function downloadUpdate(direct = false) {
+    installing = true
+    askDirect = null
+    try {
+      downloaded = await DownloadUpdate(update!.latest, direct)
+    } catch (e) {
+      if (String(e).includes("VPN isn't connected")) askDirect = 'download'
+      else error = String(e)
+    }
+    installing = false
+  }
 
   async function installUpdate(direct = false) {
     installing = true
-    askDirect = false
+    askDirect = null
     try {
       await InstallUpdate(update!.latest, direct) // the app quits and the installer relaunches it
     } catch (e) {
-      if (String(e).includes("VPN isn't connected")) askDirect = true
+      if (String(e).includes("VPN isn't connected")) askDirect = 'install'
       else error = String(e)
       installing = false
     }
@@ -273,8 +286,12 @@
       {:else}
         {#if askDirect}
           <span>The VPN isn't connected. Download over your normal connection? GitHub will see your real IP.</span>
-          <button onclick={() => installUpdate(true)}>Use normal connection</button>
-          <button onclick={() => (askDirect = false)}>Cancel</button>
+          <button onclick={() => (askDirect === 'download' ? downloadUpdate(true) : installUpdate(true))}>Use normal connection</button>
+          <button onclick={() => (askDirect = null)}>Cancel</button>
+        {:else if downloaded}
+          <span class="ok">✓ Verified and saved: {downloaded.path}. {downloaded.hint}</span>
+        {:else if update.canDownload}
+          <button class="primary" onclick={() => downloadUpdate()}>Download (verified)</button>
         {:else if update.canInstall}
           <button class="primary" onclick={() => installUpdate()}>Update now</button>
         {:else}

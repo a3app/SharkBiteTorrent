@@ -241,6 +241,20 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class DownloadedUpdate {
+	    path: string;
+	    hint: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DownloadedUpdate(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.hint = source["hint"];
+	    }
+	}
 	
 	export class LoginResult {
 	    display: string;
@@ -581,6 +595,7 @@ export namespace main {
 	    available: boolean;
 	    notesURL: string;
 	    canInstall: boolean;
+	    canDownload: boolean;
 	    direct: boolean;
 	    notes: ReleaseNote[];
 	
@@ -595,6 +610,7 @@ export namespace main {
 	        this.available = source["available"];
 	        this.notesURL = source["notesURL"];
 	        this.canInstall = source["canInstall"];
+	        this.canDownload = source["canDownload"];
 	        this.direct = source["direct"];
 	        this.notes = this.convertValues(source["notes"], ReleaseNote);
 	    }

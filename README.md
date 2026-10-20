@@ -60,7 +60,7 @@ It works out of the box with **free Cloudflare WARP**, so there's protection fro
 
 **Desktop**
 - **Tray icon** with close-to-tray, Pause all / Resume all, and live speeds in the tooltip.
-- **Updates**: on launch the app checks GitHub (through the VPN) and offers new versions. On Windows, *Update now* downloads the installer, checks it against the release's signed SHA-256 checksums and upgrades in place. Releases are signed with a key kept off GitHub (`release.pub`), so a hijacked GitHub account couldn't push an update the app would install. There's also *Check for updates* in Settings.
+- **Updates**: on launch the app checks GitHub (through the VPN) and offers new versions. On Windows, *Update now* downloads the installer, checks it against the release's signed SHA-256 checksums and upgrades in place. On Linux and macOS, *Download (verified)* downloads the file for your computer (the pacman package if you installed with pacman), checks it the same way and saves it for you to install. Releases are signed with a key kept off GitHub (`release.pub`, key ID `F59273E544BB8BA3`), so a hijacked GitHub account couldn't push an update that passes these checks. There's also *Check for updates* in Settings.
 - **Single instance**: clicking a magnet link while the app is open sends it to the running window.
 - **Windows installer**: per-user, no admin. It registers magnet links and `.torrent` files and cleans up on uninstall.
 

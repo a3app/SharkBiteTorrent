@@ -5,6 +5,7 @@ What changed in each release of Shark BiteTorrent. The release notes on GitHub a
 ## [Unreleased]
 
 ### Added
+- Linux and macOS: **Download (verified)** in the update banner and Settings downloads the new version's file for your computer (the pacman package if you installed with pacman), checks it against the release signature like the Windows updater does, saves it in Downloads and tells you how to install it.
 - **Start when I sign in** (Settings → Desktop): Shark BiteTorrent starts in the background at sign-in, in the tray, without opening its window. Works on Windows, Linux (KDE, GNOME and others) and macOS. In the Microsoft Store version, turn it on in Windows Settings → Apps → Startup (the option links there); that version opens its window at sign-in.
 
 ### Fixed
