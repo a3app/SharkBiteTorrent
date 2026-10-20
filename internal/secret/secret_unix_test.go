@@ -24,6 +24,14 @@ func TestKeyFileFallback(t *testing.T) {
 	keyFilePath = func() (string, error) { return keyPath, nil }
 	fileKeyV = nil
 	keyringKey = func() ([]byte, error) { return nil, errNoKeyring }
+	oldPresent := keyringPresent
+	t.Cleanup(func() { keyringPresent = oldPresent })
+	keyringPresent = func() bool { return false }
+	keyMu.Lock()
+	cached := key
+	key = nil // an earlier test may have loaded the real keyring's key
+	keyMu.Unlock()
+	t.Cleanup(func() { keyMu.Lock(); key = cached; keyMu.Unlock() })
 
 	if !KeyringMissing() {
 		t.Error("KeyringMissing false without a keyring")
@@ -75,6 +83,9 @@ func TestKeyringErrorNoFallback(t *testing.T) {
 	keyFilePath = func() (string, error) { return keyPath, nil }
 	fileKeyV = nil
 	keyringKey = func() ([]byte, error) { return nil, errors.New("keyring locked") }
+	oldPresent := keyringPresent
+	t.Cleanup(func() { keyringPresent = oldPresent })
+	keyringPresent = func() bool { return true }
 
 	if KeyringMissing() {
 		t.Error("a locked keyring counted as missing")

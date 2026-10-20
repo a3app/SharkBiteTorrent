@@ -20,10 +20,8 @@ func OpenDefaultAppsSettings() error {
 	return errors.New("not needed on macOS")
 }
 
-// RevealPath shows a file selected in Finder, or opens a folder.
-func RevealPath(path string, isDir bool) error {
-	if isDir {
-		return systool.Command("open", path).Start()
-	}
+// RevealPath shows the file or folder selected in Finder. Always -R: plain
+// "open" on a folder named like a bundle (Foo.app) would launch it.
+func RevealPath(path string, _ bool) error {
 	return systool.Command("open", "-R", path).Start()
 }

@@ -84,18 +84,25 @@ var loadKeyringKey = func() ([]byte, error) {
 
 // keyringErr wraps errNoKeyring only if no keyring exists at all.
 func keyringErr(what string, err error) error {
-	if !keyringExists() {
+	if !keyringPresent() {
 		return fmt.Errorf("%w (%s: %v)", errNoKeyring, what, err)
 	}
 	return fmt.Errorf("%s: %w", what, err)
 }
 
 // KeyringMissing reports that there's no keyring, so new secrets are
-// protected by the key file's permissions alone (shown in Settings).
-func KeyringMissing() bool {
-	_, err := keyringKey()
-	return errors.Is(err, errNoKeyring)
+// protected by the key file's permissions alone (shown in Settings). It
+// only asks whether a keyring exists: it doesn't unlock one or create the
+// key.
+var KeyringMissing = func() bool {
+	keyMu.Lock()
+	have := key != nil
+	keyMu.Unlock()
+	return !have && !keyringPresent()
 }
+
+// keyringPresent is keyringExists; a var so tests can stand in for it.
+var keyringPresent = keyringExists
 
 var (
 	fileKeyMu sync.Mutex
@@ -238,6 +245,7 @@ func unprotect(c []byte, keyFile bool) ([]byte, error) {
 func UseKeyFileForTests(dir string) {
 	keyFilePath = func() (string, error) { return filepath.Join(dir, "secret.key"), nil }
 	keyringKey = func() ([]byte, error) { return nil, errNoKeyring }
+	KeyringMissing = func() bool { return true }
 	fileKeyMu.Lock()
 	fileKeyV = nil
 	fileKeyMu.Unlock()

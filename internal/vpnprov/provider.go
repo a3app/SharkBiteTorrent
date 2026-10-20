@@ -121,16 +121,31 @@ func SetTunnel(dial func(ctx context.Context, network, addr string) (net.Conn, e
 	tunnelMu.Unlock()
 }
 
-// apiDial dials through the tunnel if one is up (see SetTunnel), otherwise
-// directly.
+type tunnelOnlyKey struct{}
+
+// TunnelOnly marks ctx so provider API requests made with it never go out
+// directly: if the VPN is down when they connect, they fail.
+func TunnelOnly(ctx context.Context) context.Context {
+	return context.WithValue(ctx, tunnelOnlyKey{}, true)
+}
+
+// apiDial dials through the tunnel if one is up when connecting (see
+// SetTunnel), otherwise directly, unless the request's context is
+// TunnelOnly.
 func apiDial() func(ctx context.Context, network, addr string) (net.Conn, error) {
-	tunnelMu.Lock()
-	dial := tunnelDial
-	tunnelMu.Unlock()
-	if dial == nil {
-		dial = (&net.Dialer{Timeout: 10 * time.Second, Resolver: &net.Resolver{}}).DialContext
+	direct := (&net.Dialer{Timeout: 10 * time.Second, Resolver: &net.Resolver{}}).DialContext
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		tunnelMu.Lock()
+		dial := tunnelDial
+		tunnelMu.Unlock()
+		if dial != nil {
+			return dial(ctx, network, addr)
+		}
+		if ctx.Value(tunnelOnlyKey{}) != nil {
+			return nil, errors.New("VPN not connected")
+		}
+		return direct(ctx, network, addr)
 	}
-	return dial
 }
 
 // apiClient talks to provider APIs: through the tunnel if one is up (see

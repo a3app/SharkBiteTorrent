@@ -61,11 +61,17 @@ func (a *App) GetVpnRegions(provider string) ([]vpnprov.Region, error) {
 	a.mu.Lock()
 	noTunnel, mode := a.tun == nil, a.settings.VpnProvider
 	a.mu.Unlock()
-	if noTunnel && mode != "none" && a.account(provider) == nil {
+	mayGoDirect := mode == "none" || a.account(provider) != nil
+	if noTunnel && !mayGoDirect {
 		return []vpnprov.Region{}, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	if !mayGoDirect {
+		// Decided at connect time, so a VPN that drops meanwhile makes the
+		// request fail instead of going out directly.
+		ctx = vpnprov.TunnelOnly(ctx)
+	}
 	return p.Regions(ctx)
 }
 

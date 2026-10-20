@@ -948,10 +948,12 @@ type SettingsView struct {
 }
 
 func (a *App) GetSettings() SettingsView {
+	// Outside the lock: it may ask the keyring over D-Bus.
+	keyringMissing := secret.KeyringMissing()
 	a.mu.Lock()
 	v := SettingsView{Settings: a.settings, Accounts: map[string]string{}}
 	v.Scanner, v.ScannerAvailable = scan.Scanner()
-	v.KeyringMissing = secret.KeyringMissing()
+	v.KeyringMissing = keyringMissing
 	a.mu.Unlock()
 	accs, _ := a.loadAccounts()
 	for id, acc := range accs {
