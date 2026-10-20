@@ -88,7 +88,10 @@ func (a *App) checkFinished(ctx context.Context, eng *engine.Engine, t engine.St
 	if !ok {
 		return
 	}
-	scan.MarkDownloaded(p)
+	// Only the torrent's own files: its folder may hold other files too.
+	for _, f := range eng.OwnedFiles(t.Hash) {
+		scan.MarkDownloaded(f)
+	}
 
 	a.mu.Lock()
 	enabled := a.settings.ScanDownloads
@@ -357,12 +360,20 @@ type torrentWork struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+	n      int // running; guarded by App.mu
 }
 
 // workCtx returns a context for work on hash's files, ended by parent or by
 // stopWork; call done when the work is finished.
 func (a *App) workCtx(parent context.Context, hash string) (context.Context, func()) {
 	a.mu.Lock()
+	if a.removing[hash] {
+		// Being removed: no new work on its files.
+		a.mu.Unlock()
+		ctx, cancel := context.WithCancel(parent)
+		cancel()
+		return ctx, func() {}
+	}
 	if a.work == nil {
 		a.work = map[string]*torrentWork{}
 	}
@@ -373,12 +384,18 @@ func (a *App) workCtx(parent context.Context, hash string) (context.Context, fun
 		a.work[hash] = w
 	}
 	w.wg.Add(1)
+	w.n++
 	a.mu.Unlock()
 	ctx, cancel := context.WithCancel(parent)
 	stop := context.AfterFunc(w.ctx, cancel)
 	return ctx, func() {
 		stop()
 		cancel()
+		a.mu.Lock()
+		if w.n--; w.n == 0 && a.work[hash] == w {
+			delete(a.work, hash) // nothing left running on it
+		}
+		a.mu.Unlock()
 		w.wg.Done()
 	}
 }

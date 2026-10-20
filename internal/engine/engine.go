@@ -320,6 +320,10 @@ func limitOf(n int64) rate.Limit {
 type AddOptions struct {
 	Source  string // magnet link or path to a .torrent file
 	Dir     string // folder to save data in
+	// Adopt: the torrent comes from the app's saved list; if it has no
+	// ownership record (saved by an older version), its existing files are
+	// adopted as its own (see ownership.go).
+	Adopt bool
 	Skipped []int  // file indexes not to download
 	Paused  bool
 	// Recheck verifies data already on disk before downloading. Set it when
@@ -354,7 +358,7 @@ func (e *Engine) Add(o AddOptions) (string, error) {
 		}
 		return spec.InfoHash.HexString(), nil
 	}
-	st := newFileStore(o.Dir, e.pc, e.ownedDir)
+	st := newFileStore(o.Dir, e.pc, e.ownedDir, o.Adopt)
 	spec.Storage = st
 	en := &entry{dir: o.Dir, storage: st, paused: o.Paused, skipped: map[int]bool{}, added: time.Now()}
 	for _, i := range o.Skipped {
@@ -462,17 +466,25 @@ var ErrNotFound = errors.New("not found")
 // folder, and never a file it didn't create. The torrent stays reserved
 // until then, so it can't be added again while its files are going.
 func (e *Engine) Remove(hash string, deleteFiles bool) error {
-	en, err := e.find(hash)
-	if err != nil {
+	var h metainfo.Hash
+	if err := h.FromHexString(hash); err != nil {
 		return err
 	}
-	ih := en.t.InfoHash()
+	// Found and reserved in one step, so two Removes can't both proceed.
 	e.mu.Lock()
+	en, ok := e.entries[h]
+	if !ok || en.t == nil || en.removing {
+		e.mu.Unlock()
+		return fmt.Errorf("torrent %s: %w", hash, ErrNotFound)
+	}
 	en.removing = true
 	e.mu.Unlock()
+	ih := en.t.InfoHash()
 	defer func() {
 		e.mu.Lock()
-		delete(e.entries, ih)
+		if e.entries[ih] == en {
+			delete(e.entries, ih)
+		}
 		e.mu.Unlock()
 	}()
 	info := en.t.Info()
@@ -486,20 +498,39 @@ func (e *Engine) Remove(hash string, deleteFiles bool) error {
 	if !deleteFiles {
 		return nil // the record stays: re-adding here may use these files again
 	}
+	owned := en.storage.ownedFiles()
+	if en.storage.ownership() == nil && e.ownedDir != "" {
+		// Its file list never arrived this session (a magnet still fetching
+		// it), so the store never loaded its record: read it here.
+		owned = loadOwnership(e.ownedDir, ih, en.dir).list()
+	}
 	var paths []string
-	for _, p := range en.storage.ownedFiles() {
+	for _, p := range owned {
 		if !stillOpen[p] {
 			paths = append(paths, p)
 		}
 	}
-	err = removeFiles(en.dir, paths)
+	err := removeFiles(en.dir, paths)
 	if len(stillOpen) > 0 {
 		return errors.Join(err, fmt.Errorf("%d file(s) were still in use, so they weren't deleted", len(stillOpen)))
 	}
 	if err == nil {
 		en.storage.forgetOwnership()
+		if e.ownedDir != "" {
+			os.Remove(recordPath(e.ownedDir, ih, en.dir))
+		}
 	}
 	return err
+}
+
+// OwnedFiles are the torrent's files that it created and that still exist
+// (for marking them as downloaded: never other files in its folder).
+func (e *Engine) OwnedFiles(hash string) []string {
+	en, err := e.find(hash)
+	if err != nil {
+		return nil
+	}
+	return en.storage.ownedFiles()
 }
 
 // removeFiles deletes paths (files inside dir), then their folders that are

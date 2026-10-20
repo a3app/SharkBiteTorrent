@@ -42,7 +42,8 @@ import (
 type fileStore struct {
 	dir      string // download folder for this torrent
 	pc       storage.PieceCompletion
-	ownedDir string // ownership markers, one per info hash; "" skips the check
+	ownedDir string // ownership records (see ownership.go); "" skips the check
+	adopt    bool   // a torrent from the saved list: adopt its files if it has no record yet
 
 	mu      sync.Mutex
 	blocked error        // set if the torrent mustn't write (shown in the list)
@@ -79,8 +80,8 @@ func (s *fileStore) forgetOwnership() {
 	}
 }
 
-func newFileStore(dir string, pc storage.PieceCompletion, ownedDir string) *fileStore {
-	return &fileStore{dir: dir, pc: pc, ownedDir: ownedDir}
+func newFileStore(dir string, pc storage.PieceCompletion, ownedDir string, adopt bool) *fileStore {
+	return &fileStore{dir: dir, pc: pc, ownedDir: ownedDir, adopt: adopt}
 }
 
 // Blocked reports why the torrent may not write its files, if it may not.
@@ -333,16 +334,19 @@ func (t *fileTorrent) openFile(i int, create bool) (*os.File, error) {
 			return nil, err
 		}
 		f, err = os.OpenFile(t.paths[i], os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
-		if err == nil && own != nil {
-			if oerr := own.add(t.paths[i]); oerr != nil {
-				f.Close()
-				os.Remove(t.paths[i])
-				return nil, oerr
-			}
-		}
 		if err == nil {
 			makeSparse(f) // best effort: unsupported filesystems still work, just slower
 			err = f.Truncate(t.lengths[i])
+		}
+		if err == nil && own != nil {
+			// Recorded once it has its final size (part of its identity).
+			if err = own.add(t.paths[i]); err != nil {
+				f.Close()
+				os.Remove(t.paths[i])
+				return nil, err
+			}
+		}
+		if err == nil {
 			// Marked as downloaded from the internet from the start, so a
 			// file opened before the torrent finishes is checked by the OS.
 			scan.MarkDownloaded(t.paths[i])

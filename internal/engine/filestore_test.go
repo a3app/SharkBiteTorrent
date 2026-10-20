@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 
 	"github.com/anacrolix/torrent/metainfo"
@@ -66,9 +67,9 @@ func hashN(n byte) (h metainfo.Hash) { h[0] = n; return }
 func TestOwnership(t *testing.T) {
 	dir, owned := t.TempDir(), t.TempDir()
 	pc := storage.NewMapPieceCompletion()
-	open := func(info *metainfo.Info, ih metainfo.Hash, d string) (*fileStore, storage.TorrentImpl) {
+	open := func(info *metainfo.Info, ih metainfo.Hash, d string, adopt bool) (*fileStore, storage.TorrentImpl) {
 		t.Helper()
-		st := newFileStore(d, pc, owned)
+		st := newFileStore(d, pc, owned, adopt)
 		impl, err := st.OpenTorrent(t.Context(), info, ih)
 		if err != nil {
 			t.Fatal(err)
@@ -80,7 +81,7 @@ func TestOwnership(t *testing.T) {
 	os.MkdirAll(filepath.Join(dir, "Music"), 0o755)
 	os.WriteFile(filepath.Join(dir, "Music", "song.mp3"), []byte("user's own"), 0o644)
 	music := multiInfo("Music", []string{"song.mp3"})
-	st, impl := open(music, hashN(1), dir)
+	st, impl := open(music, hashN(1), dir, false)
 	if st.Blocked() == nil {
 		t.Fatal("not blocked over an existing file")
 	}
@@ -91,20 +92,28 @@ func TestOwnership(t *testing.T) {
 
 	// A file the store created is its own after a restart.
 	iso := multiInfo("Linux", []string{"a.iso"})
-	st, impl = open(iso, hashN(2), dir)
+	st, impl = open(iso, hashN(2), dir, false)
 	if st.Blocked() != nil || writePiece(t, impl, iso) != nil {
 		t.Fatalf("new torrent: %v", st.Blocked())
 	}
-	st, _ = open(iso, hashN(2), dir)
-	if st.Blocked() != nil {
+	if st, _ = open(iso, hashN(2), dir, false); st.Blocked() != nil {
 		t.Fatalf("own file refused after restart: %v", st.Blocked())
+	}
+
+	// Its record outlives the file: the user deletes it, and another file
+	// appears at the same path. The record doesn't vouch for it.
+	p := filepath.Join(dir, "Linux", "a.iso")
+	os.Remove(p)
+	os.WriteFile(p, []byte("a different file"), 0o644)
+	if st, _ = open(iso, hashN(2), dir, false); st.Blocked() == nil {
+		t.Error("stale record vouched for a different file at the same path")
 	}
 
 	// Another torrent with the same name, claimed before the first one wrote
 	// anything: the first one's file isn't the second's to write into.
 	same := multiInfo("Shared", []string{"x.iso"})
-	_, implA := open(same, hashN(3), dir)
-	stB, implB := open(same, hashN(4), dir) // claimed too: nothing exists yet
+	_, implA := open(same, hashN(3), dir, false)
+	stB, implB := open(same, hashN(4), dir, false)
 	if err := writePiece(t, implA, same); err != nil {
 		t.Fatal(err)
 	}
@@ -112,22 +121,46 @@ func TestOwnership(t *testing.T) {
 		t.Errorf("second same-name torrent wrote into the first's file: %v, %v", err, stB.Blocked())
 	}
 
-	// The same torrent in another folder: files there aren't its own, and
-	// progress recorded for the first folder doesn't count.
+	// The same torrent in two folders keeps a record for each.
 	other := t.TempDir()
-	os.MkdirAll(filepath.Join(other, "Linux"), 0o755)
-	os.WriteFile(filepath.Join(other, "Linux", "a.iso"), []byte("someone else's"), 0o644)
-	if st, _ := open(iso, hashN(2), other); st.Blocked() == nil {
-		t.Error("files in another folder taken as the torrent's own")
+	stO, implO := open(iso, hashN(6), other, false)
+	if stO.Blocked() != nil || writePiece(t, implO, iso) != nil {
+		t.Fatal("torrent in a second folder")
+	}
+	os.Remove(p) // the earlier step's file
+	_, impl1 := open(iso, hashN(6), dir, false)
+	if err := writePiece(t, impl1, iso); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := open(iso, hashN(6), other, false); st.Blocked() != nil {
+		t.Error("record for the first folder lost when used in another")
 	}
 
-	// An older version's empty marker: existing files are adopted once.
-	legacyInfo := multiInfo("Old", []string{"old.mkv"})
+	// Upgrading: a torrent from the saved list, with no record, adopts its
+	// files; the same files for a torrent that isn't saved are refused.
+	legacy := multiInfo("Old", []string{"old.mkv"})
 	os.MkdirAll(filepath.Join(dir, "Old"), 0o755)
 	os.WriteFile(filepath.Join(dir, "Old", "old.mkv"), []byte("1"), 0o644)
-	os.WriteFile(filepath.Join(owned, hashN(5).HexString()), nil, 0o600)
-	if st, _ := open(legacyInfo, hashN(5), dir); st.Blocked() != nil || len(st.ownedFiles()) != 1 {
-		t.Errorf("legacy files not adopted: %v %v", st.Blocked(), st.ownedFiles())
+	if st, _ := open(legacy, hashN(7), dir, false); st.Blocked() == nil {
+		t.Error("files adopted without the saved list")
+	}
+	if st, _ := open(legacy, hashN(7), dir, true); st.Blocked() != nil || len(st.ownedFiles()) != 1 {
+		t.Errorf("saved torrent's files not adopted: %v %v", st.Blocked(), st.ownedFiles())
+	}
+}
+
+// A damaged or edited record can't point outside the folder, and a line cut
+// off by a crash is ignored.
+func TestOwnershipRecordSafety(t *testing.T) {
+	dir, owned := t.TempDir(), t.TempDir()
+	outside := filepath.Join(t.TempDir(), "victim")
+	os.WriteFile(outside, []byte("x"), 0o644)
+	id, size, _ := fileID(outside)
+	rel, _ := filepath.Rel(dir, outside)
+	rec := ownershipHeader + dir + "\n" + id + "\t" + strconv.FormatInt(size, 10) + "\t" + filepath.ToSlash(rel) + "\n" + "abc\t1\tcut"
+	os.WriteFile(recordPath(owned, hashN(9), dir), []byte(rec), 0o600)
+	if got := loadOwnership(owned, hashN(9), dir).list(); len(got) != 0 {
+		t.Errorf("record entries accepted: %v", got)
 	}
 }
 

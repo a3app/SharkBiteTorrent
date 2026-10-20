@@ -47,6 +47,7 @@ type App struct {
 	quitting    bool
 	scanning    map[string]bool         // torrents being scanned right now
 	work        map[string]*torrentWork // background work reading a torrent's files (see workCtx)
+	removing    map[string]bool         // torrents being removed; kept across engine restarts
 	proxy       *socks.Server           // local SOCKS5 proxy into the tunnel, for Prowlarr/Jackett
 	proxyErr    string
 	// connMu serializes connecting and reconnecting, so the startup connect
@@ -519,7 +520,8 @@ func (a *App) startEngine(tun *tunnel.Tunnel, eng *engine.Engine, st VpnStatus) 
 		if s.Confirm {
 			continue // waiting for the user: not given to the engine yet
 		}
-		_, err := eng.Add(engine.AddOptions{Source: s.Source, Dir: s.Dir, Skipped: s.Skipped, Paused: s.Paused})
+		// Adopt: saved by an older version, its files have no ownership record yet.
+		_, err := eng.Add(engine.AddOptions{Source: s.Source, Dir: s.Dir, Skipped: s.Skipped, Paused: s.Paused, Adopt: true})
 		if err != nil {
 			runtime.LogWarningf(a.ctx, "%s", engine.Redact(fmt.Sprintf("restore %s: %v", s.Hash, err)))
 		}
@@ -742,6 +744,15 @@ func (a *App) ListTorrents() []engine.Status {
 	if eng, err := a.engine(); err == nil {
 		list = eng.List()
 	}
+	a.mu.Lock()
+	kept := list[:0]
+	for _, t := range list {
+		if !a.removing[t.Hash] {
+			kept = append(kept, t)
+		}
+	}
+	list = kept
+	a.mu.Unlock()
 	// Torrents added from outside the app, waiting for the user.
 	a.mu.Lock()
 	for _, s := range a.saved {
@@ -834,6 +845,9 @@ func (a *App) addSourceFrom(src string, external bool) error {
 	if err != nil {
 		return err
 	}
+	if err := a.notBeingRemoved(pending.Hash); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -877,6 +891,9 @@ func (a *App) StartTorrent(hash string) error {
 	}
 	eng, err := a.engine()
 	if err != nil {
+		return err
+	}
+	if err := a.notBeingRemoved(hash); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -951,11 +968,29 @@ func (a *App) Remove(hash string, deleteFiles bool) error {
 	if err != nil {
 		return err
 	}
+	// Reserved first, at app level (it survives a VPN reconnect replacing
+	// the engine): the torrent leaves the list, no new work on its files
+	// starts, and it can't be added again until its files are gone.
+	a.mu.Lock()
+	if a.removing[hash] {
+		a.mu.Unlock()
+		return nil // already being removed
+	}
+	if a.removing == nil {
+		a.removing = map[string]bool{}
+	}
+	a.removing[hash] = true
+	a.mu.Unlock()
 	// Deleting files can take a while (waiting for the torrent's files to
 	// close, a slow network share), so the list doesn't wait for it: past a
 	// moment, Remove returns and any problem is reported when it's done.
 	done := make(chan error, 1)
 	go func() {
+		defer func() {
+			a.mu.Lock()
+			delete(a.removing, hash)
+			a.mu.Unlock()
+		}()
 		a.stopWork(hash, 10*time.Second) // a scan, .sfv check or Verify reading its files
 		done <- eng.Remove(hash, deleteFiles)
 	}()
@@ -1335,4 +1370,15 @@ func (a *App) recordEndpoint(ep string) {
 	}
 	fmt.Fprintln(f, ep)
 	f.Close()
+}
+
+// notBeingRemoved refuses a torrent whose files are still being deleted:
+// adding it now would create files the removal then deletes.
+func (a *App) notBeingRemoved(hash string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if hash != "" && a.removing[strings.ToLower(hash)] {
+		return errors.New("this torrent is still being removed; try again in a moment")
+	}
+	return nil
 }
