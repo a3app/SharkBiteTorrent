@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -76,7 +77,10 @@ func (a *App) updateClient(allowDirect bool) (*http.Client, bool, error) {
 	if !allowDirect && !a.directMode() {
 		return nil, false, errVPNDown
 	}
-	return &http.Client{Timeout: 10 * time.Minute}, true, nil
+	// Direct, as the user agreed: the system's own DNS, and no proxy from
+	// the environment.
+	d := &net.Dialer{Timeout: 30 * time.Second, Resolver: &net.Resolver{}}
+	return &http.Client{Timeout: 10 * time.Minute, Transport: &http.Transport{DialContext: d.DialContext, TLSHandshakeTimeout: 30 * time.Second}}, true, nil
 }
 
 func (a *App) checkUpdate(ctx context.Context, allowDirect bool) (UpdateInfo, error) {

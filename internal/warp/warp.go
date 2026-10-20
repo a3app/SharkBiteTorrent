@@ -10,6 +10,8 @@ import (
 	"github.com/ViRb3/wgcf/v2/cloudflare"
 	"github.com/ViRb3/wgcf/v2/wireguard"
 
+	"sharkbite/internal/dnsroute"
+
 	"sharkbite/internal/secret"
 )
 
@@ -63,6 +65,9 @@ func Register() (*Account, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A deliberate direct call (how a WARP tunnel comes to exist), and wgcf's
+	// dialer has no resolver setting, so let default lookups through.
+	defer dnsroute.AllowSystem()()
 	r, err := cloudflare.Register(priv.Public(), "PC")
 	if err != nil {
 		return nil, fmt.Errorf("warp register: %w", err)

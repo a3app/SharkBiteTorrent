@@ -25,6 +25,7 @@ import (
 	"github.com/anacrolix/torrent/storage"
 	"golang.org/x/time/rate"
 
+	"sharkbite/internal/dnsroute"
 	"sharkbite/internal/scan"
 	"sharkbite/internal/tunnel"
 )
@@ -83,10 +84,6 @@ type entry struct {
 	downRate, upRate   int64
 }
 
-// systemResolver is the resolver the process started with, restored when the
-// engine runs without the VPN (New points the default at the tunnel).
-var systemResolver = net.DefaultResolver
-
 // New starts a torrent client bound entirely to tun. With a nil tun (the
 // user chose "No VPN") it uses the computer's normal network instead; see
 // newDirect. The VPN path below never falls back to OS sockets.
@@ -96,15 +93,12 @@ func New(tun *tunnel.Tunnel, opts Options) (*Engine, error) {
 	}
 	tnet := tun.Net()
 
-	// Force every DNS lookup in this process through the tunnel, regardless
-	// of which nameserver the OS would use. Covers UDP tracker hostnames,
-	// which anacrolix resolves with net.ResolveUDPAddr.
-	net.DefaultResolver = &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return tun.DialContext(ctx, network, tun.DNSServer())
-		},
-	}
+	// Force every default DNS lookup in this process through the tunnel,
+	// regardless of which nameserver the OS would use. Covers UDP tracker
+	// hostnames, which anacrolix resolves with net.ResolveUDPAddr.
+	dnsroute.UseTunnel(func(ctx context.Context, network string) (net.Conn, error) {
+		return tun.DialContext(ctx, network, tun.DNSServer())
+	})
 
 	e := &Engine{
 		tun:     tun,
@@ -213,7 +207,7 @@ func New(tun *tunnel.Tunnel, opts Options) (*Engine, error) {
 // one). It uses the library's normal sockets: TCP, DHT and UDP trackers, plus
 // UPnP/NAT-PMP so peers can connect in.
 func newDirect(opts Options) (*Engine, error) {
-	net.DefaultResolver = systemResolver
+	dnsroute.UseSystem()
 
 	e := &Engine{
 		down:    rate.NewLimiter(unlimited, 0),
@@ -291,8 +285,12 @@ func (e *Engine) Close() {
 	if e.dht != nil {
 		e.dht.Close()
 	}
-	// Stop routing this process's DNS into a tunnel that's going away.
-	net.DefaultResolver = &net.Resolver{}
+	// The tunnel is going away. Lookups still in flight in the library
+	// (tracker announces outlive Close) mustn't fall back to the system's
+	// DNS: nowhere until the next engine starts.
+	if e.tun != nil {
+		dnsroute.UseNone()
+	}
 }
 
 // SetLimits changes the global speed limits (bytes/s, 0 = unlimited) live.
