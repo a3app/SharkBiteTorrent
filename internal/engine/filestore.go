@@ -15,6 +15,8 @@ import (
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/anacrolix/torrent/segments"
 	"github.com/anacrolix/torrent/storage"
+
+	"sharkbite/internal/scan"
 )
 
 // fileStore is torrent storage tuned for slow or network disks (e.g. a NAS
@@ -273,6 +275,9 @@ func (t *fileTorrent) openFile(i int, create bool) (*os.File, error) {
 		if err == nil {
 			makeSparse(f) // best effort: unsupported filesystems still work, just slower
 			err = f.Truncate(t.lengths[i])
+			// Marked as downloaded from the internet from the start, so a
+			// file opened before the torrent finishes is checked by the OS.
+			scan.MarkDownloaded(t.paths[i])
 		}
 	}
 	if err != nil {

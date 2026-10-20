@@ -30,6 +30,9 @@ type scanRecord struct {
 	// stops flagging the files that were too large.
 	Seen bool  `json:"seen,omitempty"`
 	At   int64 `json:"at"` // unix seconds
+	// Done: the torrent's downloaded bytes when it was checked. Files ticked
+	// later make it finish again with more, and it's checked again.
+	Done int64 `json:"done,omitempty"`
 	// SFV is the .sfv check, if the torrent has one.
 	SFV *engine.SFVStatus `json:"sfv,omitempty"`
 }
@@ -57,7 +60,7 @@ func (a *App) scanLoop(ctx context.Context) {
 			s := a.savedFor(t.Hash)
 			busy := a.scanning[t.Hash]
 			a.mu.Unlock()
-			if s == nil || s.Scan != nil || busy {
+			if s == nil || busy || s.Scan != nil && t.Done <= s.Scan.Done {
 				continue
 			}
 			a.checkFinished(ctx, eng, t)
@@ -93,7 +96,7 @@ func (a *App) checkFinished(ctx context.Context, eng *engine.Engine, t engine.St
 	enabled := a.settings.ScanDownloads
 	a.mu.Unlock()
 	name, available := scan.Scanner()
-	rec := &scanRecord{Engine: name, At: time.Now().Unix(), SFV: sfvRes}
+	rec := &scanRecord{Engine: name, At: time.Now().Unix(), SFV: sfvRes, Done: t.Done}
 	switch {
 	case !enabled:
 		rec.Error = "scanning is turned off in Settings"
@@ -186,7 +189,7 @@ func (a *App) ScanFully(hash string) error {
 		a.mu.Unlock()
 		return errors.New("nothing to scan")
 	}
-	rec := &scanRecord{Engine: s.Scan.Engine, At: time.Now().Unix(), SFV: s.Scan.SFV, Seen: true}
+	rec := &scanRecord{Engine: s.Scan.Engine, At: time.Now().Unix(), SFV: s.Scan.SFV, Seen: true, Done: s.Scan.Done}
 	if a.scanning == nil {
 		a.scanning = map[string]bool{}
 	}
