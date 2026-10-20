@@ -81,7 +81,22 @@ OutFile "..\..\bin\${INFO_PROJECTNAME}-${ARCH}-installer.exe" # Name of the inst
 !else
   InstallDir "$PROGRAMFILES64\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}"
 !endif # Default installing folder ($PROGRAMFILES is Program Files folder).
+# Reinstalling or updating goes back to wherever it was installed (the
+# in-app updater also passes /D=<the app's folder>).
+InstallDirRegKey HKCU "${UNINST_KEY}" "InstallLocation"
 ShowInstDetails show # This will always show the installation details.
+
+# closeApp waits up to 20 s for this user's running copy to exit, then
+# forces it. Only processes in the installer's own session (this user).
+!define PS '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command'
+!define MINE 'Get-Process -Name SharkBiteTorrent -ErrorAction SilentlyContinue | Where-Object { $$_.SessionId -eq (Get-Process -Id $$PID).SessionId }'
+!macro closeApp
+    nsExec::Exec '${PS} "${MINE} | Wait-Process -Timeout 20 -ErrorAction SilentlyContinue"'
+    !insertmacro killApp
+!macroend
+!macro killApp
+    nsExec::Exec '${PS} "${MINE} | Stop-Process -Force -ErrorAction SilentlyContinue"'
+!macroend
 
 Function .onInit
    !insertmacro wails.checkArchitecture
@@ -97,8 +112,10 @@ Section
     # files and progress database, and copying over a still-running exe fails.
     # In silent mode (used by the in-app updater) that failure used to be
     # skipped without any message, leaving the old version installed.
-    nsExec::Exec 'taskkill /IM "${PRODUCT_EXECUTABLE}" /F'
-    nsExec::Exec 'powershell -NoProfile -NonInteractive -Command "Wait-Process -Name SharkBiteTorrent -Timeout 20 -ErrorAction SilentlyContinue"'
+    # The updater has already asked the app to quit, so wait for that first
+    # and only force it after. PowerShell by full path: a bare program name
+    # would also be looked for in the installer's own folder (Downloads).
+    !insertmacro closeApp
 
     SetOutPath $INSTDIR
 
@@ -112,7 +129,7 @@ Section
     IntOp $R9 $R9 + 1
     IntCmp $R9 10 files_failed
     DetailPrint "Shark BiteTorrent is still closing, retrying..."
-    nsExec::Exec 'taskkill /IM "${PRODUCT_EXECUTABLE}" /F'
+    !insertmacro killApp
     Sleep 1000
     Goto copy_files
     files_failed:
@@ -134,6 +151,7 @@ Section
     ExecWait '"$INSTDIR\${PRODUCT_EXECUTABLE}" --register-associations'
 
     !insertmacro wails.writeUninstaller
+    WriteRegStr HKCU "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
 SectionEnd
 
 Function .onInstSuccess
@@ -144,8 +162,7 @@ FunctionEnd
 Section "uninstall"
     !insertmacro wails.setShellContext
 
-    nsExec::Exec 'taskkill /IM "${PRODUCT_EXECUTABLE}" /F'
-    nsExec::Exec 'powershell -NoProfile -NonInteractive -Command "Wait-Process -Name SharkBiteTorrent -Timeout 20 -ErrorAction SilentlyContinue"'
+    !insertmacro closeApp
 
     # Remove magnet/.torrent registrations that still point at this app.
     ExecWait '"$INSTDIR\${PRODUCT_EXECUTABLE}" --unregister-associations'
