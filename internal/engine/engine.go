@@ -1,5 +1,5 @@
 // Package engine wraps anacrolix/torrent so that every network operation it
-// performs (peers, trackers, DHT, webseeds, DNS) goes through the tunnel.
+// performs (peers, trackers, DHT, DNS) goes through the tunnel.
 // No OS sockets are opened by the torrent client itself.
 package engine
 
@@ -124,6 +124,12 @@ func New(tun *tunnel.Tunnel, opts Options) (*Engine, error) {
 
 	cfg := torrent.NewDefaultClientConfig()
 	cfg.Seed = true
+	// No web seeds (HTTP mirrors listed in a torrent). anacrolix/torrent
+	// v1.61.0 crashes the whole app when a torrent with active web seed
+	// requests is removed: the requests outlive the torrent and a timer's
+	// consistency check panics (see the comment in its Torrent.close).
+	// Peers still serve everything; mirrors often refuse ranged requests.
+	cfg.DisableWebseeds = true
 
 	// Connect to more peers, faster. The library's defaults assume OS sockets
 	// (where Windows limits half-open connections) and wait 20s per dial. Our
@@ -225,6 +231,7 @@ func newDirect(opts Options) (*Engine, error) {
 
 	cfg := torrent.NewDefaultClientConfig()
 	cfg.Seed = true
+	cfg.DisableWebseeds = true // see New
 	cfg.EstablishedConnsPerTorrent = 200
 	cfg.PieceHashersPerTorrent = 16 // see New
 	cfg.DataDir = os.TempDir()
