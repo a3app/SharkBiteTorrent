@@ -11,7 +11,7 @@ What changed in each release of Shark BiteTorrent. The release notes on GitHub a
 - Linux: on desktops without a keyring (Hyprland, Sway, i3, …) the app couldn't save the WARP account or VPN sign-ins, so it couldn't connect. It now keeps its encryption key in a file only you can read, and Settings says so. With KWallet or GNOME Keyring nothing changes.
 - Linux: **Find Prowlarr or Jackett on this computer** now finds Prowlarr running as a system service (installed with its install script or the Arch/AUR package), not only one run from your own account.
 - Linux and macOS: malware scans of finished downloads always failed ("ClamAV scan failed (exit code 2)") when ClamAV's background service wasn't running, which is the default on Arch, CachyOS and others. The app now runs ClamAV's standalone scanner, and scan errors show ClamAV's own message (for example, that its virus definitions haven't been downloaded yet).
-- Linux and macOS: files over 100 MB showed as "no threats found" although ClamAV skips them by default. They now show as **too large to scan**. For files up to 2 GB, a **Scan fully** button (in the files panel) scans them completely; ClamAV can't scan files over 2 GB at all. A yellow ⚠ next to the torrent's name points this out until you've opened its files panel.
+- Linux and macOS: files over 100 MB showed as "no threats found" although ClamAV skips them by default. They now show as **too large to scan**. For files up to 2 GB, a **Scan fully** button (in the files panel) scans them completely; ClamAV can't scan files over 2 GB, and stops after 2 GB of unpacked data (so a Linux ISO may still show as not fully scanned). A yellow ⚠ next to the torrent's name points this out until you've opened its files panel.
 
 ## [0.2.36] - 2026-10-19
 

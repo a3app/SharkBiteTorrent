@@ -89,7 +89,7 @@
         <div class="muted">Not scanned for malware: {torrent.scanError}.</div>
       {:else if torrent.scanState === 'toolarge'}
         <div class="caution">
-          ⚠ Too large to scan for malware: {tooLarge.join(', ')}.
+          ⚠ Too large to scan fully for malware: {tooLarge.join(', ')}.
           {#if files.length > tooLarge.length}{torrent.scanEngine} found no threats in the other files.{/if}
         </div>
         {#if torrent.canScanFully}
@@ -98,7 +98,7 @@
             <span class="muted">(files up to 2 GB; can take a few minutes)</span>
           </div>
         {:else}
-          <div class="muted">{torrent.scanEngine} can't scan files over 2 GB.</div>
+          <div class="muted">{torrent.scanEngine} stops after 2 GB of a file, counting what's packed inside it (like the system in a Linux ISO).</div>
         {/if}
       {/if}
       {#if torrent.verifying}

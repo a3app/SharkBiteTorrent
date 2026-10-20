@@ -24,7 +24,9 @@ import (
 // By default clamscan skips files over 100 MB. --alert-exceeds-max reports
 // each skipped file as "Heuristics.Limits.Exceeded.…", so the app can say so
 // instead of calling it clean. A full scan raises the limits to ClamAV's
-// maximum; files over 2 GiB can't be scanned at all.
+// maximum: files over 2 GiB can't be scanned at all, and a scan stops after
+// 2 GiB of data, counting what it unpacks (a Linux ISO's compressed
+// filesystem can exceed that, even with a 4 GiB budget).
 const fullScanLimit = 2047 << 20 // bytes; ClamAV refuses anything over 2 GiB - 1
 
 func clamscan() (string, bool) { return systool.Find("clamscan") }
@@ -37,7 +39,7 @@ func Scanner() (string, bool) {
 
 // ScanPath scans a file or folder with ClamAV. full raises its size limits
 // (slow: minutes for a big ISO). Exit codes: 0 clean, 1 something found,
-// 2 error, though a run that only skipped files also exits 2.
+// 2 error.
 func ScanPath(ctx context.Context, p string, full bool) (Result, error) {
 	res := Result{Engine: "ClamAV"}
 	bin, ok := clamscan()
@@ -63,7 +65,13 @@ func ScanPath(ctx context.Context, p string, full bool) (Result, error) {
 	if ctx.Err() != nil {
 		return res, ctx.Err()
 	}
+	return parseClamscan(res, out, code, stderr.String(), p, full)
+}
 
+// parseClamscan turns clamscan's --infected output and exit code into a
+// Result. A run that only hit size limits exits 1 or 2 depending on the
+// file, so the exit code alone can't tell a threat from a skipped file.
+func parseClamscan(res Result, out []byte, code int, stderr, p string, full bool) (Result, error) {
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	for sc.Scan() {
 		// "/path/to/file: Win.Test.EICAR_HDB-1 FOUND"
@@ -91,10 +99,10 @@ func ScanPath(ctx context.Context, p string, full bool) (Result, error) {
 	}
 
 	switch {
-	case code == 1 && len(res.Threats) == 0:
+	case code == 1 && len(res.Threats) == 0 && len(res.TooLarge) == 0:
 		res.Threats = []string{"unknown threat"}
 	case code == 2 && len(res.Threats) == 0 && len(res.TooLarge) == 0:
-		if msg := firstLine(stderr.String()); msg != "" {
+		if msg := firstLine(stderr); msg != "" {
 			return res, fmt.Errorf("ClamAV scan failed: %s", msg)
 		}
 		return res, fmt.Errorf("ClamAV scan failed (exit code %d)", code)
