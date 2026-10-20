@@ -62,6 +62,7 @@ const (
 	pairCodeLifetime  = 5 * time.Minute
 	maxTorrentUpload  = 10 << 20
 	maxRemoteConns    = 64
+	maxConnsPerDevice = 16 // so one device can't take every slot
 	recheckNetwork    = 20 * time.Second
 )
 
@@ -338,10 +339,10 @@ func (a *App) startRemote() {
 	rs := &remoteServer{port: port, addrs: addrs, tsAddr: tsAddr, whois: tailscaleWhois, keyFails: map[string][]time.Time{}, codeFails: map[string][]time.Time{}}
 	rs.srv = &http.Server{
 		Handler:           a.remoteHandler(rs),
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      120 * time.Second, // searches take up to 90 s
-		IdleTimeout:       60 * time.Second,
+		IdleTimeout:       30 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 	}
 	var lns []net.Listener
@@ -357,7 +358,7 @@ func (a *App) startRemote() {
 			setState(fmt.Sprintf("couldn't start on port %d: %v", port, err), "")
 			return
 		}
-		lns = append(lns, netutil.LimitListener(ln, maxRemoteConns))
+		lns = append(lns, netutil.LimitListener(&perDeviceListener{Listener: ln, open: map[string]int{}}, maxRemoteConns))
 	}
 	a.mu.Lock()
 	a.remote, a.remoteErr, a.remotePaused = rs, "", reason
@@ -646,6 +647,7 @@ func (a *App) remoteHandler(rs *remoteServer) http.Handler {
 			return
 		}
 		code := normalizePairCode(req.Code)
+		cancelled := false
 		rs.mu.Lock()
 		ok := rs.pairCode != "" && time.Now().Before(rs.pairUntil) &&
 			subtle.ConstantTimeCompare([]byte(code), []byte(rs.pairCode)) == 1
@@ -656,9 +658,13 @@ func (a *App) remoteHandler(rs *remoteServer) http.Handler {
 			// anywhere cancel the code altogether.
 			if rs.pairFailures++; rs.pairFailures >= 20 {
 				rs.pairCode = ""
+				cancelled = true
 			}
 		}
 		rs.mu.Unlock()
+		if cancelled && a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "notice", "Phone pairing was cancelled after too many wrong codes from your network. If you're pairing a phone, show a new code in Settings → Remote control.")
+		}
 		if !ok {
 			rs.fail(rs.codeFails, key)
 			http.Error(w, "this pairing code is wrong or expired; show a new one in Settings → Remote control", http.StatusForbidden)
@@ -736,7 +742,7 @@ func (a *App) remoteHandler(rs *remoteServer) http.Handler {
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, maxTorrentUpload+1<<20)
 			if err := h(w, r); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				http.Error(w, phoneError(err), http.StatusBadRequest)
 			}
 		})
 	}
@@ -1012,4 +1018,60 @@ func (a *App) ForgetRemoteHome() (RemoteStatus, error) {
 	a.startRemote()
 	a.remoteOpMu.Unlock()
 	return a.GetRemoteStatus(), nil
+}
+
+// pathLike matches file paths (/home/…, C:\Users\…) in error messages.
+var pathLike = regexp.MustCompile(`(?:[A-Za-z]:\\|/)[^\s:"']+`)
+
+// phoneError is err's message without file paths: the phone never gets this
+// computer's folders or user name (see PRIVACY.md).
+func phoneError(err error) string {
+	return pathLike.ReplaceAllString(err.Error(), "…")
+}
+
+// perDeviceListener refuses a device's connections beyond
+// maxConnsPerDevice, so one device on the network can't hold every slot.
+type perDeviceListener struct {
+	net.Listener
+	mu   sync.Mutex
+	open map[string]int
+}
+
+func (l *perDeviceListener) Accept() (net.Conn, error) {
+	for {
+		c, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		host, _, _ := net.SplitHostPort(c.RemoteAddr().String())
+		l.mu.Lock()
+		full := l.open[host] >= maxConnsPerDevice
+		if !full {
+			l.open[host]++
+		}
+		l.mu.Unlock()
+		if full {
+			c.Close()
+			continue
+		}
+		return &deviceConn{Conn: c, l: l, host: host}, nil
+	}
+}
+
+type deviceConn struct {
+	net.Conn
+	l    *perDeviceListener
+	host string
+	once sync.Once
+}
+
+func (c *deviceConn) Close() error {
+	c.once.Do(func() {
+		c.l.mu.Lock()
+		if c.l.open[c.host]--; c.l.open[c.host] <= 0 {
+			delete(c.l.open, c.host)
+		}
+		c.l.mu.Unlock()
+	})
+	return c.Conn.Close()
 }

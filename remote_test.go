@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -280,5 +281,62 @@ func TestTailscaleSameAccount(t *testing.T) {
 		if got := tailscaleSameAccount(c.self, c.user, c.tags); got != c.want {
 			t.Errorf("case %d: got %v, want %v", i, got, c.want)
 		}
+	}
+}
+
+func TestPhoneErrorHidesPaths(t *testing.T) {
+	for _, e := range []error{
+		errors.New("removed, but some files couldn't be deleted: unlinkat /home/tony/Downloads/x.iso: permission denied"),
+		errors.New(`mkdir C:\Users\Tony\Downloads\Torrents: access denied`),
+	} {
+		got := phoneError(e)
+		if strings.Contains(got, "tony") || strings.Contains(got, "Tony") {
+			t.Errorf("path left in %q", got)
+		}
+	}
+}
+
+func TestPerDeviceLimit(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pl := &perDeviceListener{Listener: ln, open: map[string]int{}}
+	defer pl.Close()
+	accepted := make(chan net.Conn, 64)
+	go func() {
+		for {
+			c, err := pl.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- c
+		}
+	}()
+	var clients []net.Conn
+	for i := 0; i < maxConnsPerDevice+4; i++ {
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		clients = append(clients, c)
+	}
+	defer func() {
+		for _, c := range clients {
+			c.Close()
+		}
+	}()
+	time.Sleep(200 * time.Millisecond)
+	if n := len(accepted); n != maxConnsPerDevice {
+		t.Errorf("accepted %d connections from one device, want %d", n, maxConnsPerDevice)
+	}
+	// Closing one frees a slot.
+	(<-accepted).Close()
+	c, _ := net.Dial("tcp", ln.Addr().String())
+	defer c.Close()
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Error("slot not freed after a close")
 	}
 }
