@@ -14,6 +14,12 @@ package main
 // therefore get a private /etc/nsswitch.conf ("files myhostname dns"), so
 // any system lookup becomes a DNS packet, to the 127.0.0.53 stub or a DNS
 // server, and is counted like everything else. The answers are the same.
+// /run/nscd is hidden from them too, so glibc can't hand lookups to nscd.
+//
+// Not seen, by design: work other processes do on the app's behalf, outside
+// its cgroup (D-Bus calls to systemd-resolved, desktop portals, avahi). And
+// UDP to the WireGuard endpoint is allowed from any watched process, not
+// only the main one as on Windows.
 //
 // It runs as the logged-in user and uses sudo (asked once) for nft and for
 // the private mount; the watched processes run as the user, with the user's
@@ -105,10 +111,16 @@ func runLinux(secs int, selftest, app bool, exe, endpointFlag, childWarp string)
 			return fatalCode(err.Error())
 		}
 		defer os.RemoveAll(tmp)
-		warpFile := filepath.Join(tmp, "warp.json")
-		acc, err := warp.LoadOrRegister(warpFile)
+		// Kept as plain JSON in the private temp folder, not through the
+		// app's secret storage, which could create its key file.
+		acc, err := warp.Register()
 		if err != nil {
 			return fatalCode("registering a test WARP account: " + err.Error())
+		}
+		warpFile := filepath.Join(tmp, "warp.json")
+		data, _ := json.Marshal(acc)
+		if err := os.WriteFile(warpFile, data, 0o600); err != nil {
+			return fatalCode(err.Error())
 		}
 		endpoint = acc.Endpoint
 		self, err := os.Executable()
@@ -127,6 +139,16 @@ func runLinux(secs int, selftest, app bool, exe, endpointFlag, childWarp string)
 	if err := sudoInteractive("-v"); err != nil {
 		return fatalCode("sudo: " + err.Error())
 	}
+	sudo("nft", "delete", "table", "inet", nftTable) // left over from an interrupted run
+	// Keep sudo's timestamp fresh, so reading the counters and removing the
+	// table at the end still work after a long run.
+	keepAlive := time.NewTicker(60 * time.Second)
+	defer keepAlive.Stop()
+	go func() {
+		for range keepAlive.C {
+			sudo("-v")
+		}
+	}()
 
 	nss, err := os.CreateTemp("", "leakcheck-nsswitch")
 	if err != nil {
@@ -145,7 +167,9 @@ func runLinux(secs int, selftest, app bool, exe, endpointFlag, childWarp string)
 	home, _ := os.UserHomeDir()
 	// $1 nsswitch file, $2 uid, $3 gid, $4 home, $5 USER=…, then the command;
 	// env puts HOME and USER back after sudo.
-	script := `mount --bind "$1" /etc/nsswitch.conf || exit 1; read go || exit 1; exec setpriv --reuid="$2" --regid="$3" --init-groups --inh-caps=-all -- env HOME="$4" "$5" "${@:6}"`
+	script := `mount --bind "$1" /etc/nsswitch.conf || exit 1
+for d in /run/nscd /var/run/nscd; do if [ -d "$d" ] && ! mountpoint -q "$d"; then mount -t tmpfs tmpfs "$d" || exit 1; fi; done
+read go || exit 1; exec setpriv --reuid="$2" --regid="$3" --init-groups --inh-caps=-all -- env HOME="$4" "$5" "${@:6}"`
 	args := []string{"--user", "--scope", "--quiet", "--unit=" + unit, "--",
 		mustFind("sudo"), "-n", "-E", "--", mustFind("unshare"), "--mount", "--propagation", "private", "--",
 		mustFind("bash"), "-c", script, "leakcheck", nss.Name(),
@@ -189,7 +213,7 @@ func runLinux(secs int, selftest, app bool, exe, endpointFlag, childWarp string)
 	}
 	defer cleanup()
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		<-sig
 		fmt.Println("\ninterrupted")
@@ -244,9 +268,13 @@ func runLinux(secs int, selftest, app bool, exe, endpointFlag, childWarp string)
 
 // runChild is the engine run inside the watched cgroup.
 func runChild(warpFile string, secs int, selftest bool) int {
-	acc, err := warp.LoadOrRegister(warpFile) // exists already: no network
+	data, err := os.ReadFile(warpFile)
 	if err != nil {
 		return fatalCode(err.Error())
+	}
+	var acc *warp.Account
+	if err := json.Unmarshal(data, &acc); err != nil || acc == nil {
+		return fatalCode("reading the test WARP account: " + errText(err))
 	}
 	if err := runEngine(acc, secs, selftest, flag.Args()[0]); err != nil {
 		return fatalCode(err.Error())
@@ -476,7 +504,8 @@ func localAddrs() map[string]bool {
 func appRunning() bool {
 	ents, _ := os.ReadDir("/proc")
 	for _, e := range ents {
-		if b, err := os.ReadFile("/proc/" + e.Name() + "/comm"); err == nil && strings.TrimSpace(string(b)) == linuxAppComm {
+		// The package's /usr/bin/sharkbitetorrent shows as "sharkbitetorren".
+		if b, err := os.ReadFile("/proc/" + e.Name() + "/comm"); err == nil && strings.EqualFold(strings.TrimSpace(string(b)), linuxAppComm) {
 			return true
 		}
 	}
