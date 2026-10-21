@@ -419,8 +419,12 @@ func (t *fileTorrent) mkdirs(d string) error {
 		}
 		missing = append(missing, d)
 	}
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		return err
+	// The download folder itself is never created here (the app makes it
+	// before adding a torrent): if it's gone, its drive isn't connected (a
+	// network drive's mount point on Linux is an empty folder), and making
+	// it would download onto this computer's own disk instead.
+	if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
+		return fmt.Errorf("the download folder %s isn't available; if it's on a network drive or another disk, connect it", root)
 	}
 	for i := len(missing) - 1; i >= 0; i-- {
 		if err := os.Mkdir(missing[i], 0o755); err != nil {

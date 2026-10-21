@@ -912,7 +912,7 @@ func (a *App) addSourceFrom(src string, external bool) error {
 	if err := a.notBeingRemoved(pending.Hash); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := ensureDownloadDir(dir); err != nil {
 		return err
 	}
 	hash, err := eng.Add(engine.AddOptions{Source: src, Dir: dir})
@@ -920,6 +920,32 @@ func (a *App) addSourceFrom(src string, external bool) error {
 		return err
 	}
 	return a.recordAdded(hash, src, dir)
+}
+
+// ensureDownloadDir makes sure dir exists to download into. It creates dir
+// itself, but not missing folders above it: those mean a drive that isn't
+// connected (a network drive's /Volumes/X on macOS, a drive letter on
+// Windows), and creating them would put the downloads on the wrong disk. On
+// Linux an unmounted drive leaves an empty folder that looks like any
+// other, so a drive in /etc/fstab that isn't mounted is caught too.
+func ensureDownloadDir(dir string) error {
+	if fi, err := os.Stat(dir); err == nil {
+		if !fi.IsDir() {
+			return fmt.Errorf("the download folder %s is a file, not a folder", dir)
+		}
+		return nil
+	}
+	notConnected := func(what string) error {
+		return fmt.Errorf("the download folder %s isn't available: %s. If it's on a network drive or another disk, connect it, or choose another folder in Settings", dir, what)
+	}
+	if mp := platform.UnmountedDrive(dir); mp != "" {
+		return notConnected("the drive at " + mp + " isn't mounted")
+	}
+	parent := filepath.Dir(dir)
+	if _, err := os.Stat(parent); err != nil {
+		return notConnected(parent + " doesn't exist")
+	}
+	return os.Mkdir(dir, 0o755)
 }
 
 // recordAdded saves a torrent the engine has just been given from inside the
@@ -972,7 +998,7 @@ func (a *App) StartTorrent(hash string) error {
 	if err := a.notBeingRemoved(hash); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := ensureDownloadDir(dir); err != nil {
 		return err
 	}
 	if _, err := eng.Add(engine.AddOptions{Source: src, Dir: dir}); err != nil {
@@ -1162,7 +1188,7 @@ func (a *App) OpenFolder(hash string) error {
 			}
 		}
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := ensureDownloadDir(dir); err != nil {
 		return err
 	}
 	return platform.OpenFolder(dir)

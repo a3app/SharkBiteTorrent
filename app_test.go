@@ -5,6 +5,7 @@ import (
 	"github.com/anacrolix/torrent/metainfo"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -110,5 +111,24 @@ func TestAddedTorrentsNeverLegacy(t *testing.T) {
 	c.loadSaved()
 	if len(c.saved) != 1 || !c.saved[0].legacy {
 		t.Fatalf("v0.2.36 entry not legacy: %+v", c.saved)
+	}
+}
+
+// The download folder is created, but not missing folders above it (a
+// drive that isn't connected).
+func TestEnsureDownloadDir(t *testing.T) {
+	base := t.TempDir()
+	if err := ensureDownloadDir(filepath.Join(base, "Torrents")); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(filepath.Join(base, "Torrents")); err != nil || !fi.IsDir() {
+		t.Error("the folder wasn't created")
+	}
+	err := ensureDownloadDir(filepath.Join(base, "Volumes", "Public", "Plex"))
+	if err == nil || !strings.Contains(err.Error(), "isn't available") {
+		t.Errorf("a folder on a drive that isn't there: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "Volumes")); !os.IsNotExist(err) {
+		t.Error("created folders above the download folder")
 	}
 }
