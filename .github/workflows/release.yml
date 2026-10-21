@@ -217,9 +217,17 @@ jobs:
 
   vulncheck:
     # Known vulnerabilities, checked again at release time: one published
-    # after the commit's Checks ran still stops the release.
-    runs-on: windows-2025
-    env: { CGO_ENABLED: "0" }
+    # after the commit's Checks ran still stops the release. On each OS,
+    # since govulncheck only follows the code that's built for the OS it
+    # runs on (keyring, D-Bus, the tray and Wails differ per platform).
+    strategy:
+      matrix:
+        include:
+          - { os: windows-2025, cgo: "0" } # release builds for Windows are pure Go
+          - { os: ubuntu-22.04, cgo: "1" }
+          - { os: macos-26, cgo: "1" }
+    runs-on: ${{ matrix.os }}
+    env: { CGO_ENABLED: "${{ matrix.cgo }}" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }

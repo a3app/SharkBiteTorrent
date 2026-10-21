@@ -24,10 +24,35 @@ func TestDesktopExec(t *testing.T) {
 // own; a copy run from elsewhere points its entry at where it is now.
 func TestRefreshAssociations(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	wwd := inWorldWritableDir
+	t.Cleanup(func() { inWorldWritableDir = wwd })
+	inWorldWritableDir = func(string) bool { return false } // t.TempDir is under /tmp
+
+	// Another copy that still exists keeps magnet links.
+	other := filepath.Join(t.TempDir(), "SharkBiteTorrent")
+	os.WriteFile(other, nil, 0o755)
+	if err := writeEntry(other); err != nil {
+		t.Fatal(err)
+	}
+	RefreshAssociations(filepath.Join(t.TempDir(), "SharkBiteTorrent"))
+	if b, _ := os.ReadFile(desktopPath()); !strings.Contains(string(b), "\nExec=\""+other+"\" %u") {
+		t.Errorf("a second copy took over magnet links:\n%s", b)
+	}
+
+	// A copy in a folder anyone can write to never takes them, even from a
+	// copy that's gone.
 	old := filepath.Join(t.TempDir(), "SharkBiteTorrent")
 	if err := writeEntry(old); err != nil {
 		t.Fatal(err)
 	}
+	inWorldWritableDir = func(string) bool { return true }
+	RefreshAssociations(filepath.Join(t.TempDir(), "SharkBiteTorrent"))
+	if b, _ := os.ReadFile(desktopPath()); !strings.Contains(string(b), "\nExec=\""+old+"\" %u") {
+		t.Errorf("a copy in a world-writable folder took over magnet links:\n%s", b)
+	}
+	inWorldWritableDir = func(string) bool { return false }
+
+	// The copy the entry names is gone (moved): the moved copy takes over.
 	moved := filepath.Join(t.TempDir(), "SharkBiteTorrent")
 	RefreshAssociations(moved)
 	if b, _ := os.ReadFile(desktopPath()); !strings.Contains(string(b), "\nExec=\""+moved+"\" %u") {

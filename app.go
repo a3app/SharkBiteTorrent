@@ -37,6 +37,7 @@ type App struct {
 	ctx       context.Context
 	configDir string
 	exe       string
+	markerMu  sync.Mutex // the update-download marker (updater.go)
 
 	mu          sync.Mutex
 	tun         *tunnel.Tunnel

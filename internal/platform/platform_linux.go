@@ -103,7 +103,10 @@ func dropUserEntry() {
 // RefreshAssociations runs at startup. The packaged app removes a per-user
 // entry left by a copy run from elsewhere (a downloaded tarball, before
 // installing the package), which hides the package's entry. A copy run
-// from elsewhere that was moved points its entry at where it is now.
+// from elsewhere that was moved points its entry at where it is now. As
+// with sign-in start, only when the copy the entry names is gone (another
+// copy still there keeps it), and never to a copy in a folder any user can
+// write to (/tmp): someone else could put a program at that path later.
 func RefreshAssociations(exe string) {
 	b, err := os.ReadFile(desktopPath())
 	if err != nil {
@@ -113,7 +116,11 @@ func RefreshAssociations(exe string) {
 		dropUserEntry()
 		return
 	}
-	if execPath, err := desktopExec(exe); err == nil && !strings.Contains(string(b), "\nExec="+execPath+" ") {
+	m := execLine.FindSubmatch(b)
+	if m == nil || string(m[1]) == exe || inWorldWritableDir(exe) {
+		return
+	}
+	if _, err := os.Stat(string(m[1])); err != nil {
 		writeEntry(exe) // not the defaults: another app may have been chosen since
 	}
 }

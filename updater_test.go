@@ -96,47 +96,46 @@ func TestReleaseKeyEmbedded(t *testing.T) {
 
 func TestCleanUpdateTempOnlyRecordedFile(t *testing.T) {
 	a := &App{configDir: t.TempDir()}
-	dl := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows
+	dl := filepath.Join(home, "Downloads")
+	os.MkdirAll(dl, 0o755)
 	old := time.Now().Add(-2 * time.Hour)
-	write := func(name string, mtime time.Time) string {
-		p := filepath.Join(dl, name)
+	write := func(dir, name string, mtime time.Time) string {
+		p := filepath.Join(dir, name)
 		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		os.Chtimes(p, mtime, mtime)
 		return p
 	}
-	recorded := write("SharkBiteTorrent-macos-universal.zip.123.download", old)
-	other := write("SharkBiteTorrent-macos-universal.zip.456.download", old)
+	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
 
-	os.WriteFile(a.updateDownloadMarker(), []byte(recorded), 0o600)
+	// Two downloads cut off by quitting, a third still going; and files the
+	// marker names but that aren't update downloads in Downloads.
+	stale1 := write(dl, "SharkBiteTorrent-macos-universal.zip.1.download", old)
+	stale2 := write(dl, "sharkbitetorrent-x.pkg.tar.zst.2.download", old)
+	fresh := write(dl, "SharkBiteTorrent-macos-universal.zip.3.download", time.Now())
+	other := write(dl, "SharkBiteTorrent-macos-universal.zip.4.download", old) // not recorded
+	elsewhere := write(t.TempDir(), "SharkBiteTorrent-x.zip.5.download", old)
+	notOurs := write(dl, "holiday.mov", old)
+	for _, f := range []string{stale1, stale2, fresh, elsewhere, notOurs} {
+		a.markDownload(f, true)
+	}
+	a.markDownload(fresh, true) // recorded once only
 	a.cleanUpdateTemp()
-	if _, err := os.Stat(recorded); !os.IsNotExist(err) {
-		t.Errorf("the recorded stale download wasn't removed: %v", err)
+	if exists(stale1) || exists(stale2) {
+		t.Error("a recorded stale download wasn't removed")
 	}
-	if _, err := os.Stat(other); err != nil {
-		t.Errorf("a download the marker didn't name was touched: %v", err)
+	if !exists(fresh) || !exists(other) || !exists(elsewhere) || !exists(notOurs) {
+		t.Error("removed a file it shouldn't have (still downloading, unrecorded, outside Downloads, or not an update)")
 	}
+	if got := a.readMarker(); len(got) != 1 || got[0] != fresh {
+		t.Errorf("marker after cleanup: %v (only the download that may still be going should stay)", got)
+	}
+	a.markDownload(fresh, false)
 	if _, err := os.Stat(a.updateDownloadMarker()); !os.IsNotExist(err) {
-		t.Error("the marker wasn't removed")
-	}
-
-	// A recent one may still be downloading: kept, and so is the marker.
-	fresh := write("sharkbitetorrent-x.pkg.tar.zst.789.download", time.Now())
-	os.WriteFile(a.updateDownloadMarker(), []byte(fresh), 0o600)
-	a.cleanUpdateTemp()
-	if _, err := os.Stat(fresh); err != nil {
-		t.Errorf("a recent download was removed: %v", err)
-	}
-	if _, err := os.Stat(a.updateDownloadMarker()); err != nil {
-		t.Error("the marker for a recent download was removed")
-	}
-
-	// A marker naming something that isn't ours leaves it alone.
-	notOurs := write("holiday.mov", old)
-	os.WriteFile(a.updateDownloadMarker(), []byte(notOurs), 0o600)
-	a.cleanUpdateTemp()
-	if _, err := os.Stat(notOurs); err != nil {
-		t.Errorf("a file that isn't an update download was removed: %v", err)
+		t.Error("the marker wasn't removed once nothing was left in it")
 	}
 }

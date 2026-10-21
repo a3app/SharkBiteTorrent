@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -95,5 +97,21 @@ func TestSentCountsReusedConnections(t *testing.T) {
 	}
 	if s.Sent.Load() <= sent {
 		t.Error("a request over a reused connection wasn't counted in Sent")
+	}
+}
+
+// Bytes that can't be a request (a TLS close or keep-alive on an idle
+// connection) don't count as traffic through the proxy.
+func TestSentIgnoresTinyReads(t *testing.T) {
+	var n atomic.Int64
+	small := countingReader{strings.NewReader(strings.Repeat("x", minRequest-1)), &n}
+	io.ReadAll(small)
+	if n.Load() != 0 {
+		t.Errorf("a %d-byte read was counted", minRequest-1)
+	}
+	big := countingReader{strings.NewReader(strings.Repeat("x", 300)), &n}
+	io.ReadAll(big)
+	if n.Load() != 300 {
+		t.Errorf("a request-sized read counted %d bytes", n.Load())
 	}
 }

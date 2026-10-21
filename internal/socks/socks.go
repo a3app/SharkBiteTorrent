@@ -27,8 +27,11 @@ type Server struct {
 	// Requests counts CONNECT requests from clients that logged in, so the
 	// app can confirm a search server really sends its traffic through here.
 	Requests atomic.Int64
-	// Sent counts bytes clients sent through here. A search server reuses
-	// connections it already has open, so a search may make no new request.
+	// Sent counts bytes clients sent through here, in reads big enough to
+	// carry a request (minRequest): a search server reuses connections it
+	// already has open, so a search may make no new request, while closing
+	// or keeping alive an idle one sends only a few bytes, which mustn't
+	// count as a search having gone through.
 	Sent atomic.Int64
 
 	mu    sync.Mutex
@@ -129,15 +132,23 @@ func (s *Server) handle(c net.Conn) {
 }
 
 // countingReader adds what it reads to n as it goes (io.Copy only reports
-// the total once the connection ends).
+// the total once the connection ends), counting only request-sized reads.
 type countingReader struct {
 	r io.Reader
 	n *atomic.Int64
 }
 
+// minRequest is the smallest read Sent counts. A TLS close_notify alert is
+// 31 bytes and a TCP keep-alive carries none; an HTTP request is more than
+// that even in plain HTTP (a bare GET with Go's headers is about 95), and a
+// few hundred inside TLS.
+const minRequest = 64
+
 func (c countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
-	c.n.Add(int64(n))
+	if n >= minRequest {
+		c.n.Add(int64(n))
+	}
 	return n, err
 }
 

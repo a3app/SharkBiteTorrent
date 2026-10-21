@@ -136,7 +136,7 @@ func verdict(flows []flow, total int64, pol policy, selftest bool) int {
 		if !containsAny(list, plantedConn) {
 			missed = append(missed, "the direct connection to "+plantedConn)
 		}
-		if !containsAny(list, "DNS lookup") {
+		if !containsAny(list, "DNS lookup outside the tunnel: "+plantedLookup) {
 			missed = append(missed, "the system DNS lookup of "+plantedLookup)
 		}
 		if len(missed) > 0 {

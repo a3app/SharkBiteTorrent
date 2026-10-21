@@ -37,7 +37,9 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly, day: monday }
-    cooldown: { default-days: 7 }
+    # Majors wait 30 days here too: these actions build, attest and publish
+    # the releases (releasekey checks attest-build-provenance's output).
+    cooldown: { default-days: 7, semver-major-days: 30 }
     groups:
       actions:
         patterns: ["*"]

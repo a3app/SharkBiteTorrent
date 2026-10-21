@@ -447,9 +447,8 @@ func (a *App) DownloadUpdate(version string, allowDirect bool) (DownloadedUpdate
 	f.Close()
 	// Remembered so a download cut off by the app quitting is cleaned up at
 	// the next start, without that having to look through Downloads.
-	marker := a.updateDownloadMarker()
-	os.WriteFile(marker, []byte(tmp), 0o600)
-	defer os.Remove(marker)
+	a.markDownload(tmp, true)
+	defer a.markDownload(tmp, false)
 	got, err := download(ctx, hc, base+asset, tmp)
 	if err != nil {
 		os.Remove(tmp)
@@ -490,28 +489,72 @@ func (a *App) cleanUpdateTemp() {
 			os.RemoveAll(d)
 		}
 	}
-	// And an unfinished update download (Linux, macOS) left in Downloads by
-	// the app quitting during it. Only the file DownloadUpdate recorded is
+	// And unfinished update downloads (Linux, macOS) left in Downloads by
+	// the app quitting during them. Only files DownloadUpdate recorded are
 	// touched: on macOS, even listing Downloads asks the user for permission.
-	marker := a.updateDownloadMarker()
-	b, err := os.ReadFile(marker)
-	if err != nil {
+	a.markerMu.Lock()
+	defer a.markerMu.Unlock()
+	var keep []string
+	for _, f := range a.readMarker() {
+		fi, err := os.Lstat(f)
+		switch {
+		case err != nil: // already gone
+		case !updateDownloadName(f) || !fi.Mode().IsRegular(): // not a download of ours: leave it
+		case time.Since(fi.ModTime()) <= time.Hour:
+			keep = append(keep, f) // may still be downloading: look again next time
+		default:
+			os.Remove(f)
+		}
+	}
+	a.writeMarker(keep)
+}
+
+// updateDownloadName reports whether f is an update download's temporary
+// file, directly in Downloads (the marker is a file anyone running as this
+// user could edit; nothing elsewhere is ever deleted on its word).
+func updateDownloadName(f string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil || filepath.Dir(f) != filepath.Join(home, "Downloads") {
+		return false
+	}
+	name := filepath.Base(f)
+	return strings.HasSuffix(name, ".download") &&
+		(strings.HasPrefix(name, "sharkbitetorrent-") || strings.HasPrefix(name, "SharkBiteTorrent-"))
+}
+
+// markDownload adds tmp to the update downloads in progress, or removes it.
+func (a *App) markDownload(tmp string, add bool) {
+	a.markerMu.Lock()
+	defer a.markerMu.Unlock()
+	var list []string
+	for _, f := range a.readMarker() {
+		if f != tmp {
+			list = append(list, f)
+		}
+	}
+	if add {
+		list = append(list, tmp)
+	}
+	a.writeMarker(list)
+}
+
+func (a *App) readMarker() []string {
+	b, _ := os.ReadFile(a.updateDownloadMarker())
+	var out []string
+	for _, l := range strings.Split(string(b), "\n") {
+		if l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func (a *App) writeMarker(list []string) {
+	if len(list) == 0 {
+		os.Remove(a.updateDownloadMarker())
 		return
 	}
-	f := string(b)
-	name := filepath.Base(f)
-	ours := strings.HasSuffix(name, ".download") &&
-		(strings.HasPrefix(name, "sharkbitetorrent-") || strings.HasPrefix(name, "SharkBiteTorrent-"))
-	fi, err := os.Lstat(f)
-	switch {
-	case err != nil: // already gone
-	case !ours || !fi.Mode().IsRegular(): // not a download of ours: leave it
-	case time.Since(fi.ModTime()) <= time.Hour:
-		return // may still be downloading: look again next time
-	default:
-		os.Remove(f)
-	}
-	os.Remove(marker)
+	os.WriteFile(a.updateDownloadMarker(), []byte(strings.Join(list, "\n")+"\n"), 0o600)
 }
 
 // freeName is dir/name, or "name (2)", "name (3)"… if that's taken.
