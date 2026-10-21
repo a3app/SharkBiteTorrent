@@ -207,9 +207,33 @@ jobs:
           name: macos
           path: build/bin/SharkBiteTorrent-macos-universal.zip
 
+  vulncheck:
+    # Known vulnerabilities, checked again at release time: one published
+    # after the commit's Checks ran still stops the release.
+    runs-on: windows-2025
+    env: { CGO_ENABLED: "0" }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with: { go-version-file: go.mod, cache: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 24 }
+      - name: Download Go modules (retried; see the script)
+        shell: bash
+        run: scripts/go-download.sh
+      - name: npm audit, and the frontend build the Go code embeds
+        working-directory: frontend
+        run: |
+          npm ci --ignore-scripts
+          npm audit --audit-level=high
+          npm run build
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, arch, macos]
+    needs: [windows, arch, macos, vulncheck]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

@@ -1,6 +1,6 @@
 # Releasing
 
-Changes go to `main` as they're made (each user-visible one noted under **Unreleased** in [`CHANGELOG.md`](CHANGELOG.md)). A release is cut only when the maintainer decides to ship. Every push already runs [Checks](.github/workflows/checks.yml) (tests, type checks, govulncheck, npm audit) and [CodeQL](.github/workflows/codeql.yml).
+Changes go to `main` as they're made (each user-visible one noted under **Unreleased** in [`CHANGELOG.md`](CHANGELOG.md)). A release is cut only when the maintainer decides to ship. Every push already runs [Checks](.github/workflows/checks.yml) (tests, type checks, govulncheck, npm audit) and [CodeQL](.github/workflows/codeql.yml); the Release workflow runs govulncheck and npm audit again and won't publish if they fail.
 
 ## Before tagging
 
@@ -15,7 +15,8 @@ Changes go to `main` as they're made (each user-visible one noted under **Unrele
 3. **Leak test (real app)**: install the build, **quit it** (any VPN choice works: with a VPN account, the check reads the server the app connected to afterwards), then from an administrator terminal run `go run ./cmd/leakcheck -app`. It launches the app itself (so startup is covered) and watches it for 150 s. The person running it follows the steps it prints: leave the window alone for the first minute, then search and add a result, type in the magnet box, open every Settings section, turn on the search proxy and click Check it's working, switch VPN provider and back (reconnecting), and check for updates. If the remote control is on, also use it from a phone on the home Wi-Fi during the run (incoming home-network connections to its port are allowed; nothing else is). Must PASS.
    **On Linux**: build or install the app, quit it, then run `go run ./cmd/leakcheck -app` (it launches `/usr/bin/sharkbitetorrent`; use `-exe build/bin/SharkBiteTorrent` for a local build). Same steps as above; at the end it asks you to quit the app from the tray, so shutdown is covered too. Start the app normally afterwards: the copy it launched used a private DNS setup.
 4. **Fresh-eyes audit of the changes**: a reviewer that hasn't seen the work (a new Claude session or agent, or a person) reviews `git diff <last-tag>..HEAD` with the brief below. Its report goes to the maintainer unedited. Required when the release touches networking, the VPN/tunnel, the updater, signing, the installer, secrets or file handling; otherwise every few releases. Every few releases, audit the whole repository instead of the diff.
-5. **CHANGELOG**: rename **Unreleased** to `## [x.y.z] - YYYY-MM-DD` and make sure it says what users will notice.
+5. **Library updates**: run `scripts/outdated.sh`. It lists the libraries (Go, npm, the Go toolchain, wails, go-webview2) that have newer versions; it's a report, not a gate. For each one, read what the new version changes and decide: update now (and test), or leave it for later with a reason. Dependabot opens weekly pull requests for most of these (`.github/dependabot.yml`, each update at least 7 days old); wails (with `WAILS_VERSION` in the workflows) and the patched go-webview2 are updated by hand. Known vulnerabilities don't wait for this: govulncheck and npm audit block every push, and the release itself.
+6. **CHANGELOG**: rename **Unreleased** to `## [x.y.z] - YYYY-MM-DD` and make sure it says what users will notice.
 
    **macOS isn't leak-tested yet**: there's no macOS version of the check (it needs a different mechanism, built and tested on a Mac). Until there is, release notes say macOS builds haven't had the leak test.
 

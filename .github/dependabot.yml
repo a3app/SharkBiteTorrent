@@ -1,0 +1,37 @@
+# Weekly pull requests for library and CI updates, so new versions are seen
+# and read rather than found by accident. Each waits 7 days after its
+# release (30 for a new major version) before it's proposed: a broken or
+# malicious release usually gets caught and pulled in that time. Merge when
+# Checks pass and the release notes make sense. Known vulnerabilities don't
+# wait for this: govulncheck and npm audit block every push and release.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    cooldown: { default-days: 7, semver-major-days: 30 }
+    groups:
+      go-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # Updated by hand: wails together with WAILS_VERSION in the
+      # workflows (the CLI and the library must match), and go-webview2 is
+      # our patched copy in third_party (see scripts/check-webview2-patch.sh).
+      - dependency-name: github.com/wailsapp/wails/v2
+      - dependency-name: github.com/wailsapp/go-webview2
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule: { interval: weekly, day: monday }
+    cooldown: { default-days: 7, semver-major-days: 30 }
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    cooldown: { default-days: 7 }
+    groups:
+      actions:
+        patterns: ["*"]
