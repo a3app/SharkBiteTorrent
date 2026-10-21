@@ -929,17 +929,19 @@ func (a *App) addSourceFrom(src string, external bool) error {
 // Linux an unmounted drive leaves an empty folder that looks like any
 // other, so a drive in /etc/fstab that isn't mounted is caught too.
 func ensureDownloadDir(dir string) error {
+	notConnected := func(what string) error {
+		return fmt.Errorf("the download folder %s isn't available: %s. If it's on a network drive or another disk, connect it, or choose another folder in Settings", dir, what)
+	}
+	// First, even if the folder exists: the download folder can be the
+	// mount point itself, an existing empty folder while the drive is away.
+	if mp := platform.UnmountedDrive(dir); mp != "" {
+		return notConnected("the drive at " + mp + " isn't mounted")
+	}
 	if fi, err := os.Stat(dir); err == nil {
 		if !fi.IsDir() {
 			return fmt.Errorf("the download folder %s is a file, not a folder", dir)
 		}
 		return nil
-	}
-	notConnected := func(what string) error {
-		return fmt.Errorf("the download folder %s isn't available: %s. If it's on a network drive or another disk, connect it, or choose another folder in Settings", dir, what)
-	}
-	if mp := platform.UnmountedDrive(dir); mp != "" {
-		return notConnected("the drive at " + mp + " isn't mounted")
 	}
 	parent := filepath.Dir(dir)
 	if _, err := os.Stat(parent); err != nil {

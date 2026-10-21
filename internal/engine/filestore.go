@@ -18,6 +18,7 @@ import (
 	"github.com/anacrolix/torrent/segments"
 	"github.com/anacrolix/torrent/storage"
 
+	"sharkbite/internal/platform"
 	"sharkbite/internal/scan"
 )
 
@@ -49,6 +50,7 @@ type fileStore struct {
 	mu      sync.Mutex
 	own     *ownership   // set by claim; nil without ownedDir
 	blocked error        // set if the torrent mustn't write (shown in the list)
+	gone    error        // the download folder isn't available (its drive is disconnected); see reclaim
 	ft      *fileTorrent // the torrent's storage, once opened
 	removed bool         // being removed: don't write out buffered pieces on close
 }
@@ -80,6 +82,66 @@ func (s *fileStore) files() []string {
 		}
 	}
 	return out
+}
+
+// folderUnavailable reports why dir can't be used now: it's missing, or
+// (Linux) it's on a drive that isn't mounted, whose mount point is an empty
+// folder on this computer's own disk.
+func folderUnavailable(dir string) error {
+	if mp := platform.UnmountedDrive(dir); mp != "" {
+		return fmt.Errorf("the download folder %s isn't available: the drive at %s isn't mounted. The torrent continues when it's back", dir, mp)
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return fmt.Errorf("the download folder %s isn't available (is its drive connected?). The torrent continues when it's back", dir)
+	}
+	return nil
+}
+
+// Unavailable reports why the torrent's download folder can't be used, if
+// it can't (shown in the list until it's back).
+func (s *fileStore) Unavailable() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gone
+}
+
+// checkGone notes that the download folder has become unavailable, if it
+// has (after a file couldn't be opened or written), and reports whether.
+func (s *fileStore) checkGone() bool {
+	err := folderUnavailable(s.dir)
+	if err == nil {
+		return false
+	}
+	s.mu.Lock()
+	if s.gone == nil {
+		s.gone = err
+	}
+	s.mu.Unlock()
+	return true
+}
+
+// reclaim runs once the download folder is back: the torrent's check
+// (claim), skipped while its files couldn't be seen, and then writing
+// resumes. A claim that fails blocks the torrent as usual.
+func (s *fileStore) reclaim() error {
+	s.mu.Lock()
+	t, claimed := s.ft, s.own != nil
+	s.mu.Unlock()
+	var err error
+	if t != nil && !claimed && s.Blocked() == nil {
+		if err = s.claim(t.ih, t.info, t.paths); err != nil {
+			s.block(err)
+		}
+		t.mu.Lock()
+		if !t.closed { // after close, writeFinished reads own and blocked unlocked
+			t.own, t.blocked = s.ownership(), err
+		}
+		t.mu.Unlock()
+	}
+	s.mu.Lock()
+	s.gone = nil
+	s.mu.Unlock()
+	return err
 }
 
 // ownership is the torrent's record of its files, once claimed.
@@ -163,7 +225,15 @@ func (s *fileStore) OpenTorrent(_ context.Context, info *metainfo.Info, ih metai
 	}
 	paths, err := torrentPaths(s.dir, info)
 	if err == nil {
-		err = s.claim(ih, info, paths)
+		if gone := folderUnavailable(s.dir); gone != nil {
+			// Claimed once it's back (see reclaim): its files, and so its
+			// ownership record, can't be checked now.
+			s.mu.Lock()
+			s.gone = gone
+			s.mu.Unlock()
+		} else {
+			err = s.claim(ih, info, paths)
+		}
 	}
 	if err != nil {
 		// Blocked: no file is opened (see acquire), and the engine stops
@@ -249,6 +319,9 @@ func (t *fileTorrent) acquire(i int, create bool) (*os.File, error) {
 	if t.blocked != nil {
 		return nil, t.blocked
 	}
+	if err := t.store.Unavailable(); err != nil {
+		return nil, err
+	}
 	for {
 		if t.closed {
 			return nil, errors.New("torrent storage closed")
@@ -268,6 +341,9 @@ func (t *fileTorrent) acquire(i int, create bool) (*os.File, error) {
 		if pool.open < handlesPerFile {
 			f, err := t.openFile(i, create)
 			if err != nil {
+				if t.store.checkGone() {
+					return nil, t.store.Unavailable()
+				}
 				return nil, err
 			}
 			pool.open++
@@ -747,8 +823,14 @@ func (p *filePiece) Completion() storage.Completion {
 	if !c.Ok || !c.Complete {
 		return c
 	}
-	if p.t.blocked != nil {
+	if p.t.store.Blocked() != nil {
 		return storage.Completion{Ok: true, Complete: false}
+	}
+	if p.t.store.Unavailable() != nil {
+		// Its files can't be looked at (the drive is disconnected): the
+		// database's word, not "missing", or everything would download
+		// again, over the files, once the drive is back.
+		return c
 	}
 	ext := segments.Extent{Start: p.p.Offset(), Length: p.p.Length()}
 	for i, e := range p.t.index.LocateIter(ext) {

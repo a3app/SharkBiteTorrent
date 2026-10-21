@@ -484,3 +484,80 @@ func TestOwnedByOthersOtherSpelling(t *testing.T) {
 		t.Error("file shared under another spelling of the folder not reported")
 	}
 }
+
+// A torrent whose download folder is unavailable when it opens (its drive
+// disconnected) isn't claimed, keeps its ownership record and its recorded
+// progress, refuses writes, and is claimed, with its own files, once the
+// folder is back.
+func TestFolderUnavailableAtOpen(t *testing.T) {
+	base, owned := t.TempDir(), t.TempDir()
+	dir := filepath.Join(base, "Plex")
+	os.Mkdir(dir, 0o755)
+	info := multiInfo("Linux", []string{"a.iso"})
+	pc := storage.NewMapPieceCompletion()
+	open := func() (*fileStore, storage.TorrentImpl) {
+		st := newFileStore(dir, pc, owned, false)
+		impl, err := st.OpenTorrent(t.Context(), info, hashN(17))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { impl.Close() })
+		return st, impl
+	}
+	_, impl := open()
+	if err := writePiece(t, impl, info); err != nil {
+		t.Fatal(err)
+	}
+	impl.Close()
+	record, _ := os.ReadFile(recordPath(owned, hashN(17), dir))
+
+	away := filepath.Join(base, "away")
+	os.Rename(dir, away) // the drive is disconnected
+	st, impl := open()
+	if st.Unavailable() == nil || st.Blocked() != nil {
+		t.Fatalf("unavailable %v, blocked %v", st.Unavailable(), st.Blocked())
+	}
+	if c := impl.Piece(info.Piece(0)).Completion(); !c.Ok || !c.Complete {
+		t.Errorf("recorded progress lost while unavailable: %+v", c)
+	}
+	if b, _ := os.ReadFile(recordPath(owned, hashN(17), dir)); !bytes.Equal(b, record) {
+		t.Errorf("ownership record changed while unavailable:\n%s\nwas\n%s", b, record)
+	}
+	if writePiece(t, impl, info) == nil {
+		t.Error("wrote while the folder was unavailable")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Error("the download folder was created")
+	}
+
+	os.Rename(away, dir) // back
+	if err := st.reclaim(); err != nil || st.Unavailable() != nil || st.Blocked() != nil {
+		t.Fatalf("after it's back: %v, unavailable %v, blocked %v", err, st.Unavailable(), st.Blocked())
+	}
+	if f := st.files(); len(f) != 1 {
+		t.Errorf("own file not recognised after reclaim: %v", f)
+	}
+	if writePiece(t, impl, info) != nil {
+		t.Error("can't write once the folder is back")
+	}
+}
+
+// A torrent running when its folder goes away notices on the next file it
+// can't open, and refuses writes from then on.
+func TestFolderGoneWhileRunning(t *testing.T) {
+	base, owned := t.TempDir(), t.TempDir()
+	dir := filepath.Join(base, "Plex")
+	os.Mkdir(dir, 0o755)
+	info := multiInfo("Show", []string{"a"}, []string{"b"})
+	st, impl := openStore(t, dir, owned, info, hashN(18))
+	os.Rename(dir, filepath.Join(base, "away"))
+	if writePiece(t, impl, info) == nil {
+		t.Error("wrote with the folder gone")
+	}
+	if st.Unavailable() == nil {
+		t.Error("the folder going away wasn't noticed")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Error("the download folder was created")
+	}
+}

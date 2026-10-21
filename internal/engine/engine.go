@@ -75,6 +75,7 @@ type entry struct {
 	checking  atomic.Bool // verifying existing data after a restart
 	removing  bool        // Remove is deleting its files; guarded by Engine.mu
 	stopped   bool        // blocked, and data transfer turned off; guarded by Engine.mu
+	waiting   bool        // download folder unavailable: data transfer off until it's back; guarded by Engine.mu
 
 	// "Verify files": re-hash finished pieces on disk (see Verify).
 	verifying            atomic.Bool
@@ -386,10 +387,14 @@ func (e *Engine) Add(o AddOptions) (string, error) {
 				t.DisallowDataUpload()
 				return
 			}
+			e.applyPriorities(en)
+			if st.Unavailable() != nil {
+				e.waitForFolder(en, o.Recheck)
+				return
+			}
 			if o.Recheck {
 				recheck(en)
 			}
-			e.applyPriorities(en)
 		case <-t.Closed():
 		}
 	}()
@@ -448,12 +453,53 @@ func (e *Engine) Resume(hash string) error {
 	if err := en.storage.Blocked(); err != nil {
 		return err
 	}
+	if err := en.storage.Unavailable(); err != nil {
+		return err
+	}
 	e.mu.Lock()
 	en.paused = false
 	e.mu.Unlock()
 	en.t.AllowDataDownload()
 	en.t.AllowDataUpload()
 	return nil
+}
+
+// waitForFolder keeps the torrent's data transfer off while its download
+// folder is unavailable (its drive disconnected), checking every 10 s, then
+// claims its files (see fileStore.reclaim) and resumes, unless it's paused.
+// Downloading meanwhile would only throw the data away. It returns at once
+// if another call is already waiting for this torrent.
+func (e *Engine) waitForFolder(en *entry, recheckAfter bool) {
+	e.mu.Lock()
+	if en.waiting {
+		e.mu.Unlock()
+		return
+	}
+	en.waiting = true
+	e.mu.Unlock()
+	en.t.DisallowDataDownload()
+	en.t.DisallowDataUpload()
+	tick := time.NewTicker(10 * time.Second)
+	defer tick.Stop()
+	for folderUnavailable(en.dir) != nil {
+		select {
+		case <-en.t.Closed():
+			return
+		case <-tick.C:
+		}
+	}
+	err := en.storage.reclaim()
+	e.mu.Lock()
+	en.waiting = false
+	resume := err == nil && !en.paused && !en.removing
+	e.mu.Unlock()
+	if resume {
+		en.t.AllowDataDownload()
+		en.t.AllowDataUpload()
+		if recheckAfter {
+			recheck(en)
+		}
+	}
 }
 
 // ErrNotFound: no such torrent (for Remove, already removed).
@@ -508,6 +554,11 @@ func (e *Engine) Remove(hash string, deleteFiles bool) error {
 			own.forget()
 		}
 		return nil
+	}
+	if en.storage.Unavailable() != nil || folderUnavailable(en.dir) != nil {
+		// Its record stays, so adding it again once the drive is back
+		// finds its files as its own.
+		return errors.New("its download folder isn't available (is its drive connected?), so its files weren't deleted")
 	}
 	if own != nil && !own.written {
 		own = nil // no record on disk (or only a v0.2.37 marker): nothing listed
@@ -788,6 +839,10 @@ func (e *Engine) List() []Status {
 			}
 		}
 		blocked := en.storage.Blocked()
+		gone := en.storage.Unavailable()
+		if gone != nil && blocked == nil && !en.waiting && t.Info() != nil {
+			go e.waitForFolder(en, false) // became unavailable while running
+		}
 		if blocked != nil && !en.stopped {
 			// Blocked after it started (a file appeared that isn't ours).
 			en.stopped = true
@@ -797,6 +852,8 @@ func (e *Engine) List() []Status {
 		switch {
 		case blocked != nil:
 			row.State, row.Problem = "blocked", blocked.Error()
+		case gone != nil:
+			row.State, row.Problem = "blocked", gone.Error()
 		case en.paused:
 			row.State = "paused"
 		case en.checking.Load():
@@ -874,6 +931,9 @@ func (e *Engine) Verify(ctx context.Context, hash string) (*VerifyResult, error)
 	t := en.t
 	if t.Info() == nil {
 		return nil, errors.New("the torrent's file list isn't known yet")
+	}
+	if err := en.storage.Unavailable(); err != nil {
+		return nil, err // every piece would read as damaged
 	}
 	if !en.verifying.CompareAndSwap(false, true) {
 		return nil, errors.New("already verifying")

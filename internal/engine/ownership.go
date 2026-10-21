@@ -83,6 +83,13 @@ func loadOwnership(ownedDir string, ih metainfo.Hash, dir string, tidy bool) *ow
 		return o // not a record for this folder (or an older format: not trusted)
 	}
 	o.written = true
+	// With its drive disconnected every file would look gone: keep the
+	// entries as recorded (has checks each file when it's used) and leave
+	// the record alone.
+	available := folderUnavailable(o.dir) == nil
+	if !available {
+		tidy = false
+	}
 	rewrite := false
 	pending := map[string]string{} // noted (with the file's tag), and neither recorded nor cancelled since
 	for sc.Scan() {
@@ -100,6 +107,10 @@ func loadOwnership(ownedDir string, ih metainfo.Hash, dir string, tidy bool) *ow
 		case "f":
 			delete(pending, p) // recorded after the note (one before it doesn't settle it)
 			want, err := parseIdentity(f[1])
+			if err == nil && !available {
+				o.owned[p] = want
+				continue
+			}
 			if got, gerr := identityOf(p); err != nil || gerr != nil || !got.same(want) {
 				rewrite = true // gone, or a different file now
 				continue
@@ -118,6 +129,9 @@ func loadOwnership(ownedDir string, ih metainfo.Hash, dir string, tidy bool) *ow
 		}
 	}
 	for p, tag := range pending {
+		if !available {
+			break // judged once the drive is back
+		}
 		// Noted just before the store created it, and neither recorded nor
 		// cancelled after (the app stopped in between): ours if the file
 		// there starts with the tag the store wrote into it, or is empty
