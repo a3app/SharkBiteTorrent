@@ -14,6 +14,8 @@ func OpenFolder(dir string) error { return systool.Command("open", dir).Start() 
 func RegisterAssociations(string) error   { return nil }
 func UnregisterAssociations(string) error { return nil }
 
+func RefreshAssociations(string) {}
+
 func Associations(string) AssocStatus { return AssocStatus{Supported: false} }
 
 func OpenDefaultAppsSettings() error {

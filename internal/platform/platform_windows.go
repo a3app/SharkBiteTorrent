@@ -16,6 +16,8 @@ func RegisterAssociations(exe string) error   { return winassoc.Register(exe) }
 func UnregisterAssociations(exe string) error { return winassoc.Unregister(exe) }
 func OpenDefaultAppsSettings() error          { return winassoc.OpenDefaultAppsSettings() }
 
+func RefreshAssociations(string) {} // registered with the installer's path
+
 func Associations(exe string) AssocStatus {
 	s := winassoc.Status(exe)
 	return AssocStatus{Supported: true, Magnet: s.Magnet, Torrent: s.Torrent, CanOpenSettings: true}

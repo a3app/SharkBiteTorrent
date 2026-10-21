@@ -2,6 +2,11 @@
 
 What changed in each release of Shark BiteTorrent. The release notes on GitHub are taken from this file, so every release's section should say what users will notice.
 
+## [Unreleased]
+
+### Fixed
+- Linux: after running the downloaded tarball version and making it the default for magnet links, installing the pacman package didn't take over: the app menu and magnet links kept opening the old copy, because its menu entry hid the package's. The installed app now removes that leftover entry when it starts. A tarball copy you move to another folder updates its entry too.
+
 ## [0.2.38] - 2026-10-20
 
 ### Fixed

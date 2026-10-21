@@ -18,6 +18,10 @@ import (
 
 const desktopID = "sharkbitetorrent.desktop"
 
+// packagedExe is where the distro package installs the app, with its entry
+// in /usr/share/applications.
+const packagedExe = "/usr/bin/sharkbitetorrent"
+
 var mimeTypes = []string{"x-scheme-handler/magnet", "application/x-bittorrent"}
 
 func OpenFolder(dir string) error { return systool.Command("xdg-open", dir).Start() }
@@ -41,6 +45,21 @@ func desktopExec(exe string) (string, error) {
 }
 
 func RegisterAssociations(exe string) error {
+	if exe == packagedExe {
+		// The package's entry has the same name: a per-user one (written by
+		// a copy run from elsewhere) would hide it, so magnet links and the
+		// menu would open that copy.
+		dropUserEntry()
+		return setDefaults()
+	}
+	if err := writeEntry(exe); err != nil {
+		return err
+	}
+	return setDefaults()
+}
+
+// writeEntry writes the per-user .desktop entry for exe.
+func writeEntry(exe string) error {
 	execPath, err := desktopExec(exe)
 	if err != nil {
 		return err
@@ -63,12 +82,40 @@ MimeType=%s;
 		return err
 	}
 	systool.Command("update-desktop-database", filepath.Dir(p)).Run() // optional helper
+	return nil
+}
+
+func setDefaults() error {
 	for _, m := range mimeTypes {
 		if out, err := systool.Command("xdg-mime", "default", desktopID, m).CombinedOutput(); err != nil {
 			return fmt.Errorf("xdg-mime default %s: %v: %s", m, err, out)
 		}
 	}
 	return nil
+}
+
+func dropUserEntry() {
+	if os.Remove(desktopPath()) == nil {
+		systool.Command("update-desktop-database", filepath.Dir(desktopPath())).Run()
+	}
+}
+
+// RefreshAssociations runs at startup. The packaged app removes a per-user
+// entry left by a copy run from elsewhere (a downloaded tarball, before
+// installing the package), which hides the package's entry. A copy run
+// from elsewhere that was moved points its entry at where it is now.
+func RefreshAssociations(exe string) {
+	b, err := os.ReadFile(desktopPath())
+	if err != nil {
+		return
+	}
+	if exe == packagedExe {
+		dropUserEntry()
+		return
+	}
+	if execPath, err := desktopExec(exe); err == nil && !strings.Contains(string(b), "\nExec="+execPath+" ") {
+		writeEntry(exe) // not the defaults: another app may have been chosen since
+	}
 }
 
 func UnregisterAssociations(string) error {

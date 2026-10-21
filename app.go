@@ -150,6 +150,7 @@ func (a *App) startup(ctx context.Context) {
 	a.handleArgs(os.Args[1:], true)
 	if !storeBuild {
 		platform.RefreshStartup(a.exe) // the app moved: keep sign-in start working
+		platform.RefreshAssociations(a.exe)
 	}
 	search.SetTunnel(a.searchDial) // a search server that isn't local goes through the VPN
 	go cleanUpdateTemp()
