@@ -436,6 +436,12 @@ func LocalServers() []Config {
 			prowlarrFiles = []string{filepath.Join(home, ".config", "Prowlarr", "config.xml")}
 			jackettFiles = []string{filepath.Join(home, ".config", "Jackett", "ServerConfig.json")}
 		}
+		if runtime.GOOS == "darwin" {
+			// The macOS Prowlarr app keeps its settings here, not in ~/.config.
+			if home, err := os.UserHomeDir(); err == nil {
+				prowlarrFiles = append([]string{filepath.Join(home, "Library", "Application Support", "Prowlarr", "config.xml")}, prowlarrFiles...)
+			}
+		}
 		if runtime.GOOS == "linux" {
 			// Prowlarr installed as a system service (its install script, the
 			// Arch/AUR packages) keeps its world-readable settings here.
