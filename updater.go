@@ -445,6 +445,11 @@ func (a *App) DownloadUpdate(version string, allowDirect bool) (DownloadedUpdate
 	}
 	tmp := f.Name()
 	f.Close()
+	// Remembered so a download cut off by the app quitting is cleaned up at
+	// the next start, without that having to look through Downloads.
+	marker := a.updateDownloadMarker()
+	os.WriteFile(marker, []byte(tmp), 0o600)
+	defer os.Remove(marker)
 	got, err := download(ctx, hc, base+asset, tmp)
 	if err != nil {
 		os.Remove(tmp)
@@ -472,27 +477,41 @@ func (a *App) DownloadUpdate(version string, allowDirect bool) (DownloadedUpdate
 	return DownloadedUpdate{Path: final, Hint: installHint(final)}, nil
 }
 
+func (a *App) updateDownloadMarker() string {
+	return filepath.Join(a.configDir, "update-download")
+}
+
 // cleanUpdateTemp removes installer folders left by earlier updates (the
 // installer is still running from its folder when the app quits).
-func cleanUpdateTemp() {
+func (a *App) cleanUpdateTemp() {
 	dirs, _ := filepath.Glob(filepath.Join(os.TempDir(), "sharkbite-update-*"))
 	for _, d := range dirs {
 		if fi, err := os.Stat(d); err == nil && time.Since(fi.ModTime()) > time.Hour {
 			os.RemoveAll(d)
 		}
 	}
-	// And unfinished update downloads (Linux, macOS) left in Downloads by a
-	// download that was cut off.
-	if home, err := os.UserHomeDir(); err == nil {
-		for _, pattern := range []string{"sharkbitetorrent-*.download", "SharkBiteTorrent-*.download"} {
-			files, _ := filepath.Glob(filepath.Join(home, "Downloads", pattern))
-			for _, f := range files {
-				if fi, err := os.Lstat(f); err == nil && fi.Mode().IsRegular() && time.Since(fi.ModTime()) > time.Hour {
-					os.Remove(f)
-				}
-			}
-		}
+	// And an unfinished update download (Linux, macOS) left in Downloads by
+	// the app quitting during it. Only the file DownloadUpdate recorded is
+	// touched: on macOS, even listing Downloads asks the user for permission.
+	marker := a.updateDownloadMarker()
+	b, err := os.ReadFile(marker)
+	if err != nil {
+		return
 	}
+	f := string(b)
+	name := filepath.Base(f)
+	ours := strings.HasSuffix(name, ".download") &&
+		(strings.HasPrefix(name, "sharkbitetorrent-") || strings.HasPrefix(name, "SharkBiteTorrent-"))
+	fi, err := os.Lstat(f)
+	switch {
+	case err != nil: // already gone
+	case !ours || !fi.Mode().IsRegular(): // not a download of ours: leave it
+	case time.Since(fi.ModTime()) <= time.Hour:
+		return // may still be downloading: look again next time
+	default:
+		os.Remove(f)
+	}
+	os.Remove(marker)
 }
 
 // freeName is dir/name, or "name (2)", "name (3)"… if that's taken.

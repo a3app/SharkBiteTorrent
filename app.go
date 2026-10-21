@@ -153,7 +153,7 @@ func (a *App) startup(ctx context.Context) {
 		platform.RefreshAssociations(a.exe)
 	}
 	search.SetTunnel(a.searchDial) // a search server that isn't local goes through the VPN
-	go cleanUpdateTemp()
+	go a.cleanUpdateTemp()
 	runtime.OnFileDrop(ctx, func(_, _ int, paths []string) { a.handleArgs(paths, false) })
 	go a.runTray()
 	go a.connect()

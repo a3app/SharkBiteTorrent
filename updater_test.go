@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"crypto/rand"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"aead.dev/minisign"
 )
@@ -88,5 +91,52 @@ func TestReleaseKeyEmbedded(t *testing.T) {
 	}
 	if fmt.Sprintf("%X", pub.ID()) != "F59273E544BB8BA3" {
 		t.Errorf("embedded key %X", pub.ID())
+	}
+}
+
+func TestCleanUpdateTempOnlyRecordedFile(t *testing.T) {
+	a := &App{configDir: t.TempDir()}
+	dl := t.TempDir()
+	old := time.Now().Add(-2 * time.Hour)
+	write := func(name string, mtime time.Time) string {
+		p := filepath.Join(dl, name)
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		os.Chtimes(p, mtime, mtime)
+		return p
+	}
+	recorded := write("SharkBiteTorrent-macos-universal.zip.123.download", old)
+	other := write("SharkBiteTorrent-macos-universal.zip.456.download", old)
+
+	os.WriteFile(a.updateDownloadMarker(), []byte(recorded), 0o600)
+	a.cleanUpdateTemp()
+	if _, err := os.Stat(recorded); !os.IsNotExist(err) {
+		t.Errorf("the recorded stale download wasn't removed: %v", err)
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Errorf("a download the marker didn't name was touched: %v", err)
+	}
+	if _, err := os.Stat(a.updateDownloadMarker()); !os.IsNotExist(err) {
+		t.Error("the marker wasn't removed")
+	}
+
+	// A recent one may still be downloading: kept, and so is the marker.
+	fresh := write("sharkbitetorrent-x.pkg.tar.zst.789.download", time.Now())
+	os.WriteFile(a.updateDownloadMarker(), []byte(fresh), 0o600)
+	a.cleanUpdateTemp()
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("a recent download was removed: %v", err)
+	}
+	if _, err := os.Stat(a.updateDownloadMarker()); err != nil {
+		t.Error("the marker for a recent download was removed")
+	}
+
+	// A marker naming something that isn't ours leaves it alone.
+	notOurs := write("holiday.mov", old)
+	os.WriteFile(a.updateDownloadMarker(), []byte(notOurs), 0o600)
+	a.cleanUpdateTemp()
+	if _, err := os.Stat(notOurs); err != nil {
+		t.Errorf("a file that isn't an update download was removed: %v", err)
 	}
 }
