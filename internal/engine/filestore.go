@@ -444,15 +444,26 @@ func (t *fileTorrent) close() error {
 	t.store.mu.Lock()
 	removed := t.store.removed
 	t.store.mu.Unlock()
-	deadline := time.Now().Add(20 * time.Second)
 	if !removed {
-		t.writeFinished(bufs, deadline)
+		// In the background, bounded: one write stuck on a dead network
+		// drive must not hang quitting. Pieces it doesn't get to are
+		// downloaded again.
+		deadline := time.Now().Add(15 * time.Second)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			t.writeFinished(bufs, deadline)
+		}()
+		select {
+		case <-done:
+		case <-time.After(time.Until(deadline) + time.Second):
+		}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	// Let pieces already being written finish and record themselves before
-	// the progress database is closed after this (within the same budget).
-	timer := time.AfterFunc(time.Until(deadline), func() {
+	// the progress database is closed after this (a budget of their own).
+	timer := time.AfterFunc(10*time.Second, func() {
 		t.mu.Lock()
 		t.closeTimedOut = true
 		t.freed.Broadcast()
@@ -511,7 +522,11 @@ func (t *fileTorrent) writeFinished(bufs map[int]*pieceBuf, deadline time.Time) 
 			}
 			if err == nil {
 				_, err = f.WriteAt(data[n:n+e.Length], e.Start)
-				f.Close()
+				// A network drive can report a failed write only here; the
+				// piece is recorded only if this succeeds too.
+				if cerr := f.Close(); err == nil {
+					err = cerr
+				}
 			}
 			if err != nil {
 				ok = false

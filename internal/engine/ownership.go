@@ -235,10 +235,29 @@ func (o *ownership) appendLine(kind, value, p string) error {
 
 // adopt records existing files, and the folders between them and the
 // download folder, as ours: torrents saved by an older version.
-func (o *ownership) adopt(paths []string) error {
+//
+// A file is adopted only if it looks like the torrent's: the app sizes every
+// file it creates to its full length up front, so a file of exactly that
+// length, or no longer than it when the torrent has finished pieces recorded
+// in it (a WD NAS can report a pre-sized file as only as long as what's been
+// written). Anything else, such as a file the user put there later at a path
+// an older version skipped, isn't adopted and blocks the torrent instead.
+// lengths[i] >= 0: the full length, progress recorded; -(length)-1: no
+// progress recorded, exact length only. nil lengths: no check (tests).
+func (o *ownership) adopt(paths []string, lengths []int64) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	for _, p := range paths {
+	for i, p := range paths {
+		if i < len(lengths) {
+			fi, err := os.Lstat(p)
+			if err != nil {
+				continue
+			}
+			if l := lengths[i]; l >= 0 && (fi.Size() > l || fi.Size() == 0 && l > 0) ||
+				l < 0 && fi.Size() != -l-1 {
+				continue
+			}
+		}
 		if id, err := identityOf(p); err == nil && id.known() {
 			o.owned[p] = id
 			for d := filepath.Dir(p); d != o.dir && isSub(o.dir, d); d = filepath.Dir(d) {
@@ -358,14 +377,27 @@ func (s *fileStore) claim(ih metainfo.Hash, info *metainfo.Info, paths []string)
 	}
 	os.Remove(filepath.Join(s.ownedDir, ih.HexString())) // pre-release marker: not trusted
 	o := loadOwnership(s.ownedDir, ih, s.dir, true)
-	if o.written || !s.adopt {
-		if err := noLinkedFolders(s.dir, paths); err != nil {
-			return err
-		}
+	// Adoption too: a linked folder would let an old torrent claim files
+	// wherever the link points.
+	if err := noLinkedFolders(s.dir, paths); err != nil {
+		return err
 	}
 	switch {
 	case !o.written && (s.adopt || o.marker):
-		if err := o.adopt(paths); err != nil {
+		lengths := make([]int64, len(paths))
+		var off int64
+		for i, f := range info.UpvertedFiles() {
+			if i < len(lengths) {
+				lengths[i] = f.Length
+				if f.Length > 0 && !anyComplete(s.pc, ih, info, off, f.Length) {
+					// No progress recorded in it: only an exact-length
+					// file counts (see adopt).
+					lengths[i] = -f.Length - 1
+				}
+			}
+			off += f.Length
+		}
+		if err := o.adopt(paths, lengths); err != nil {
 			return err
 		}
 	case !o.written:
@@ -419,4 +451,20 @@ func clearComplete(pc storage.PieceCompletion, ih metainfo.Hash, n int) {
 			pc.Set(key, false)
 		}
 	}
+}
+
+// anyComplete reports whether any piece overlapping [off, off+length) of the
+// torrent's data is recorded as finished.
+func anyComplete(pc storage.PieceCompletion, ih metainfo.Hash, info *metainfo.Info, off, length int64) bool {
+	pl := info.PieceLength
+	if pl <= 0 || pc == nil {
+		return false
+	}
+	first, last := int(off/pl), int((off+length-1)/pl)
+	for i := first; i <= last && i < info.NumPieces(); i++ {
+		if c, err := pc.Get(metainfo.PieceKey{InfoHash: ih, Index: i}); err == nil && c.Ok && c.Complete {
+			return true
+		}
+	}
+	return false
 }

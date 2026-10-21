@@ -360,7 +360,7 @@ func TestOwnedByOthers(t *testing.T) {
 	os.WriteFile(p, []byte("1"), 0o644)
 	for _, ih := range []metainfo.Hash{hashN(9), hashN(10)} {
 		o := loadOwnership(owned, ih, dir, true)
-		if err := o.adopt([]string{p}); err != nil {
+		if err := o.adopt([]string{p}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

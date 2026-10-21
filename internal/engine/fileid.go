@@ -11,22 +11,38 @@ import (
 // the filesystem doesn't report it; index is its inode or NTFS file index
 // (which includes a reuse counter on NTFS), 0 if unknown.
 //
-// Matching (same): where both have a creation time, it decides on Linux and
-// macOS: inode numbers get reused (ext4, Samba shares on ext4) and change
-// across mounts on FAT/exFAT and some network shares, but a new file never
-// has the old file's creation time. On Windows both must match: NTFS gives
-// a file recreated under the same name within 15 s the old one's creation
-// time ("tunneling"), and its file index tells them apart. Without a
-// creation time the index alone decides; with neither, nothing matches.
+// Matching (same): both must agree wherever both are known. Inode numbers
+// get reused (ext4, Samba shares on ext4), so the creation time tells a new
+// file at the same inode apart; creation times can be coarse or placeholders
+// (FAT, some network shares), so the index tells those apart. On Windows the
+// index is required: NTFS gives a file recreated under the same name within
+// 15 s the old one's creation time ("tunneling"). With neither, nothing
+// matches. On drives whose inode numbers change across mounts (FAT on
+// Linux), a torrent may stop after a remount: safe, if inconvenient.
 type fileIdentity struct {
 	index   uint64
 	created int64
 }
 
-func (a fileIdentity) known() bool { return a.index != 0 || a.created != 0 }
+// known: Windows needs the file index (see same); elsewhere either will do.
+// A creation time at or before 1970 is a filesystem's placeholder, not one.
+func (a fileIdentity) known() bool {
+	if bothNeeded {
+		return a.index != 0
+	}
+	return a.index != 0 || a.created > 0
+}
 
+// same also requires the index to match wherever both sides have one: some
+// filesystems (FAT, exFAT, network shares) report coarse or placeholder
+// creation times, so the time alone could match a different file. Losing
+// ownership after a remount only stops the torrent; a false match could
+// overwrite or delete someone else's file.
 func (a fileIdentity) same(b fileIdentity) bool {
-	if a.created != 0 && b.created != 0 {
+	if a.index != 0 && b.index != 0 && a.index != b.index {
+		return false
+	}
+	if a.created > 0 && b.created > 0 {
 		if a.created != b.created {
 			return false
 		}
