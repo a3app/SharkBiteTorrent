@@ -180,12 +180,17 @@ func runLinux(secs int, selftest, app bool, exe, endpointFlag, childWarp string)
 	unit := fmt.Sprintf("sbt-leakcheck-%d", os.Getpid())
 	home, _ := os.UserHomeDir()
 	// $1 nsswitch file, $2 uid, $3 gid, $4 home, $5 USER=…, then the command;
-	// env puts HOME and USER back after sudo.
+	// env puts HOME and USER back after sudo. The mount namespace is a slave:
+	// its own mounts (the nsswitch.conf bind, nscd hidden) stay inside, while
+	// mounts made outside reach it, such as a network drive's automount
+	// (x-systemd.automount) mounting when the app first uses it. With a
+	// private namespace that mount never showed up inside, so the app
+	// couldn't use its download folder there.
 	script := `mount --bind "$1" /etc/nsswitch.conf || exit 1
 for d in /run/nscd /var/run/nscd; do if [ -d "$d" ] && ! mountpoint -q "$d"; then mount -t tmpfs tmpfs "$d" || exit 1; fi; done
 read go || exit 1; exec setpriv --reuid="$2" --regid="$3" --init-groups --inh-caps=-all -- env HOME="$4" "$5" "${@:6}"`
 	args := []string{"--user", "--scope", "--quiet", "--unit=" + unit, "--",
-		mustFind("sudo"), "-n", "-E", "--", mustFind("unshare"), "--mount", "--propagation", "private", "--",
+		mustFind("sudo"), "-n", "-E", "--", mustFind("unshare"), "--mount", "--propagation", "slave", "--",
 		mustFind("bash"), "-c", script, "leakcheck", nss.Name(),
 		strconv.Itoa(os.Getuid()), strconv.Itoa(os.Getgid()), home, "USER=" + os.Getenv("USER")}
 	args = append(args, childArgs...)

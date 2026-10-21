@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/signal"
@@ -947,7 +948,16 @@ func ensureDownloadDir(dir string) error {
 	if _, err := os.Stat(parent); err != nil {
 		return notConnected(parent + " doesn't exist")
 	}
-	return os.Mkdir(dir, 0o755)
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		// A drive that's set to connect when used but can't (a NAS that's
+		// off) refuses with "operation not permitted", say.
+		var pe *fs.PathError
+		if errors.As(err, &pe) {
+			err = pe.Err // the path is in the message already
+		}
+		return notConnected("it couldn't be created (" + err.Error() + ")")
+	}
+	return nil
 }
 
 // recordAdded saves a torrent the engine has just been given from inside the
