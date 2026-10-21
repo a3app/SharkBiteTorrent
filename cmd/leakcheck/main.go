@@ -17,9 +17,9 @@
 // -app launches the installed app itself (as the logged-in user, not as
 // administrator) after auditing is on, so its startup, first VPN connection
 // and WebView2's first-launch traffic are all covered, then watches it and
-// every process it starts while you use it. Quit the app before running it,
-// and use WARP or a WireGuard config (a VPN account's server is only chosen
-// at connect time, which this check can't know in advance).
+// every process it starts while you use it. Quit the app before running it.
+// With a VPN account, the server is only chosen at connect time; the app
+// records it while the check runs (see startEndpointRecording).
 //
 // How it sees everything:
 //   - Windows Filtering Platform auditing (Security events 5156/5157) records
@@ -30,8 +30,11 @@
 //   - The DNS Client log (event 3006) records lookups through the system
 //     resolver with the calling process.
 //
-// Allowed: anything to this computer (loopback), and UDP between the main
-// process and the VPN server's WireGuard endpoint. Everything else, from any
+// Allowed: anything to this computer (loopback), UDP between the main
+// process and the VPN server's WireGuard endpoint, and a VPN account's
+// documented direct calls while connecting (documentedDirect: lookups of
+// those hosts from the main process, HTTPS to the addresses they returned,
+// PIA's key registration with the VPN server). Everything else, from any
 // of the watched processes, is reported: including UDP from WebView2 (QUIC,
 // DNS sent directly by its own resolver, WebRTC, mDNS/SSDP).
 package main
@@ -230,14 +233,26 @@ func run() int {
 		return fatalCode("reading the connection log: " + err.Error())
 	}
 	allLookups, dnsErr := dnsEvents(start)
-	var lookups []string
+	var lookups, allowed []string
+	// A VPN account's documented direct calls while connecting, from the
+	// main process: HTTPS to what their lookups returned, and PIA's key
+	// registration with the VPN server.
+	https, answersErr := documentedAnswers(start, root)
+	vpnServers := map[string]bool{}
+	for ep := range endpoints {
+		if h, _, err := net.SplitHostPort(ep); err == nil {
+			vpnServers[h] = true
+		}
+	}
 	ownPID := os.Getpid()
 	dnsControls := map[bool]bool{} // start, end
 	for _, l := range allLookups {
 		if l.pid == ownPID && strings.EqualFold(l.name, "localhost") {
 			dnsControls[!l.at.Before(endControls)] = true
 		}
-		if watched.has(l.pid) {
+		if why, ok := documentedDirect[strings.ToLower(strings.TrimSuffix(l.name, "."))]; ok && l.pid == root {
+			allowed = append(allowed, "lookup of "+l.name+" ("+why+")")
+		} else if watched.has(l.pid) {
 			lookups = append(lookups, l.name)
 		}
 	}
@@ -266,6 +281,10 @@ func run() int {
 			// Tailscale address.
 		case c.proto == "UDP" && c.pid == root && (endpoints[c.remote] || endpoints[c.local]):
 			seenTunnel = true
+		case c.proto == "TCP" && c.pid == root && c.outbound && portOf(c.remote) == "443" && https[hostOf(c.remote)] != "":
+			allowed = append(allowed, "HTTPS to "+c.remote+" ("+https[hostOf(c.remote)]+")")
+		case c.proto == "TCP" && c.pid == root && c.outbound && portOf(c.remote) == strconv.Itoa(piaKeyPort) && vpnServers[hostOf(c.remote)]:
+			allowed = append(allowed, "TCP to "+c.remote+" (PIA key registration with the VPN server)")
 		default:
 			l := c.String() + fmt.Sprintf(" at +%ds", int(c.at.Sub(start).Seconds()))
 			if k := watched.kindOf(c.pid); k != "" {
@@ -285,6 +304,9 @@ func run() int {
 	if !controlsSeen[controlStart] || !controlsSeen[controlEnd] {
 		fmt.Println("FAIL: the connection log didn't record both of the check's own test connections (start and end), so the run wasn't fully covered")
 		return 1
+	}
+	if dnsErr == nil {
+		dnsErr = answersErr
 	}
 	if dnsErr != nil {
 		fmt.Println("FAIL: couldn't read the DNS log, so DNS lookups weren't checked:", dnsErr)
@@ -333,6 +355,14 @@ func run() int {
 			fmt.Println("  ", l)
 		}
 		return 1
+	}
+	if allowed = dedupe(allowed); len(allowed) > 0 {
+		sort.Strings(allowed)
+		fmt.Println("PASS: only the VPN tunnel, this computer, and the VPN account's documented calls while connecting:")
+		for _, l := range allowed {
+			fmt.Println("  ", l)
+		}
+		return 0
 	}
 	fmt.Println("PASS: only the VPN tunnel and this computer were contacted; no system DNS lookups")
 	return 0
@@ -836,6 +866,45 @@ type lookup struct {
 	at   time.Time
 	pid  int
 	name string
+}
+
+// documentedAnswers returns the addresses the system resolver answered to
+// pid's lookups of documentedDirect hosts since start (DNS Client event
+// 3008), with what each call is for.
+func documentedAnswers(start time.Time, pid int) (map[string]string, error) {
+	evs, err := queryLog(dnsLog, "*[System[EventID=3008 and "+since(start)+"]]")
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, e := range evs {
+		why, ok := documentedDirect[strings.ToLower(strings.TrimSuffix(e.field("QueryName"), "."))]
+		if !ok || e.System.Execution.ProcessID != pid {
+			continue
+		}
+		for _, a := range parseQueryResults(e.field("QueryResults")) {
+			out[a] = why
+		}
+	}
+	return out, nil
+}
+
+// parseQueryResults reads the addresses in event 3008's QueryResults:
+// entries separated by ";", IPv4 shown as "::ffff:1.2.3.4", aliases as
+// "type:  5 name".
+func parseQueryResults(s string) []string {
+	var out []string
+	for _, f := range strings.Split(s, ";") {
+		if ip := net.ParseIP(strings.TrimSpace(f)); ip != nil {
+			out = append(out, ip.String()) // ::ffff:a.b.c.d prints as a.b.c.d
+		}
+	}
+	return out
+}
+
+func hostOf(hp string) string {
+	h, _, _ := net.SplitHostPort(hp)
+	return h
 }
 
 // dnsEvents returns every system-resolver lookup since start, by any process.

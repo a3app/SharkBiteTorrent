@@ -159,3 +159,12 @@ func TestDNSLogger(t *testing.T) {
 		t.Errorf("TCP lookup's answers not recorded: %v", got)
 	}
 }
+
+// Windows' DNS Client event 3008 lists answers like this.
+func TestParseQueryResults(t *testing.T) {
+	got := parseQueryResults("type:  5 www.cloudflare.com.cdn.cloudflare.net;::ffff:104.16.123.96;::ffff:104.16.124.96;2606:4700::6810:7b60;")
+	want := []string{"104.16.123.96", "104.16.124.96", "2606:4700::6810:7b60"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("%q, want %q", got, want)
+	}
+}
