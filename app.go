@@ -203,15 +203,23 @@ func (a *App) shutdown(ctx context.Context) {
 }
 
 // beforeClose hides to the tray instead of quitting, if enabled.
+// It returns true when the caller must not quit (hidden to the tray, or, on
+// macOS, the run loop is stopped here — see quit_darwin.go).
 func (a *App) beforeClose(ctx context.Context) bool {
 	a.mu.Lock()
 	hide := !hideOnClose && a.settings.CloseToTray && !a.quitting
+	if !hide {
+		a.quitting = true
+	}
 	a.mu.Unlock()
 	// To the tray; or quitting, where saving what's downloaded can take a
 	// while (a busy network drive), so the window goes now rather than
 	// seeming frozen.
 	runtime.WindowHide(ctx)
-	return hide
+	if hide {
+		return true
+	}
+	return stopMacRunLoop()
 }
 
 func (a *App) quit() {
