@@ -39,6 +39,7 @@ type App struct {
 	configDir string
 	exe       string
 	markerMu  sync.Mutex // the update-download marker (updater.go)
+	stopOnce  sync.Once  // stopAll
 	// installing: an update is being installed (InstallUpdate); a second
 	// one at the same time (a double click) is refused.
 	installing atomic.Bool
@@ -186,6 +187,19 @@ func (a *App) isShuttingDown() bool {
 const shutdownLimit = 40 * time.Second
 
 func (a *App) shutdown(ctx context.Context) {
+	a.stopAll(ctx)
+	quitTray()
+}
+
+// stopAll stops the proxy, the remote control and the engine (which saves
+// what's downloaded), once, within shutdownLimit. On macOS beforeClose runs
+// it while the window's run loop still works (see there); elsewhere, and if
+// it hasn't run, OnShutdown does.
+func (a *App) stopAll(ctx context.Context) {
+	a.stopOnce.Do(func() { a.stopAllNow(ctx) })
+}
+
+func (a *App) stopAllNow(ctx context.Context) {
 	a.mu.Lock()
 	a.shuttingDown = true // a Reconnect in progress must not start anything new
 	a.mu.Unlock()
@@ -203,7 +217,6 @@ func (a *App) shutdown(ctx context.Context) {
 	case <-time.After(shutdownLimit):
 		runtime.LogWarning(ctx, "quitting: saving downloads took too long; the rest is checked at the next start")
 	}
-	quitTray()
 }
 
 // beforeClose hides to the tray instead of quitting, if enabled.
@@ -222,6 +235,14 @@ func (a *App) beforeClose(ctx context.Context) bool {
 	runtime.WindowHide(ctx)
 	if hide {
 		return true
+	}
+	if hideOnClose {
+		// macOS: this runs on a goroutine while the run loop still works,
+		// so saving downloads (a busy network drive: up to shutdownLimit)
+		// happens here, with the app still answering macOS. After the run
+		// loop stops, OnShutdown runs on the main thread, and anything slow
+		// there shows the beachball.
+		a.stopAll(ctx)
 	}
 	return stopMacRunLoop()
 }
