@@ -3,15 +3,16 @@ package engine
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -83,8 +84,7 @@ func loadOwnership(ownedDir string, ih metainfo.Hash, dir string, tidy bool) *ow
 	}
 	o.written = true
 	rewrite := false
-	recorded := map[string]bool{} // paths with an "f" line, current or not
-	pending := map[string]int64{} // noted, by length, and not cancelled
+	pending := map[string]string{} // noted (with the file's tag), and neither recorded nor cancelled since
 	for sc.Scan() {
 		f := strings.SplitN(sc.Text(), "\t", 3)
 		if len(f) != 3 {
@@ -98,7 +98,7 @@ func loadOwnership(ownedDir string, ih metainfo.Hash, dir string, tidy bool) *ow
 		}
 		switch f[0] {
 		case "f":
-			recorded[p] = true
+			delete(pending, p) // recorded after the note (one before it doesn't settle it)
 			want, err := parseIdentity(f[1])
 			if got, gerr := identityOf(p); err != nil || gerr != nil || !got.same(want) {
 				rewrite = true // gone, or a different file now
@@ -109,9 +109,7 @@ func loadOwnership(ownedDir string, ih metainfo.Hash, dir string, tidy bool) *ow
 			o.dirs[p] = true
 		case "p":
 			rewrite = true
-			if n, err := strconv.ParseInt(f[1], 10, 64); err == nil {
-				pending[p] = n
-			}
+			pending[p] = f[1]
 		case "x":
 			rewrite = true
 			delete(pending, p)
@@ -119,22 +117,17 @@ func loadOwnership(ownedDir string, ih metainfo.Hash, dir string, tidy bool) *ow
 			rewrite = true
 		}
 	}
-	for p, n := range pending {
+	for p, tag := range pending {
 		// Noted just before the store created it, and neither recorded nor
-		// cancelled (the app stopped in between): ours if the file there is
-		// still what the store makes, empty and at its full length (or
-		// reported as empty: a NAS reports sizes up to the furthest byte
-		// written). Not by creation time: a NAS stamps it with its own
-		// clock, seconds off this computer's.
-		if recorded[p] {
-			continue
-		}
-		fi, err := os.Lstat(p)
-		if err != nil || !fi.Mode().IsRegular() || (fi.Size() != n && fi.Size() != 0) {
-			continue
-		}
-		if got, err := identityOf(p); err == nil && got.known() {
-			o.owned[p] = got
+		// cancelled after (the app stopped in between): ours if the file
+		// there starts with the tag the store wrote into it, or is empty
+		// (created, not tagged yet; nothing to lose if it isn't ours). Not
+		// by size (a copy of the same file has it) or creation time (a NAS
+		// stamps it with its own clock, seconds off this computer's).
+		if hasTag(p, tag) {
+			if got, err := identityOf(p); err == nil && got.known() {
+				o.owned[p] = got
+			}
 		}
 	}
 	if rewrite && tidy {
@@ -157,9 +150,45 @@ func (o *ownership) has(p string) bool {
 	return err == nil && got.same(want)
 }
 
-// pending notes that the store is about to create p, length bytes long.
-func (o *ownership) pending(p string, length int64) error {
-	return o.appendLine("p", strconv.FormatInt(length, 10), p)
+// pending notes that the store is about to create p and write tag (see
+// newTag) at its start.
+func (o *ownership) pending(p string, tag []byte) error {
+	return o.appendLine("p", hex.EncodeToString(tag)+"-", p)
+}
+
+// newTag returns the bytes a new file of length n starts with until its
+// data is written: random, so a file that starts with them was made by the
+// store (see loadOwnership).
+func newTag(n int64) []byte {
+	tag := make([]byte, min(n, 16))
+	rand.Read(tag)
+	return tag
+}
+
+// hasTag reports whether the regular file at p is empty or starts with the
+// tag noted ("<hex>-"; notes without the dash, from v0.2.38, held a length
+// and match only an empty file).
+func hasTag(p, noted string) bool {
+	fi, err := os.Lstat(p)
+	if err != nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	if fi.Size() == 0 {
+		return true
+	}
+	h, ok := strings.CutSuffix(noted, "-")
+	tag, err := hex.DecodeString(h)
+	if !ok || err != nil || len(tag) == 0 {
+		return false
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	got := make([]byte, len(tag))
+	_, err = io.ReadFull(f, got)
+	return err == nil && bytes.Equal(got, tag)
 }
 
 // cancel withdraws a pending note: the file couldn't be created.
@@ -338,34 +367,55 @@ func (o *ownership) folders() []string {
 
 func (o *ownership) forget() { os.Remove(o.path) }
 
-// ownedByOthers reports which of paths another torrent's record in the same
-// folder also claims (two torrents sharing a file, as v0.2.36 allowed): such
-// a file mustn't be deleted when one of them is removed.
-func ownedByOthers(ownedDir string, self metainfo.Hash, dir string, paths []string) map[string]bool {
-	sum := sha256.Sum256([]byte(filepath.Clean(dir)))
-	suffix := "-" + hex.EncodeToString(sum[:8])
+// ownedByOthers reports which of paths another torrent's record also
+// claims (two torrents sharing a file, as v0.2.36 allowed): such a file
+// mustn't be deleted when one of them is removed. Matched by identity, in
+// every record, so the same folder written differently (D:\dl and d:\dl,
+// or a share's drive letter and its \\server path) still counts.
+func ownedByOthers(ownedDir string, self metainfo.Hash, paths []string) map[string]bool {
 	ents, err := os.ReadDir(ownedDir)
 	if err != nil {
 		return nil
 	}
+	ids := map[string]fileIdentity{}
+	for _, p := range paths {
+		if id, err := identityOf(p); err == nil && id.known() {
+			ids[p] = id
+		}
+	}
 	shared := map[string]bool{}
 	for _, e := range ents {
 		name := e.Name()
-		if !strings.HasSuffix(name, suffix) || strings.HasPrefix(name, self.HexString()) {
+		if strings.HasPrefix(name, self.HexString()) || strings.HasSuffix(name, ".tmp") {
 			continue
 		}
-		var ih metainfo.Hash
-		if ih.FromHexString(strings.TrimSuffix(name, suffix)) != nil {
-			continue
-		}
-		other := loadOwnership(ownedDir, ih, dir, false)
-		for _, p := range paths {
-			if other.has(p) {
-				shared[p] = true
+		for _, other := range recordedIdentities(filepath.Join(ownedDir, name)) {
+			for p, id := range ids {
+				if id.same(other) {
+					shared[p] = true
+				}
 			}
 		}
 	}
 	return shared
+}
+
+// recordedIdentities returns the identities in a record's "f" lines, without
+// checking the files (another torrent's record, perhaps for another folder).
+func recordedIdentities(path string) []fileIdentity {
+	b, err := os.ReadFile(path)
+	if err != nil || !bytes.HasPrefix(b, []byte(ownershipHeader)) {
+		return nil
+	}
+	var out []fileIdentity
+	for _, line := range strings.Split(string(b), "\n") {
+		if f := strings.SplitN(line, "\t", 3); len(f) == 3 && f[0] == "f" {
+			if id, err := parseIdentity(f[1]); err == nil && id.known() {
+				out = append(out, id)
+			}
+		}
+	}
+	return out
 }
 
 // claim prepares the torrent's ownership record and checks that none of its

@@ -360,8 +360,9 @@ func (t *fileTorrent) ours(i int) error {
 // torrent's own.
 func (t *fileTorrent) createFile(i int) (*os.File, error) {
 	p := t.paths[i]
+	tag := newTag(t.lengths[i])
 	if t.own != nil {
-		if err := t.own.pending(p, t.lengths[i]); err != nil {
+		if err := t.own.pending(p, tag); err != nil {
 			return nil, err
 		}
 	}
@@ -375,7 +376,9 @@ func (t *fileTorrent) createFile(i int) (*os.File, error) {
 		return nil, err
 	}
 	makeSparse(f) // best effort: unsupported filesystems still work, just slower
-	if err = f.Truncate(t.lengths[i]); err != nil {
+	if _, err = f.WriteAt(tag, 0); err != nil {
+		err = fmt.Errorf("can't create %s: %w", filepath.Base(p), err)
+	} else if err = f.Truncate(t.lengths[i]); err != nil {
 		// Too big for the drive (FAT32), full, over quota: don't leave a
 		// stub behind.
 		err = fmt.Errorf("can't create %s: %w", filepath.Base(p), err)

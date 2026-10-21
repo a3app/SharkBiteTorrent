@@ -525,7 +525,7 @@ func (e *Engine) Remove(hash string, deleteFiles bool) error {
 	if e.ownedDir != "" {
 		// Two torrents sharing a file (v0.2.36 allowed it): it stays for
 		// the other one.
-		shared = ownedByOthers(e.ownedDir, ih, en.dir, owned)
+		shared = ownedByOthers(e.ownedDir, ih, owned)
 	}
 	var paths []string
 	for _, p := range owned {

@@ -6,6 +6,7 @@ What changed in each release of Shark BiteTorrent. The release notes on GitHub a
 
 ### Fixed
 - Linux: after running the downloaded tarball version and making it the default for magnet links, installing the pacman package didn't take over: the app menu and magnet links kept opening the old copy, because its menu entry hid the package's, and **Start when I sign in** kept starting the old copy too. The installed app now removes that leftover menu entry and takes over sign-in start when it starts. A tarball copy you move to another folder updates its entry too.
+- **Remove with files** keeps a file that another torrent also owns even when that torrent's download folder was written differently (D:\dl and d:\dl, or a network drive's letter and its \\server path). Recovering from the app stopping in the middle of creating a file is stricter: a file of the right size that wasn't created by Shark BiteTorrent (a copy of the same download, say) is never taken over.
 
 ## [0.2.38] - 2026-10-20
 

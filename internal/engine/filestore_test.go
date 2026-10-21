@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -313,42 +314,88 @@ func TestOwnershipPerFolder(t *testing.T) {
 }
 
 // A file noted as pending (the app stopped between creating and recording
-// it) is the torrent's own if it's still what the store makes; not if the
-// note was cancelled (the path was taken), or the file has data of another
-// length.
+// it) is the torrent's own if it starts with the tag noted, or is empty; not
+// if the note was cancelled (the path was taken), or if it has the right
+// length but other data (a copy of the same file put there).
 func TestPendingRecovered(t *testing.T) {
 	dir, owned := t.TempDir(), t.TempDir()
-	mk := func(name string, size int64) string {
-		p := filepath.Join(dir, name)
-		f, _ := os.Create(p)
-		f.Truncate(size)
-		f.Close()
-		return p
-	}
+	path := func(name string) string { return filepath.Join(dir, name) }
 	o := loadOwnership(owned, hashN(6), dir, true)
-	sized, empty, taken, other := filepath.Join(dir, "sized"), filepath.Join(dir, "empty"), filepath.Join(dir, "taken"), filepath.Join(dir, "other")
-	for _, p := range []string{sized, empty, taken, other} {
-		if o.pending(p, 100) != nil {
+	tag := newTag(100)
+	for _, name := range []string{"tagged", "empty", "taken", "copy"} {
+		if o.pending(path(name), tag) != nil {
 			t.Fatal("pending")
 		}
 	}
-	o.cancel(taken)
-	mk("sized", 100)
-	mk("empty", 0)
-	mk("taken", 100)
-	mk("other", 5)
+	o.cancel(path("taken"))
+	tagged := make([]byte, 100)
+	copy(tagged, tag)
+	os.WriteFile(path("tagged"), tagged, 0o644)
+	os.WriteFile(path("empty"), nil, 0o644)
+	os.WriteFile(path("taken"), tagged, 0o644)
+	os.WriteFile(path("copy"), bytes.Repeat([]byte("x"), 100), 0o644)
 	o = loadOwnership(owned, hashN(6), dir, true)
-	for p, want := range map[string]bool{sized: true, empty: true, taken: false, other: false} {
-		if o.has(p) != want {
-			t.Errorf("%s: owned %v", filepath.Base(p), !want)
+	for name, want := range map[string]bool{"tagged": true, "empty": true, "taken": false, "copy": false} {
+		if o.has(path(name)) != want {
+			t.Errorf("%s: owned %v", name, !want)
 		}
 	}
 	// Recorded for good once loaded; the notes are gone.
-	if o = loadOwnership(owned, hashN(6), dir, true); !o.has(sized) {
+	if o = loadOwnership(owned, hashN(6), dir, true); !o.has(path("tagged")) {
 		t.Error("recovered file forgotten")
 	}
 	if b, _ := os.ReadFile(o.path); bytes.Contains(b, []byte("p\t")) {
 		t.Errorf("pending notes kept:\n%s", b)
+	}
+}
+
+// A file the torrent made, deleted, and made again (the app stopping before
+// recording the new one) is recovered: the old file's entry, before the
+// note, doesn't settle it.
+func TestPendingAfterOldEntry(t *testing.T) {
+	dir, owned := t.TempDir(), t.TempDir()
+	p := filepath.Join(dir, "a.iso")
+	os.WriteFile(p, []byte("old"), 0o644)
+	o := loadOwnership(owned, hashN(13), dir, true)
+	if err := o.add(p); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(p)
+	time.Sleep(10 * time.Millisecond)
+	tag := newTag(50)
+	o.pending(p, tag)
+	os.WriteFile(p, append(tag, make([]byte, 34)...), 0o644)
+	if !loadOwnership(owned, hashN(13), dir, true).has(p) {
+		t.Error("re-created file not recovered")
+	}
+}
+
+// The store's new files start with the tag noted before creating them, at
+// their full length, and are then recorded.
+func TestNewFileTagged(t *testing.T) {
+	dir, owned := t.TempDir(), t.TempDir()
+	info := multiInfo("T", []string{"a"})
+	info.Files[0].Length = 40
+	st, _ := openStore(t, dir, owned, info, hashN(14))
+	f, err := st.ft.createFile(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	p := filepath.Join(dir, "T", "a")
+	b, _ := os.ReadFile(p)
+	rec, _ := os.ReadFile(recordPath(owned, hashN(14), dir))
+	var tag string
+	for _, line := range strings.Split(string(rec), "\n") {
+		if strings.HasPrefix(line, "p\t") {
+			tag = strings.Split(line, "\t")[1]
+		}
+	}
+	if len(b) != 40 || bytes.Equal(b[:16], make([]byte, 16)) || !hasTag(p, tag) {
+		t.Errorf("file %x, note %q", b, tag)
+	}
+	if !st.ownership().has(p) {
+		t.Error("not recorded")
 	}
 }
 
@@ -364,11 +411,11 @@ func TestOwnedByOthers(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if !ownedByOthers(owned, hashN(9), dir, []string{p})[p] {
+	if !ownedByOthers(owned, hashN(9), []string{p})[p] {
 		t.Error("shared file not reported")
 	}
 	loadOwnership(owned, hashN(10), dir, true).forget()
-	if ownedByOthers(owned, hashN(9), dir, []string{p})[p] {
+	if ownedByOthers(owned, hashN(9), []string{p})[p] {
 		t.Error("file reported shared after the other torrent was removed")
 	}
 }
@@ -416,5 +463,24 @@ func TestV0237MarkerAdopted(t *testing.T) {
 	}
 	if o := loadOwnership(owned, hashN(12), dir, false); !o.written || !o.has(p) {
 		t.Error("adoption not recorded")
+	}
+}
+
+// The same folder written another way (a link, as D:\dl and d:\dl or a
+// share's drive letter and \\server path are on Windows) still counts as
+// sharing the file.
+func TestOwnedByOthersOtherSpelling(t *testing.T) {
+	dir, owned := t.TempDir(), t.TempDir()
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(dir, alias); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	p := filepath.Join(dir, "same.iso")
+	os.WriteFile(p, []byte("1"), 0o644)
+	if err := loadOwnership(owned, hashN(15), alias, true).adopt([]string{filepath.Join(alias, "same.iso")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !ownedByOthers(owned, hashN(16), []string{p})[p] {
+		t.Error("file shared under another spelling of the folder not reported")
 	}
 }
