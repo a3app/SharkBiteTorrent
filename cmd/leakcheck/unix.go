@@ -53,7 +53,14 @@ type policy struct {
 	// (Linux; nil elsewhere). Every UDP packet to the system's nameservers
 	// should have reached it; more packets than that went around it.
 	recordedUDP *int64
+	engineRun   bool // the engine test (not -app): it downloads a torrent the whole time
 }
+
+// minTunnelPackets is about 5 MB through the tunnel. Less, and the run
+// barely downloaded anything, so a PASS wouldn't show much: on 2026-10-21
+// the engine test passed with 354 packets while its trackerless torrent
+// found no peers.
+const minTunnelPackets = 5000
 
 // documented returns the addresses the documented direct calls' lookups
 // returned (HTTPS to them is allowed), and the VPN servers' IPs (PIA's key
@@ -164,6 +171,13 @@ func verdict(flows []flow, total int64, pol policy, selftest bool) int {
 			fmt.Println("  ", l)
 		}
 		return 1
+	}
+	if tunnel < minTunnelPackets {
+		if pol.engineRun {
+			fmt.Printf("INCONCLUSIVE: nothing leaked, but only %d packets went through the tunnel: the torrent barely downloaded (no peers found?), so its traffic wasn't really tested. Run it again, or with another torrent.\n", tunnel)
+			return 1
+		}
+		fmt.Printf("note: only %d packets went through the tunnel. If you added a download, it didn't get going, so torrent traffic wasn't really tested; run it again with one downloading.\n", tunnel)
 	}
 	if len(allowed) > 0 {
 		fmt.Println("PASS: only the VPN tunnel, this computer, and the VPN account's documented calls while connecting:")

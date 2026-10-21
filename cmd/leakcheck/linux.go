@@ -287,7 +287,7 @@ read go || exit 1; exec setpriv --reuid="$2" --regid="$3" --init-groups --inh-ca
 	if len(endpoints) == 0 {
 		return fatalCode("the app didn't record a VPN connection during the run (did it connect?); pass -endpoint ip:port")
 	}
-	pol := policy{local: localAddrs(), endpoints: endpoints, remotePort: remotePort, remoteTailscale: remoteTailscale}
+	pol := policy{local: localAddrs(), endpoints: endpoints, remotePort: remotePort, remoteTailscale: remoteTailscale, engineRun: !app}
 	pol.servers, pol.listen = appLocalServices()
 	if dns != nil {
 		pol.nameservers = map[string]bool{}

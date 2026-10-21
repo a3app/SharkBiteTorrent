@@ -8,7 +8,7 @@ Changes go to `main` as they're made (each user-visible one noted under **Unrele
 2. **Leak test (engine)**, on Windows, from an **administrator** terminal (it turns on Windows' connection and DNS auditing for the run and restores the previous settings afterwards):
    ```sh
    go run ./cmd/leakcheck -selftest path/to/legal.torrent    # must print "selftest OK" (it caught the planted leaks)
-   go run ./cmd/leakcheck -seconds 60 path/to/legal.torrent  # must PASS
+   go run ./cmd/leakcheck -seconds 60 path/to/legal.torrent  # must PASS (INCONCLUSIVE: it barely downloaded; run again)
    ```
    Every connection the OS sees from the process and everything it starts is checked (Windows Filtering Platform events 5156/5157, process creation 4688), however short, plus every lookup through the system DNS resolver (DNS Client event 3006). UDP is only allowed from the main process to the VPN server. A run whose own test connection or tunnel traffic isn't recorded fails instead of passing.
    **On Linux** (any user with sudo; it asks for the password once): the same two commands, run normally (not with sudo). The watched process runs in its own cgroup and nftables counts every packet it and its children send; system DNS lookups are turned into countable DNS packets with a private nsswitch.conf (and nscd is hidden from it). It removes its nftables table afterwards. Differences from Windows: UDP to the VPN server is allowed from any of the watched processes, not only the main one; and work other processes do for the app outside its cgroup (D-Bus calls to systemd-resolved, desktop portals) isn't seen.

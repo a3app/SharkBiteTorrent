@@ -382,7 +382,7 @@ func runDarwin(secs int, selftest, app bool, exe, endpointFlag, childWarp string
 	for _, f := range flows {
 		total += f.packets
 	}
-	pol := policy{local: local, endpoints: endpoints, remotePort: remotePort, remoteTailscale: remoteTailscale,
+	pol := policy{local: local, endpoints: endpoints, remotePort: remotePort, remoteTailscale: remoteTailscale, engineRun: !app,
 		lookups: watchedLookups(reqs, watched, ownPID, root, windows, learned, res.answersByName())}
 	pol.servers, pol.listen = appLocalServices()
 	if selftest {

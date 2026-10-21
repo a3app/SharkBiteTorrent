@@ -51,3 +51,21 @@ func TestNotDocumented(t *testing.T) {
 		t.Errorf("the documented call itself wasn't allowed:\n%s", a)
 	}
 }
+
+// A clean run that barely used the tunnel is inconclusive for the engine
+// test (its torrent didn't download), and only a note for -app.
+func TestVerdictLittleTraffic(t *testing.T) {
+	flows := []flow{{proto: "udp", src: "192.168.4.20", dst: "1.2.3.4", sport: 40000, dport: 51820, packets: 300}}
+	pol := policy{local: map[string]bool{}, endpoints: map[string]bool{"1.2.3.4:51820": true}}
+	if verdict(flows, 300, pol, false) != 0 {
+		t.Error("-app run with little traffic failed")
+	}
+	pol.engineRun = true
+	if verdict(flows, 300, pol, false) == 0 {
+		t.Error("engine run that barely downloaded passed")
+	}
+	flows[0].packets = minTunnelPackets
+	if verdict(flows, minTunnelPackets, pol, false) != 0 {
+		t.Error("engine run with enough traffic didn't pass")
+	}
+}
