@@ -15,6 +15,11 @@ package main
 // any system lookup becomes a DNS packet, to the 127.0.0.53 stub or a DNS
 // server, and is counted like everything else. The answers are the same.
 // /run/nscd is hidden from them too, so glibc can't hand lookups to nscd.
+// Their packets to the system's nameservers are redirected to a resolver in
+// this check (dnslog.go), which records each name and passes the query on,
+// so each lookup is judged by name: only the documented direct calls of a
+// VPN account (documentedDirect) are allowed, and HTTPS only to the
+// addresses those lookups returned.
 //
 // Not seen, by design: work other processes do on the app's behalf, outside
 // its cgroup (D-Bus calls to systemd-resolved, desktop portals, avahi). And
@@ -26,8 +31,9 @@ package main
 // environment, so the app finds its keyring and the desktop as usual.
 //
 // Allowed: traffic to this computer (except DNS port 53), UDP to the VPN
-// server's WireGuard endpoint, and the remote control's replies to the home
-// network or Tailscale. Everything else is reported.
+// server's WireGuard endpoint, the remote control's replies to the home
+// network or Tailscale, and a VPN account's documented direct calls while
+// connecting. Everything else is reported.
 
 import (
 	"bytes"
@@ -172,6 +178,16 @@ func runLinux(secs int, selftest, app bool, exe, endpointFlag, childWarp string)
 	nss.Close()
 	os.Chmod(nss.Name(), 0o644)
 
+	// System lookups by name (see the top of this file).
+	nameservers := systemNameservers()
+	var dns *dnsLogger
+	if len(nameservers) > 0 {
+		if dns, err = startDNSLogger(nameservers[0]); err != nil {
+			return fatalCode("starting the DNS recorder: " + err.Error())
+		}
+		defer dns.close()
+	}
+
 	// The watched command: in a new systemd scope (its own cgroup), as root
 	// only long enough to bind-mount the private nsswitch.conf in a private
 	// mount namespace, then waiting for "go" (sent once the counters are in
@@ -215,7 +231,7 @@ read go || exit 1; exec setpriv --reuid="$2" --regid="$3" --init-groups --inh-ca
 	stop := func() {
 		sudo("sh", "-c", "echo 1 > /sys/fs/cgroup/"+cg+"/cgroup.kill")
 	}
-	if out, err := sudoInput(nftRules(cg), "nft", "-f", "-"); err != nil {
+	if out, err := sudoInput(nftRules(cg, nameservers, dns), "nft", "-f", "-"); err != nil {
 		stop()
 		return fatalCode("installing the nftables counters: " + err.Error() + ": " + strings.TrimSpace(string(out)))
 	}
@@ -283,6 +299,13 @@ read go || exit 1; exec setpriv --reuid="$2" --regid="$3" --init-groups --inh-ca
 	}
 	pol := policy{local: localAddrs(), endpoints: endpoints, remotePort: remotePort, remoteTailscale: remoteTailscale}
 	pol.servers, pol.listen = appLocalServices()
+	if dns != nil {
+		pol.nameservers = map[string]bool{}
+		for _, ns := range nameservers {
+			pol.nameservers[ns] = true
+		}
+		pol.lookups = dns.lookups()
+	}
 	return verdict(flows, total, pol, selftest)
 }
 
@@ -294,6 +317,28 @@ type policy struct {
 	remoteTailscale bool
 	servers         map[string]bool // the user's Prowlarr/Jackett, ip:port
 	listen          map[int]bool    // the app's own local listeners (search proxy)
+	nameservers     map[string]bool // the system's, whose queries the check recorded
+	lookups         map[string][]string
+}
+
+// documented returns the addresses the documented direct calls' lookups
+// returned (HTTPS to them is allowed), and the VPN servers' IPs (PIA's key
+// registration goes there).
+func (p policy) documented() (https map[string]string, servers map[string]bool) {
+	https, servers = map[string]string{}, map[string]bool{}
+	for name, addrs := range p.lookups {
+		if why, ok := documentedDirect[name]; ok {
+			for _, a := range addrs {
+				https[a] = why
+			}
+		}
+	}
+	for ep := range p.endpoints {
+		if h, _, err := net.SplitHostPort(ep); err == nil {
+			servers[h] = true
+		}
+	}
+	return https, servers
 }
 
 // appLocalServices reads which local services the app uses by design: its
@@ -349,7 +394,7 @@ func runChild(warpFile string, secs int, selftest bool) int {
 }
 
 func verdict(flows []flow, total int64, pol policy, selftest bool) int {
-	list, counted, tunnel := classify(flows, pol)
+	list, allowed, counted, tunnel := classify(flows, pol)
 	fmt.Printf("\npackets from the watched processes: %d (tunnel %d)\n", total, tunnel)
 	if counted != total {
 		// The per-address sets missed packets (full?), so the details are
@@ -386,13 +431,20 @@ func verdict(flows []flow, total int64, pol policy, selftest bool) int {
 		}
 		return 1
 	}
+	if len(allowed) > 0 {
+		fmt.Println("PASS: only the VPN tunnel, this computer, and the VPN account's documented calls while connecting:")
+		for _, l := range allowed {
+			fmt.Println("  ", l)
+		}
+		return 0
+	}
 	fmt.Println("PASS: only the VPN tunnel and this computer were contacted; no system DNS lookups")
 	return 0
 }
 
 // classify sorts the counted flows into the tunnel, allowed traffic and
 // leaks (returned as text with packet counts).
-func classify(flows []flow, p policy) (list []string, counted, tunnel int64) {
+func classify(flows []flow, p policy) (list, allowed []string, counted, tunnel int64) {
 	type leak struct {
 		text    string
 		packets int64
@@ -404,11 +456,20 @@ func classify(flows []flow, p policy) (list []string, counted, tunnel int64) {
 		}
 		leaks[text].packets += n
 	}
+	https, vpnServers := p.documented()
+	var systemDNS int64
 	for _, f := range flows {
 		counted += f.packets
 		switch {
+		case f.dport == 53 && (f.proto == "udp" || f.proto == "tcp") && p.nameservers[f.dst]:
+			systemDNS += f.packets // judged by name, below
 		case f.dport == 53 && (f.proto == "udp" || f.proto == "tcp"):
 			add("DNS lookup outside the tunnel (to "+f.to()+")", f.packets)
+		case f.proto == "tcp" && f.dport == 443 && https[f.dst] != "":
+			// A VPN account's documented direct call (connecting).
+			allowed = append(allowed, "HTTPS to "+f.to()+" ("+https[f.dst]+")")
+		case f.proto == "tcp" && f.dport == piaKeyPort && vpnServers[f.dst]:
+			allowed = append(allowed, "TCP to "+f.to()+" (PIA key registration with the VPN server)")
 		case f.proto == "tcp" && p.servers[normalizeHostPort(f.to())]:
 			// The user's own Prowlarr/Jackett, on this computer or the home
 			// network (contacted directly by design).
@@ -435,13 +496,29 @@ func classify(flows []flow, p policy) (list []string, counted, tunnel int64) {
 	for _, l := range leaks {
 		list = append(list, fmt.Sprintf("%s: %d packets", l.text, l.packets))
 	}
+	names := 0
+	for name := range p.lookups {
+		if why, ok := documentedDirect[name]; ok {
+			allowed = append(allowed, "lookup of "+name+" ("+why+")")
+		} else {
+			list = append(list, "DNS lookup outside the tunnel: "+name)
+		}
+		names++
+	}
+	if systemDNS > 0 && names == 0 {
+		// Sent to the system's resolver but never reached the check's: the
+		// names weren't seen, so they couldn't be judged.
+		list = append(list, fmt.Sprintf("DNS lookup outside the tunnel (not seen by the check's recorder): %d packets", systemDNS))
+	}
 	sort.Strings(list)
-	return list, counted, tunnel
+	sort.Strings(allowed)
+	return list, dedupe(allowed), counted, tunnel
 }
 
 // nftRules counts every packet sent by processes in cgroup (a path relative
-// to /sys/fs/cgroup), per source, destination and ports.
-func nftRules(cgroup string) string {
+// to /sys/fs/cgroup), per source, destination and ports, and redirects their
+// DNS queries to the system's nameservers to dns (after counting them).
+func nftRules(cgroup string, nameservers []string, dns *dnsLogger) string {
 	level := strings.Count(cgroup, "/") + 1
 	set := func(name, addr, rest string) string {
 		return fmt.Sprintf("\tset %s { type %s . %s%s; flags dynamic; counter; size 65535; }\n", name, addr, addr, rest)
@@ -456,6 +533,14 @@ func nftRules(cgroup string) string {
 	b.WriteString(set("other4", "ipv4_addr", " . inet_proto"))
 	b.WriteString(set("other6", "ipv6_addr", " . inet_proto"))
 	fmt.Fprintf(&b, "\tchain out {\n\t\ttype filter hook output priority -400; policy accept;\n\t\tsocket cgroupv2 level %d %q goto watched\n\t}\n", level, cgroup)
+	if dns != nil && len(nameservers) > 0 {
+		u, t := dns.ports()
+		set := strings.Join(nameservers, ", ")
+		fmt.Fprintf(&b, "\tchain dns {\n\t\ttype nat hook output priority -100; policy accept;\n")
+		fmt.Fprintf(&b, "\t\tsocket cgroupv2 level %d %q ip daddr { %s } udp dport 53 redirect to :%d\n", level, cgroup, set, u)
+		fmt.Fprintf(&b, "\t\tsocket cgroupv2 level %d %q ip daddr { %s } tcp dport 53 redirect to :%d\n", level, cgroup, set, t)
+		b.WriteString("\t}\n")
+	}
 	b.WriteString(`	chain watched {
 		counter name "total"
 		meta nfproto ipv4 meta l4proto tcp update @tcp4 { ip saddr . ip daddr . tcp sport . tcp dport } return

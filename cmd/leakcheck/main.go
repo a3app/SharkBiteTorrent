@@ -63,6 +63,25 @@ import (
 	"sharkbite/internal/warp"
 )
 
+// documentedDirect are the hosts the app contacts over the normal
+// connection by design, over HTTPS, while connecting a VPN account (no
+// tunnel exists yet to go through; see vpnprov.apiDial, tunnel.DirectTrace
+// and warp.Register). Kept here, not read from the app, so the check doesn't
+// take the app's word for what's allowed. PIA's key registration, to the
+// chosen server's own IP on port 1337 (no lookup), is allowed separately.
+var documentedDirect = map[string]string{
+	"www.privateinternetaccess.com": "PIA sign-in",
+	"serverlist.piaservers.net":     "PIA server list",
+	"api.nordvpn.com":               "NordVPN API",
+	"api.mullvad.net":               "Mullvad API",
+	"api.ivpn.net":                  "IVPN API",
+	"www.cloudflare.com":            "real IP check (Cloudflare trace)",
+	"api.cloudflareclient.com":      "WARP registration",
+}
+
+// piaKeyPort is where PIA's servers take WireGuard key registrations.
+const piaKeyPort = 1337
+
 const (
 	wfpSubcategory     = "Filtering Platform Connection"
 	processSubcategory = "Process Creation"
