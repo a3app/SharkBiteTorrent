@@ -27,15 +27,18 @@ func selfUpdateAsset(version, exe string) string { return updateAsset(version, e
 // (/tmp: someone else could swap in their own program between our checks
 // and the rename, or later at that path).
 func canReplace(dir string) bool {
-	if syscall.Access(dir, 2 /* W_OK */) != nil {
-		return false
-	}
+	return syscall.Access(dir, 2 /* W_OK */) == nil && !worldWritable(dir)
+}
+
+// worldWritable reports whether dir or a folder above it can be written by
+// everyone. A var so tests can use t.TempDir, which is under /tmp on Linux.
+var worldWritable = func(dir string) bool {
 	for d := dir; ; d = filepath.Dir(d) {
 		if fi, err := os.Stat(d); err != nil || fi.Mode().Perm()&0o002 != 0 {
-			return false
+			return true
 		}
 		if d == filepath.Dir(d) {
-			return true
+			return false
 		}
 	}
 }

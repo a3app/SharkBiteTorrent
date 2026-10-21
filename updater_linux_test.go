@@ -57,6 +57,9 @@ func TestApplyUpdateLinux(t *testing.T) {
 	old := relaunchAfterExit
 	t.Cleanup(func() { relaunchAfterExit = old })
 	relaunchAfterExit = func(cmd ...string) error { relaunched = cmd; return nil }
+	ww := worldWritable
+	t.Cleanup(func() { worldWritable = ww })
+	worldWritable = func(string) bool { return false } // t.TempDir is under /tmp
 
 	dir := t.TempDir()
 	exe := filepath.Join(dir, "SharkBiteTorrent")
@@ -103,5 +106,15 @@ func TestApplyUpdateLinux(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(exe); string(b) != "old" {
 		t.Error("the program was touched by a failed update")
+	}
+}
+
+// Not from a folder anyone can write to (another user could swap in their
+// own program at that path).
+func TestCanSelfUpdateLinuxWorldWritable(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0o777)
+	if canSelfUpdate(filepath.Join(dir, "SharkBiteTorrent")) {
+		t.Error("a copy in a world-writable folder may update itself")
 	}
 }
