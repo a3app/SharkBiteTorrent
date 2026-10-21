@@ -5,7 +5,9 @@ package main
 // Mac apps that keep running: the close button hides the app (Wails'
 // HideWindowOnClose, i.e. [NSApp hide:]), clicking the Dock icon brings it
 // back, and Cmd+Q / Dock → Quit quit. Wails v2 sends quit through
-// OnBeforeClose too, so beforeClose must not cancel it here.
+// OnBeforeClose too, then stops the run loop from a goroutine without
+// posting an event, so the process would keep running. beforeClose must
+// not cancel a real quit, and on macOS it stops the run loop itself.
 const hideOnClose = true
 
 func (a *App) runTray() {}
