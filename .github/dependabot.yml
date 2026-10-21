@@ -27,6 +27,12 @@ updates:
     groups:
       npm-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # TypeScript 7 (the rewritten compiler) fails our checks; we'll move
+      # to it deliberately (Dependabot PR #1). Minor and patch updates still
+      # come.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
