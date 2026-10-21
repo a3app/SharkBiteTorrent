@@ -154,7 +154,7 @@
     installing = true
     askDirect = null
     try {
-      await InstallUpdate(update!.latest, direct) // the app quits and the installer relaunches it
+      await InstallUpdate(update!.latest, direct) // the app quits, and the new version starts
     } catch (e) {
       if (String(e).includes("VPN isn't connected")) askDirect = 'install'
       else error = String(e)
@@ -325,7 +325,7 @@
     <div class="update" role="status">
       <span>🦈 <b>Shark BiteTorrent {update.latest}</b> is available (you have {update.current}).</span>
       {#if installing}
-        <span class="muted">Downloading and verifying the update…</span>
+        <span class="muted">Downloading and verifying the update… The app restarts by itself when it's installed.</span>
       {:else}
         {#if askDirect}
           <span>The VPN isn't connected. Download over your normal connection? GitHub will see your real IP.</span>
@@ -333,10 +333,10 @@
           <button onclick={() => (askDirect = null)}>Cancel</button>
         {:else if downloaded}
           <span class="ok">✓ Verified and saved: {downloaded.path}. {downloaded.hint}</span>
-        {:else if update.canDownload}
-          <button class="primary" onclick={() => downloadUpdate()}>Download (verified)</button>
         {:else if update.canInstall}
           <button class="primary" onclick={() => installUpdate()}>Update now</button>
+        {:else if update.canDownload}
+          <button class="primary" onclick={() => downloadUpdate()}>Download (verified)</button>
         {:else}
           <button class="primary" onclick={() => OpenURL(update!.notesURL)}>Download</button>
         {/if}

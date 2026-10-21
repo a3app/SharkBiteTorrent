@@ -580,7 +580,7 @@ func (a *App) startEngine(tun *tunnel.Tunnel, eng *engine.Engine, st VpnStatus) 
 			a.notifyError(err)
 		}
 	}
-	go a.autoCheckUpdate()
+	go a.autoCheckUpdates(mctx)
 	go a.scanLoop(mctx)
 	return mctx
 }

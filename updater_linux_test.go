@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -28,5 +30,78 @@ func TestFreeNameAndHint(t *testing.T) {
 	}
 	if got := installHint("/home/o'brien/Downloads/x.pkg.tar.zst"); got != `Install it with: sudo pacman -U '/home/o'\''brien/Downloads/x.pkg.tar.zst'` {
 		t.Errorf("hint: %s", got)
+	}
+}
+
+// writeTarball makes a release-style tarball with the given files.
+func writeTarball(t *testing.T, files map[string]string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "SharkBiteTorrent-0.2.39-linux-x86_64.tar.gz")
+	f, _ := os.Create(p)
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	for name, body := range files {
+		tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(body)), Typeflag: tar.TypeReg})
+		tw.Write([]byte(body))
+	}
+	tw.Close()
+	gz.Close()
+	f.Close()
+	return p
+}
+
+// The tarball's program (and licenses that are there) replace the running
+// copy's; files outside its one folder, or deeper in it, are ignored.
+func TestApplyUpdateLinux(t *testing.T) {
+	var relaunched []string
+	old := relaunchAfterExit
+	t.Cleanup(func() { relaunchAfterExit = old })
+	relaunchAfterExit = func(cmd ...string) error { relaunched = cmd; return nil }
+
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "SharkBiteTorrent")
+	os.WriteFile(exe, []byte("old"), 0o755)
+	os.WriteFile(filepath.Join(dir, "LICENSE"), []byte("old license"), 0o644)
+	if !canSelfUpdate(exe) || canSelfUpdate(packagedExe) {
+		t.Fatal("canSelfUpdate: the tarball copy can, the package can't")
+	}
+	top := "SharkBiteTorrent-0.2.39-linux-x86_64/"
+	tb := writeTarball(t, map[string]string{
+		top + "SharkBiteTorrent":         "new",
+		top + "LICENSE":                  "new license",
+		top + "THIRD_PARTY_LICENSES.txt": "not here before: not added",
+		top + "x/SharkBiteTorrent":       "deeper: ignored",
+		"../SharkBiteTorrent":            "outside: ignored",
+		"SharkBiteTorrent":               "not in the folder: ignored",
+		"other/SharkBiteTorrent":         "another folder: ignored",
+	})
+	if err := applyUpdate(tb, "0.2.39", exe); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "new" {
+		t.Errorf("program: %q", b)
+	}
+	if fi, _ := os.Stat(exe); fi.Mode().Perm() != 0o755 {
+		t.Errorf("program mode %v", fi.Mode())
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "LICENSE")); string(b) != "new license" {
+		t.Errorf("license: %q", b)
+	}
+	left, _ := filepath.Glob(filepath.Join(dir, "*"))
+	hidden, _ := filepath.Glob(filepath.Join(dir, ".*"))
+	if len(left) != 2 || len(hidden) != 0 {
+		t.Errorf("files left: %v %v", left, hidden)
+	}
+	if len(relaunched) != 1 || relaunched[0] != exe {
+		t.Errorf("relaunch: %v", relaunched)
+	}
+
+	os.WriteFile(exe, []byte("old"), 0o755)
+	relaunched = nil
+	if err := applyUpdate(writeTarball(t, map[string]string{top + "README": "x"}), "0.2.39", exe); err == nil || relaunched != nil {
+		t.Error("a tarball without the program was accepted")
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "old" {
+		t.Error("the program was touched by a failed update")
 	}
 }

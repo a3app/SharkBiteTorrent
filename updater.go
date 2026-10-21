@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	goruntime "runtime"
 	"sharkbite/internal/platform"
 	"strconv"
 	"strings"
@@ -29,11 +30,15 @@ import (
 // Checks and downloads go through the VPN when it's up.
 
 const (
-	releasesURL     = "https://github.com/trevercomb/SharkBiteTorrent/releases"
-	installerAsset  = "SharkBiteTorrent-amd64-installer.exe"
-	checksumsAsset  = "SHA256SUMS.txt"
-	signatureAsset  = "SHA256SUMS.txt.minisig"
-	autoCheckPeriod = 20 * time.Hour
+	releasesURL    = "https://github.com/trevercomb/SharkBiteTorrent/releases"
+	installerAsset = "SharkBiteTorrent-amd64-installer.exe"
+	checksumsAsset = "SHA256SUMS.txt"
+	signatureAsset = "SHA256SUMS.txt.minisig"
+	// The automatic check: once the VPN is up if the last one was over an
+	// hour ago (so restarting the app soon after a release finds it), then
+	// every 20 hours while the app runs (it may run for weeks).
+	autoCheckAtStart = time.Hour
+	autoCheckPeriod  = 20 * time.Hour
 )
 
 type UpdateInfo struct {
@@ -187,11 +192,28 @@ func newerCore(a, b string) bool {
 // autoCheckUpdate runs after the VPN connects: at most once per period,
 // through the tunnel only (or directly if the user chose "No VPN"), and only
 // if the user hasn't turned it off.
-func (a *App) autoCheckUpdate() {
+// autoCheckUpdates runs while the VPN is connected (ctx ends with it).
+func (a *App) autoCheckUpdates(ctx context.Context) {
+	a.autoCheckUpdate(autoCheckAtStart)
+	tick := time.NewTicker(time.Hour)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			a.autoCheckUpdate(autoCheckPeriod)
+		}
+	}
+}
+
+// autoCheckUpdate checks for a new version if the last check was at least
+// gap ago, and tells the window if there is one.
+func (a *App) autoCheckUpdate(gap time.Duration) {
 	a.mu.Lock()
 	s := a.settings
 	a.mu.Unlock()
-	if storeBuild || !s.AutoUpdateCheck || time.Since(time.Unix(s.LastUpdateCheck, 0)) < autoCheckPeriod {
+	if storeBuild || !s.AutoUpdateCheck || time.Since(time.Unix(s.LastUpdateCheck, 0)) < gap {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -238,9 +260,11 @@ func (a *App) SkipUpdate(version string) error {
 	return a.writeSettings()
 }
 
-// InstallUpdate downloads the installer for version, verifies its SHA-256
-// against the release's SHA256SUMS.txt, runs it silently and quits. The
-// installer closes this app and relaunches the new version.
+// InstallUpdate downloads version's release file for this computer,
+// verifies its SHA-256 against the release's signed SHA256SUMS.txt,
+// installs it and quits: on Windows the installer runs silently and
+// relaunches the app; on macOS and with the Linux tarball the app replaces
+// itself and is started again once this copy has quit (applyUpdate).
 // versionPattern is what a release version looks like ("0.2.24", "0.3.0-rc1").
 // It's checked before the version goes into a download URL.
 var versionPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z.]+)?$`)
@@ -264,8 +288,9 @@ func (a *App) InstallUpdate(version string, allowDirect bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	base := releasesURL + "/download/v" + version + "/"
+	asset := selfUpdateAsset(version, a.exe)
 
-	want, err := signedChecksum(ctx, hc, base, "v"+version, installerAsset)
+	want, err := signedChecksum(ctx, hc, base, "v"+version, asset)
 	if err != nil {
 		return fmt.Errorf("couldn't verify the release: %w", err)
 	}
@@ -273,18 +298,22 @@ func (a *App) InstallUpdate(version string, allowDirect bool) error {
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(dir, installerAsset)
-	got, err := download(ctx, hc, base+installerAsset, path)
+	path := filepath.Join(dir, asset)
+	got, err := download(ctx, hc, base+asset, path)
 	if err != nil {
 		os.RemoveAll(dir)
 		return fmt.Errorf("download failed: %w", err)
 	}
 	if !strings.EqualFold(got, want) {
 		os.RemoveAll(dir)
-		return errors.New("downloaded installer failed its checksum check; not installing")
+		return errors.New("the downloaded update failed its checksum check; not installing")
 	}
-	if err := runInstaller(path); err != nil {
-		return err
+	if err := applyUpdate(path, version, a.exe); err != nil {
+		os.RemoveAll(dir)
+		return fmt.Errorf("installing the update: %w", err)
+	}
+	if goruntime.GOOS != "windows" {
+		os.RemoveAll(dir) // the installer runs from it on Windows; cleaned up at the next start
 	}
 	a.quit()
 	return nil

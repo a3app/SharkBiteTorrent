@@ -45,6 +45,13 @@ func runInstaller(path string) error {
 	return cmd.Start()
 }
 
+// selfUpdateAsset is the installer InstallUpdate runs.
+func selfUpdateAsset(string, string) string { return installerAsset }
+
+// applyUpdate runs the downloaded installer (checked against the release's
+// signed checksums), which closes the app, upgrades it and relaunches it.
+func applyUpdate(path, _, _ string) error { return runInstaller(path) }
+
 // Windows installs updates itself (InstallUpdate).
 func updateAsset(string, string) string { return "" }
 

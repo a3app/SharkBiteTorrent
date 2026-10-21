@@ -346,7 +346,7 @@
             {/if}
             <label class="check">
               <input type="checkbox" bind:checked={s.autoUpdateCheck} />
-              <span>Check for updates automatically <span class="muted">(about once a day, through the VPN)</span></span>
+              <span>Check for updates automatically <span class="muted">(when it starts and about once a day, through the VPN)</span></span>
             </label>
             {/if}
             {#if about.links.sponsor}
