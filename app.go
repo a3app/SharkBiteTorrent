@@ -10,10 +10,12 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/anacrolix/torrent/metainfo"
@@ -155,6 +157,7 @@ func (a *App) startup(ctx context.Context) {
 	search.SetTunnel(a.searchDial) // a search server that isn't local goes through the VPN
 	go a.cleanUpdateTemp()
 	runtime.OnFileDrop(ctx, func(_, _ int, paths []string) { a.handleArgs(paths, false) })
+	go a.quitOnSignals()
 	go a.runTray()
 	go a.connect()
 	a.startProxy()
@@ -199,6 +202,21 @@ func (a *App) quit() {
 	a.quitting = true
 	a.mu.Unlock()
 	runtime.Quit(a.ctx)
+}
+
+// quitOnSignals quits the usual way (shutdown closes the engine, which saves
+// what's downloaded) on SIGTERM, Ctrl+C or SIGHUP: logging out, a service
+// manager, `kill`. Wails catches SIGTERM and Ctrl+C itself, but quits
+// through OnBeforeClose, which with Close to tray on only hid the window;
+// a.quit marks the app as quitting first. A second signal exits at once, in
+// case shutdown hangs.
+func (a *App) quitOnSignals() {
+	sig := make(chan os.Signal, 2)
+	signal.Notify(sig, syscall.SIGTERM, os.Interrupt, syscall.SIGHUP)
+	<-sig
+	go a.quit()
+	<-sig
+	os.Exit(1)
 }
 
 func (a *App) showWindow() {

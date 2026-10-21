@@ -248,8 +248,8 @@ read go || exit 1; exec setpriv --reuid="$2" --regid="$3" --init-groups --inh-ca
 			return fatalCode(fmt.Sprintf("the app exited after %ds (%v): %s", int(time.Since(start).Seconds()), err, lastLines(appLog.String(), 10)))
 		case <-time.After(time.Duration(secs) * time.Second):
 		}
-		// Quitting is covered too. (The app ignores SIGTERM for now, so the
-		// person running the check quits it.)
+		// Quitting is covered too: the person running the check quits it, the
+		// way users do.
 		fmt.Println("\nYOU: now quit Shark BiteTorrent from its tray icon (right-click → Quit). The copy this check started used a private DNS setup; start it again afterwards (the usual way).")
 		select {
 		case <-exited:

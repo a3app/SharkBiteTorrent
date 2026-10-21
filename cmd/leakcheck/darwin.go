@@ -218,7 +218,7 @@ func runDarwin(secs int, selftest, app bool, exe, endpointFlag, childWarp string
 			return fatalCode("the app didn't start")
 		}
 	}
-	stop := func() { // the app ignores SIGTERM for now
+	stop := func() { // a last resort (Ctrl+C, or the app not quit in time): at once, nothing more to watch
 		if app {
 			syscall.Kill(root, syscall.SIGKILL)
 		} else {
