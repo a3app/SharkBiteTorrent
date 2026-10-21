@@ -65,7 +65,11 @@ func RefreshStartup(exe string) {
 		return
 	}
 	if m := execLine.FindSubmatch(b); m != nil {
-		if _, err := os.Stat(string(m[1])); err != nil && StartupEnabled() && !inWorldWritableDir(exe) {
+		// Gone (the app was moved), or a copy run from elsewhere (a
+		// tarball) before the package was installed: the package takes over.
+		_, err := os.Stat(string(m[1]))
+		taken := exe == packagedExe && string(m[1]) != exe
+		if (err != nil || taken) && StartupEnabled() && !inWorldWritableDir(exe) {
 			SetStartup(exe, true)
 		}
 	}

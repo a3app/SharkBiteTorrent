@@ -38,3 +38,24 @@ func TestRefreshAssociations(t *testing.T) {
 		t.Error("per-user entry left hiding the package's")
 	}
 }
+
+// Sign-in start set up by a copy run from elsewhere (a tarball) moves to the
+// package once it's installed, even though that copy still exists; between
+// two copies run from elsewhere, it stays with the one that set it up.
+func TestRefreshStartupPackaged(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	tarball := filepath.Join(home, "SharkBiteTorrent")
+	os.WriteFile(tarball, nil, 0o755)
+	if err := SetStartup(tarball, true); err != nil {
+		t.Fatal(err)
+	}
+	RefreshStartup(filepath.Join(home, "another copy"))
+	if b, _ := os.ReadFile(autostartPath()); !strings.Contains(string(b), tarball) {
+		t.Errorf("another copy took over sign-in start:\n%s", b)
+	}
+	RefreshStartup(packagedExe)
+	if b, _ := os.ReadFile(autostartPath()); !strings.Contains(string(b), `Exec="`+packagedExe+`"`) {
+		t.Errorf("package didn't take over sign-in start:\n%s", b)
+	}
+}
