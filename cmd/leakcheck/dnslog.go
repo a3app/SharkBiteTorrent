@@ -27,6 +27,7 @@ type dnsLogger struct {
 
 	mu    sync.Mutex
 	names map[string]map[string]bool // name asked → addresses answered
+	udpQs int64                      // UDP queries received
 }
 
 // systemNameservers are the IPv4 nameservers in /etc/resolv.conf (glibc
@@ -83,6 +84,9 @@ func (l *dnsLogger) serveUDP() {
 			return
 		}
 		q := append([]byte(nil), buf[:n]...)
+		l.mu.Lock()
+		l.udpQs++
+		l.mu.Unlock()
 		go func() {
 			l.record(q, nil) // asked, even if no answer comes
 			c, err := net.DialTimeout("udp", l.upstream, 5*time.Second)
@@ -239,4 +243,11 @@ func (l *dnsLogger) lookups() map[string][]string {
 		out[name] = list
 	}
 	return out
+}
+
+// udpQueries is how many UDP queries reached the recorder.
+func (l *dnsLogger) udpQueries() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.udpQs
 }

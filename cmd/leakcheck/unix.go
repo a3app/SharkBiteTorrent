@@ -30,6 +30,11 @@ type flow struct {
 	src, dst           string // IP addresses
 	sport, dport       int
 	packets, bytesSent int64
+	// notDocumented, when set, says why this flow can't be one of a VPN
+	// account's documented direct calls even if it goes where they do (macOS
+	// knows the process and the time: "not from the app's main process",
+	// "not while connecting"). Linux can't tell, and leaves it empty.
+	notDocumented string
 }
 
 func (f flow) to() string { return net.JoinHostPort(f.dst, strconv.Itoa(f.dport)) }
@@ -44,6 +49,10 @@ type policy struct {
 	listen          map[int]bool    // the app's own local listeners (search proxy)
 	nameservers     map[string]bool // the system's, whose queries the check recorded
 	lookups         map[string][]string
+	// recordedUDP is how many UDP queries the check's DNS recorder got
+	// (Linux; nil elsewhere). Every UDP packet to the system's nameservers
+	// should have reached it; more packets than that went around it.
+	recordedUDP *int64
 }
 
 // documented returns the addresses the documented direct calls' lookups
@@ -143,7 +152,7 @@ func verdict(flows []flow, total int64, pol policy, selftest bool) int {
 			fmt.Println("selftest FAILED: the check missed", strings.Join(missed, " and "))
 			return 1
 		}
-		fmt.Println("selftest OK: caught both planted leaks:")
+		fmt.Println("selftest OK: caught the planted leaks:")
 		for _, l := range list {
 			fmt.Println("  ", l)
 		}
@@ -182,18 +191,21 @@ func classify(flows []flow, p policy) (list, allowed []string, counted, tunnel i
 		leaks[text].packets += n
 	}
 	https, vpnServers := p.documented()
-	var systemDNS int64
+	var systemDNS, systemDNSUDP int64
 	for _, f := range flows {
 		counted += f.packets
 		switch {
 		case f.dport == 53 && (f.proto == "udp" || f.proto == "tcp") && p.nameservers[f.dst]:
 			systemDNS += f.packets // judged by name, below
+			if f.proto == "udp" {
+				systemDNSUDP += f.packets
+			}
 		case f.dport == 53 && (f.proto == "udp" || f.proto == "tcp"):
 			add("DNS lookup outside the tunnel (to "+f.to()+")", f.packets)
-		case f.proto == "tcp" && f.dport == 443 && https[f.dst] != "":
+		case f.proto == "tcp" && f.dport == 443 && https[f.dst] != "" && f.notDocumented == "":
 			// A VPN account's documented direct call (connecting).
 			allowed = append(allowed, "HTTPS to "+f.to()+" ("+https[f.dst]+")")
-		case f.proto == "tcp" && f.dport == piaKeyPort && vpnServers[f.dst]:
+		case f.proto == "tcp" && f.dport == piaKeyPort && vpnServers[f.dst] && f.notDocumented == "":
 			allowed = append(allowed, "TCP to "+f.to()+" (PIA key registration with the VPN server)")
 		case f.proto == "tcp" && p.servers[normalizeHostPort(f.to())]:
 			// The user's own Prowlarr/Jackett, on this computer or the home
@@ -215,6 +227,9 @@ func classify(flows []flow, p policy) (list, allowed []string, counted, tunnel i
 			if f.proto == "tcp" || f.proto == "udp" {
 				text = strings.ToUpper(f.proto) + " to " + f.to()
 			}
+			if f.notDocumented != "" && (https[f.dst] != "" || vpnServers[f.dst]) {
+				text += " (where a VPN account's documented call goes, but " + f.notDocumented + ")"
+			}
 			add(text, f.packets)
 		}
 	}
@@ -229,6 +244,10 @@ func classify(flows []flow, p policy) (list, allowed []string, counted, tunnel i
 			list = append(list, "DNS lookup outside the tunnel: "+name)
 		}
 		names++
+	}
+	if p.recordedUDP != nil && systemDNSUDP > *p.recordedUDP {
+		// Redirected queries all reach the recorder; these went around it.
+		list = append(list, fmt.Sprintf("DNS to the system's nameservers that didn't reach the check's recorder: %d of %d UDP packets", systemDNSUDP-*p.recordedUDP, systemDNSUDP))
 	}
 	if systemDNS > 0 && names == 0 {
 		// Sent to the system's resolver but never reached the check's: the

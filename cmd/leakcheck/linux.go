@@ -290,6 +290,8 @@ read go || exit 1; exec setpriv --reuid="$2" --regid="$3" --init-groups --inh-ca
 			pol.nameservers[ns] = true
 		}
 		pol.lookups = dns.lookups()
+		n := dns.udpQueries()
+		pol.recordedUDP = &n
 	}
 	return verdict(flows, total, pol, selftest)
 }

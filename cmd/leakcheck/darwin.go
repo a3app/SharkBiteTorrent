@@ -2,42 +2,58 @@
 
 package main
 
-// macOS: tcpdump's pktap interface (-i pktap,all -k NP) tags every packet,
-// on every interface, with the process that sent it ("proc"). The kernel
-// does the tagging from the socket, so every TCP and UDP packet counts,
-// however short-lived the connection, including UDP sent without connect().
-// The packets are read live and counted per address, protocol and ports;
-// nothing is written to disk.
+// macOS: tcpdump's pktap interface (-i pktap,all -k NPD) tags every packet,
+// on every interface, with the process that sent it ("proc") and its
+// direction. The packets are read live and counted per address, protocol
+// and ports; nothing is written to disk.
 //
-// System DNS: lookups go to mDNSResponder, which sends the DNS packets
-// itself. pktap is meant to tag those with the process they're for
-// ("eproc"), but on macOS 26–27 it often doesn't (whole lookups, our own
-// test lookups included, came through untagged), so DNS is attributed from
-// mDNSResponder's own log instead: every request is logged with the client's
-// PID. The log hides the name but gives a hash of it (<dn:…>), stable for
-// the same name. The check learns the hashes of the names that are allowed
-// (a VPN account's documented direct calls, and localhost) by looking them
-// up itself first; any other lookup by a watched process is a leak, named if
+// pktap leaves some packets untagged, often a connection's outgoing ones
+// while tagging its replies. A packet therefore counts as the app's if it's
+// tagged with a watched process, or if it's untagged (or tagged with the
+// kernel) and either another packet of its connection was tagged with one,
+// or it was sent from a port a watched process had open (lsof, polled once
+// a second). Untagged TCP/UDP still unaccounted for fails the run, unless
+// -allow-untagged is given after looking at it: it may be any program's.
+//
+// System DNS: lookups go to mDNSResponder, which sends the packets itself.
+// pktap's tag for the process they're for ("eproc") proved unreliable, so
+// lookups are judged from mDNSResponder's log instead: every request is
+// logged with the client's PID, and a hash of the name (the name itself is
+// hidden). The check learns the hashes of the names that are allowed (a VPN
+// account's documented direct calls, and localhost) by looking them up
+// itself first; any other lookup by a watched process is a leak, named if
 // its hash is known. Like the Windows check, a lookup counts even when it's
-// answered from the cache, without a packet. HTTPS to a documented host is
-// allowed only to the addresses DNS answered for it during the run (read
-// from the packets). mDNSResponder's own packets aren't judged as traffic.
+// answered from the cache. mDNSResponder's own packets aren't judged.
+//
+// A VPN account's documented direct calls are only allowed from the app's
+// main process, while it connects (within 90 s before a WireGuard handshake
+// that starts a session, or 15 s after), and HTTPS only to the addresses DNS
+// answered for their names. A VPN server the app recorded only counts if a
+// WireGuard handshake initiation was sent to it.
 //
 // Watched processes: the app (or the engine run, a child process), anything
-// it starts, and WebKit's helper processes working for it. Those are started
-// by launchd, not the app, so they're found by asking launchd which app is
-// responsible for them (launchctl procinfo). Process lists are polled once a
-// second, so a child that starts, sends and exits within that is missed.
-// -app fails if none of the app's WebKit processes was found.
+// it starts, and WebKit's helpers working for it. Those are started by
+// launchd, not the app, so they're found by asking launchd which app is
+// responsible for them (launchctl procinfo); -app opens the app through
+// LaunchServices so that's the app, not the terminal. -app fails unless
+// every WebKit process could be asked and the app's Networking one was
+// found. Process lists are polled once a second, so a child that starts,
+// sends and exits within that is seen only through pktap's tags.
+//
+// Not seen: work system services do for the app in their own name. The
+// one that matters is certificate checking: macOS checks TLS certificates
+// in trustd, which may fetch revocation data or missing certificates
+// itself. The app verifies certificates in Go with its own roots on macOS,
+// so it shouldn't cause any; the check lists what trustd and the like sent
+// during the run, which may have been for any program.
 //
 // It runs as the logged-in user and uses sudo (asked once) for tcpdump, log
-// stream, launchctl procinfo and flushing the DNS cache; the watched
-// processes run as the user.
+// stream, launchctl procinfo and flushing the DNS cache.
 //
-// Allowed: as on Linux (see classify): this computer except DNS, UDP to the
-// VPN server, the user's local search server, the search proxy answering
-// Prowlarr, the remote control's replies to the home network or Tailscale,
-// and a VPN account's documented direct calls while connecting.
+// Allowed otherwise as on Linux (see classify): this computer except DNS,
+// UDP to the VPN server, the user's local search server, the search proxy
+// answering Prowlarr, and the remote control's replies to the home network
+// or Tailscale.
 
 import (
 	"bufio"
@@ -66,6 +82,12 @@ import (
 )
 
 const darwinExe = "/Applications/SharkBiteTorrent.app/Contents/MacOS/SharkBiteTorrent"
+
+var allowUntagged = flag.Bool("allow-untagged", false, "macOS: pass even if some TCP/UDP couldn't be attributed to any process (look at the list first)")
+
+// plantedNSLookup is the selftest's lookup through Network.framework (the
+// API WebKit uses), made by nscurl as a watched process.
+const plantedNSLookup = "example.net"
 
 func runDarwin(secs int, selftest, app bool, exe, endpointFlag, childWarp string) int {
 	if childWarp != "" {
@@ -106,7 +128,6 @@ func runDarwin(secs int, selftest, app bool, exe, endpointFlag, childWarp string
 				return fatalCode(err.Error())
 			}
 		}
-		childArgs = []string{exe} // opened with open(1), below
 	} else {
 		if len(flag.Args()) != 1 {
 			return fatalCode("usage: leakcheck [-selftest] [-seconds N] <magnet|file.torrent>   or   leakcheck -app")
@@ -227,11 +248,14 @@ func runDarwin(secs int, selftest, app bool, exe, endpointFlag, childWarp string
 	}
 	watched := newMacWatch(root)
 	tracking := make(chan struct{})
+	trackingDone := make(chan struct{})
 	go func() {
+		defer close(trackingDone)
 		for {
 			watched.refresh()
 			select {
 			case <-tracking:
+				watched.refresh() // once more, after everything stopped
 				return
 			case <-time.After(time.Second):
 			}
@@ -249,6 +273,14 @@ func runDarwin(secs int, selftest, app bool, exe, endpointFlag, childWarp string
 		os.Exit(130)
 	}()
 	start := time.Now()
+
+	// The selftest's lookup through Network.framework, by a watched process.
+	nsPID := 0
+	if selftest {
+		if nsPID, err = plantNSLookup(watched); err != nil {
+			fmt.Println("selftest: couldn't run nscurl for the Network.framework lookup:", err)
+		}
+	}
 
 	if app {
 		fmt.Printf("Started Shark BiteTorrent (PID %d); watching it for %d seconds.\nYOU: leave the window alone for the first minute (that covers startup). Then: search and add a result; type or paste in the magnet box; open every Settings section (type in a text field, click through VPN providers without saving); turn the search proxy on and click Check it's working (then off again if you don't use it); switch to another VPN provider and save, then back (that covers reconnecting); and click Check for updates.\n", root, secs)
@@ -279,13 +311,14 @@ func runDarwin(secs int, selftest, app bool, exe, endpointFlag, childWarp string
 		}
 	}
 	close(tracking)
+	<-trackingDone
 	controls.run()
 	time.Sleep(3 * time.Second) // let the last packets and log lines arrive
 	res, err := capture.finish()
 	if err != nil {
 		return fatalCode("reading tcpdump's output: " + err.Error())
 	}
-	reqs := dnsLog.finish()
+	reqs, logNotices := dnsLog.finish()
 
 	fmt.Printf("\nwatched %d processes (%d WebKit helpers); tcpdump saw %d packets; DNS log: %d lookups\n", watched.len(), watched.webkitCount(), res.packets, len(reqs))
 	if res.withDir == 0 {
@@ -296,53 +329,178 @@ func runDarwin(secs int, selftest, app bool, exe, endpointFlag, childWarp string
 		fmt.Printf("FAIL: tcpdump dropped %d packets, so not everything was checked (try fewer -seconds or a smaller torrent)\n", res.dropped)
 		return 1
 	}
+	if res.unparsed > 0 {
+		fmt.Printf("FAIL: %d IP packets in tcpdump's output couldn't be read, so they weren't checked; e.g.:\n", res.unparsed)
+		for _, l := range res.unparsedSample {
+			fmt.Println("  ", l)
+		}
+		return 1
+	}
+	if len(logNotices) > 0 {
+		fmt.Println("FAIL: the DNS log reported losing messages, so lookups may have been missed:")
+		for _, l := range logNotices {
+			fmt.Println("  ", l)
+		}
+		return 1
+	}
 	if missing := controls.missing(res, reqs, ownPID); len(missing) > 0 {
 		fmt.Println("FAIL: the check's own test traffic wasn't all recorded (" + strings.Join(missing, ", ") + "), so the run wasn't fully covered")
 		return 1
 	}
-	if app && watched.webkitCount() == 0 {
-		fmt.Println("FAIL: none of the app's WebKit processes was found (launchctl procinfo), so its web view's traffic wasn't covered")
-		return 1
-	}
-
-	endpoints := endpointSet(endpoint, readEndpoints())
-	if len(endpoints) == 0 {
-		return fatalCode("the app didn't record a VPN connection during the run (did it connect?); pass -endpoint ip:port")
-	}
-	local := localAddrs()
-	flows, un := res.forWatched(watched, local, mdnsPIDs(reqs))
-	fmt.Printf("untagged packets: %d claimed through their connection; unclaimed: %d ICMP (the kernel's), %d DNS (judged from the log), %d TCP/UDP\n",
-		un.rescued, un.icmp, un.dns, un.unclaimed)
-	if len(un.flows) > 0 {
-		// Not necessarily the app's: any program's traffic can be untagged.
-		fmt.Println("note: TCP/UDP that pktap tagged with no process, on connections it tagged nowhere (whose it was can't be told):")
-		for _, f := range un.flows {
-			fmt.Println("  ", f)
+	if app {
+		if bad := watched.unresolved(); len(bad) > 0 {
+			fmt.Println("FAIL: launchctl couldn't say which app these WebKit processes work for, so their traffic may not have been covered:", strings.Join(bad, ", "))
+			return 1
+		}
+		if !watched.hasNetworkingHelper() {
+			fmt.Println("FAIL: the app's WebKit Networking process wasn't found (launchctl procinfo), so its web view's traffic wasn't covered")
+			return 1
 		}
 	}
+
+	// The VPN servers: those the app recorded, if it sent them a WireGuard
+	// handshake (the check doesn't take the app's word for them).
+	var endpoints = map[string]bool{}
+	for ep := range endpointSet(endpoint, readEndpoints()) {
+		if res.handshakeFrom(ep, watched) {
+			endpoints[ep] = true
+		} else {
+			fmt.Println("note: no WireGuard handshake was sent to", ep, "(recorded as a VPN server), so it doesn't count as one")
+		}
+	}
+	if len(endpoints) == 0 {
+		return fatalCode("no WireGuard handshake to a VPN server the app recorded was seen (did it connect?); pass -endpoint ip:port")
+	}
+	local := watched.localAddrs()
+	windows := res.connectWindows(endpoints)
+	flows, un := res.forWatched(watched, local, mdnsPIDs(reqs), root, windows)
+	fmt.Printf("untagged packets: %d claimed through their connection or port; unclaimed: %d ICMP (the kernel's), %d DNS (judged from the log), %d TCP/UDP\n",
+		un.rescued, un.icmp, un.dns, un.unclaimed)
+	res.showSystemActivity(reqs)
 	var total int64
 	for _, f := range flows {
 		total += f.packets
 	}
 	pol := policy{local: local, endpoints: endpoints, remotePort: remotePort, remoteTailscale: remoteTailscale,
-		lookups: watchedLookups(reqs, watched, ownPID, learned, res.answersByName())}
+		lookups: watchedLookups(reqs, watched, ownPID, root, windows, learned, res.answersByName())}
 	pol.servers, pol.listen = appLocalServices()
 	if selftest {
 		res.showPlanted(watched)
+		if nsPID == 0 || !clientLogged(reqs, nsPID) {
+			fmt.Println("selftest FAILED: the Network.framework lookup (nscurl, as WebKit would make it) wasn't found in the DNS log, so the check can't see lookups made that way")
+			return 1
+		}
+	}
+	if len(un.flows) > 0 {
+		fmt.Println("TCP/UDP that pktap tagged with no process, on connections and ports no watched process had (whose it was can't be told):")
+		for _, f := range un.flows {
+			fmt.Println("  ", f)
+		}
+		if !*allowUntagged && !selftest {
+			fmt.Println("FAIL: that traffic may have been the app's. If you're sure it wasn't (another program's), run again with -allow-untagged.")
+			return 1
+		}
 	}
 	return verdict(flows, total, pol, selftest)
+}
+
+// plantNSLookup runs nscurl (Network.framework, like WebKit) against
+// plantedNSLookup as a watched process and returns its PID.
+func plantNSLookup(w *macWatch) (int, error) {
+	cmd := exec.Command("/usr/bin/nscurl", "https://"+plantedNSLookup+"/")
+	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+	if err := cmd.Start(); err != nil {
+		return 0, err
+	}
+	w.add(cmd.Process.Pid)
+	go func() {
+		t := time.AfterFunc(20*time.Second, func() { cmd.Process.Kill() })
+		cmd.Wait()
+		t.Stop()
+	}()
+	fmt.Println("selftest: planted a Network.framework lookup of", plantedNSLookup, "(nscurl, PID", strconv.Itoa(cmd.Process.Pid)+")")
+	return cmd.Process.Pid, nil
+}
+
+func clientLogged(reqs []mdnsRequest, pid int) bool {
+	for _, r := range reqs {
+		if r.client == pid {
+			return true
+		}
+	}
+	return false
 }
 
 // showPlanted prints every packet tcpdump saw to or from the selftest's
 // planted connection, with its tags, so a missed one can be explained.
 func (r *pktapResult) showPlanted(w *macWatch) {
 	host, _, _ := net.SplitHostPort(plantedConn)
-	for k, n := range r.counts {
+	for k, s := range r.counts {
 		if k.dst == host || k.src == host {
 			fmt.Printf("  planted connection's packets: %s %s:%d > %s:%d proc %d eproc %d dir %q watched %v: %d\n",
-				k.proto, k.src, k.sport, k.dst, k.dport, k.proc, k.eproc, k.dir, w.has(k.proc) || w.has(k.eproc), n)
+				k.proto, k.src, k.sport, k.dst, k.dport, k.proc, k.eproc, k.dir, w.has(k.proc) || w.has(k.eproc), s.n)
 		}
 	}
+}
+
+// systemServices check certificates, signatures and the like for other
+// programs, in their own name (see the top of this file).
+var systemServices = []string{"trustd", "ocspd", "securityd", "syspolicyd", "nsurlsessiond"}
+
+// showSystemActivity lists what those services sent to other computers,
+// and how many lookups they made, during the run.
+func (r *pktapResult) showSystemActivity(reqs []mdnsRequest) {
+	for _, name := range systemServices {
+		var packets int64
+		dests := map[string]bool{}
+		for k, s := range r.counts {
+			if k.dir == "in" || r.procNames[k.proc] != name || k.proto == "icmp" || k.proto == "ipv6-icmp" {
+				continue
+			}
+			packets += s.n
+			dests[net.JoinHostPort(k.dst, strconv.Itoa(k.dport))] = true
+		}
+		lookups := 0
+		for _, q := range reqs {
+			if clientName(r, q.client) == name {
+				lookups++
+			}
+		}
+		if packets > 0 || lookups > 0 {
+			var d []string
+			for x := range dests {
+				d = append(d, x)
+			}
+			sort.Strings(d)
+			sent := "no packets"
+			if packets > 0 {
+				sent = fmt.Sprintf("%d packets to %s", packets, strings.Join(d, ", "))
+			}
+			fmt.Printf("note: system activity (for any program, possibly the app): %s sent %s, and made %d lookups\n", name, sent, lookups)
+		}
+	}
+}
+
+var clientNames = map[int]string{}
+
+// clientName is a lookup client's process name: from pktap's tags, or ps.
+func clientName(r *pktapResult, pid int) string {
+	if n := r.procNames[pid]; n != "" {
+		return n
+	}
+	if n, ok := clientNames[pid]; ok {
+		return n
+	}
+	clientNames[pid] = pidName(pid)
+	return clientNames[pid]
+}
+
+func pidName(pid int) string {
+	out, err := systool.Command("ps", "-o", "comm=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return ""
+	}
+	return filepath.Base(strings.TrimSpace(string(out)))
 }
 
 func darwinAppRunning() bool {
@@ -368,11 +526,11 @@ func lookupFor(name string, d time.Duration) timedLookup {
 }
 
 // learnNames looks up, from this process, every name a watched process may
-// look up by design (and the selftest's planted one), so their hashes in
+// look up by design (and the selftest's planted ones), so their hashes in
 // mDNSResponder's log can be named.
 func learnNames() []timedLookup {
 	var out []timedLookup
-	for _, n := range append([]string{"localhost", plantedLookup}, sortedKeys(documentedDirect)...) {
+	for _, n := range append([]string{"localhost", plantedLookup, plantedNSLookup}, sortedKeys(documentedDirect)...) {
 		out = append(out, lookupFor(n, 5*time.Second))
 	}
 	return out
@@ -381,14 +539,25 @@ func learnNames() []timedLookup {
 // --- the processes being watched ---
 
 type macWatch struct {
-	mu     sync.Mutex
-	pids   map[int]bool
-	asked  map[int]bool // WebKit processes already asked about
-	webkit map[int]bool
+	mu        sync.Mutex
+	pids      map[int]bool
+	asked     map[int]bool    // WebKit processes launchctl answered for
+	failures  map[int]int     // WebKit processes launchctl didn't answer for, how often
+	webkit    map[int]string  // the app's WebKit helpers: PID → name
+	ports     map[string]int  // "tcp:50000", "udp:58017": ports watched processes had open → PID
+	addrs     map[string]bool // this computer's addresses, seen during the run
+	webkitAll map[int]string  // every WebKit process seen, to report unresolved ones
 }
 
 func newMacWatch(root int) *macWatch {
-	return &macWatch{pids: map[int]bool{root: true}, asked: map[int]bool{}, webkit: map[int]bool{}}
+	return &macWatch{pids: map[int]bool{root: true}, asked: map[int]bool{}, failures: map[int]int{},
+		webkit: map[int]string{}, ports: map[string]int{}, addrs: localAddrs(), webkitAll: map[int]string{}}
+}
+
+func (w *macWatch) add(pid int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pids[pid] = true
 }
 
 func (w *macWatch) has(pid int) bool {
@@ -409,17 +578,61 @@ func (w *macWatch) webkitCount() int {
 	return len(w.webkit)
 }
 
+// portPID is the watched process that had proto/port open (0 if none).
+func (w *macWatch) portPID(proto string, port int) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.ports[proto+":"+strconv.Itoa(port)]
+}
+
+func (w *macWatch) localAddrs() map[string]bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	m := map[string]bool{}
+	for a := range w.addrs {
+		m[a] = true
+	}
+	return m
+}
+
+func (w *macWatch) hasNetworkingHelper() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, name := range w.webkit {
+		if strings.HasSuffix(name, "com.apple.WebKit.Networking") {
+			return true
+		}
+	}
+	return false
+}
+
+// unresolved is the WebKit processes launchctl never answered for.
+func (w *macWatch) unresolved() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var out []string
+	for p, name := range w.webkitAll {
+		if !w.asked[p] {
+			out = append(out, fmt.Sprintf("%s (PID %d)", filepath.Base(name), p))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 var responsiblePID = regexp.MustCompile(`(?m)^\s*responsible pid = (\d+)`)
 
 // refresh adds the watched processes' descendants and the WebKit processes
-// launchd says the app is responsible for.
+// launchd says the app is responsible for, and notes the ports they have
+// open and this computer's addresses.
 func (w *macWatch) refresh() {
 	out, err := systool.Command("ps", "-A", "-o", "pid=,ppid=,comm=").Output()
 	if err != nil {
 		return
 	}
 	children := map[int][]int{}
-	var webkit []int
+	alive := map[int]bool{}
+	webkit := map[int]string{}
 	for _, line := range strings.Split(string(out), "\n") {
 		f := strings.Fields(line)
 		if len(f) < 3 {
@@ -428,32 +641,39 @@ func (w *macWatch) refresh() {
 		pid, _ := strconv.Atoi(f[0])
 		ppid, _ := strconv.Atoi(f[1])
 		children[ppid] = append(children[ppid], pid)
-		if strings.Contains(strings.Join(f[2:], " "), "com.apple.WebKit.") {
-			webkit = append(webkit, pid)
+		alive[pid] = true
+		if name := strings.Join(f[2:], " "); strings.Contains(name, "com.apple.WebKit.") {
+			webkit[pid] = name
 		}
 	}
 	w.mu.Lock()
 	var ask []int
-	for _, p := range webkit {
-		if !w.asked[p] {
-			w.asked[p] = true
+	for p, name := range webkit {
+		if !w.asked[p] && w.failures[p] < 5 {
 			ask = append(ask, p)
 		}
+		w.webkitAll[p] = name
 	}
 	w.mu.Unlock()
 	for _, p := range ask {
-		info, _ := sudo("launchctl", "procinfo", strconv.Itoa(p))
-		if m := responsiblePID.FindSubmatch(info); m != nil {
-			r, _ := strconv.Atoi(string(m[1]))
-			w.mu.Lock()
-			if w.pids[r] {
-				w.pids[p], w.webkit[p] = true, true
+		info, err := sudo("launchctl", "procinfo", strconv.Itoa(p))
+		m := responsiblePID.FindSubmatch(info)
+		w.mu.Lock()
+		if m == nil {
+			if !alive[p] || err != nil && !processExists(p) {
+				delete(w.webkitAll, p) // it exited before it could be asked: nothing it did was missed by this
+			} else {
+				w.failures[p]++ // asked again next time
 			}
-			w.mu.Unlock()
+		} else {
+			w.asked[p] = true
+			if r, _ := strconv.Atoi(string(m[1])); w.pids[r] {
+				w.pids[p], w.webkit[p] = true, webkit[p]
+			}
 		}
+		w.mu.Unlock()
 	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	for changed := true; changed; {
 		changed = false
 		for p := range w.pids {
@@ -464,6 +684,51 @@ func (w *macWatch) refresh() {
 			}
 		}
 	}
+	var pids []string
+	for p := range w.pids {
+		if alive[p] {
+			pids = append(pids, strconv.Itoa(p))
+		}
+	}
+	for a := range localAddrs() {
+		w.addrs[a] = true
+	}
+	w.mu.Unlock()
+	if len(pids) > 0 {
+		// lsof shows sockets, connected or not (unconnected UDP as *:port).
+		out, _ := systool.Command("lsof", "-nP", "-i", "-a", "-p", strings.Join(pids, ",")).Output()
+		ports := socketPorts(string(out))
+		w.mu.Lock()
+		for p, pid := range ports {
+			w.ports[p] = pid
+		}
+		w.mu.Unlock()
+	}
+}
+
+func processExists(pid int) bool {
+	return syscall.Kill(pid, 0) == nil || errors.Is(syscall.Kill(pid, 0), syscall.EPERM)
+}
+
+// lsofPort is the local port in lsof's NAME column: "127.0.0.1:49602",
+// "*:58017", "[::1]:50736->[::1]:9696".
+var lsofPort = regexp.MustCompile(`:(\d+)(?:->|\s|$)`)
+
+// socketPorts reads `lsof -nP -i` output into "tcp:PORT"/"udp:PORT" → PID.
+func socketPorts(out string) map[string]int {
+	m := map[string]int{}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 9 || (f[7] != "TCP" && f[7] != "UDP") {
+			continue
+		}
+		local := strings.SplitN(f[8], "->", 2)[0]
+		if pm := lsofPort.FindStringSubmatch(local + " "); pm != nil {
+			pid, _ := strconv.Atoi(f[1])
+			m[strings.ToLower(f[7])+":"+pm[1]] = pid
+		}
+	}
+	return m
 }
 
 // --- a privileged process whose output is read line by line ---
@@ -585,16 +850,41 @@ type pktapKey struct {
 	sport, dport int
 }
 
+// handshake is a WireGuard handshake initiation sent: when, and by whom
+// (Tailscale sends them too, to its own peers).
+type handshake struct {
+	at    time.Time
+	proc  int
+	sport int
+}
+
+// pktapStat is how many packets a key had, and when the first and last were.
+type pktapStat struct {
+	n           int64
+	first, last time.Time
+}
+
 type pktapResult struct {
 	packets, dropped int64
 	withDir          int64 // packets whose direction tcpdump printed
-	counts           map[pktapKey]int64
-	queryNames       map[string]string   // server|id → name, every DNS query seen
-	answers          map[string][]string // server|id → addresses
+	counts           map[pktapKey]*pktapStat
+	procNames        map[int]string      // PID → process name, from the tags
+	queryNames       map[string]string   // server|id|client port → name, every DNS query seen
+	answers          map[string][]string // the same key → addresses
+	// handshakes: the times WireGuard handshake initiations (148-byte UDP)
+	// were sent to each ip:port; tunnelSecs: the seconds UDP was sent there.
+	handshakes     map[string][]handshake
+	tunnelSecs     map[string]map[int64]bool
+	unparsed       int64 // IP packets whose line couldn't be read
+	unparsedSample []string
+	day            time.Time // the run's date, for tcpdump's times of day
 }
 
 func newPktapResult() *pktapResult {
-	return &pktapResult{counts: map[pktapKey]int64{}, queryNames: map[string]string{}, answers: map[string][]string{}}
+	now := time.Now()
+	return &pktapResult{counts: map[pktapKey]*pktapStat{}, procNames: map[int]string{}, queryNames: map[string]string{},
+		answers: map[string][]string{}, handshakes: map[string][]handshake{}, tunnelSecs: map[string]map[int64]bool{},
+		day: time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)}
 }
 
 func startPktap() (*pktap, error) {
@@ -641,8 +931,9 @@ func (p *pktap) finish() (*pktapResult, error) {
 const kernelPID = -1
 
 var (
-	// 00:59:12.522988 (proc mDNSResponder:656, eproc dscacheutil:17455) IP 100.72.141.16.53153 > 100.100.100.100.53: 48106+ AAAA? example.com. (46)
-	pktapLine = regexp.MustCompile(`^\S+ \((.*?)\) (IP6?) (\S+) > (\S+?): (.*)$`)
+	// 00:59:12.522988 (proc mDNSResponder:656, eproc dscacheutil:17455, out) IP 100.72.141.16.53153 > 100.100.100.100.53: 48106+ AAAA? example.com. (46)
+	pktapLine = regexp.MustCompile(`^(\d\d:\d\d:\d\d\.\d+) \((.*?)\) (IP6?) (\S+) > (\S+?): (.*)$`)
+	ipLine    = regexp.MustCompile(`^\S+ \(.*?\) IP6? `)
 	procRe    = regexp.MustCompile(`(?:^|, )proc (.*?):(\d+)`)
 	eprocRe   = regexp.MustCompile(`(?:^|, )eproc (.*?):(\d+)`)
 	dirRe     = regexp.MustCompile(`(?:^|, )(in|out)$`)                                                   // "(in)", "(proc x:1, out)"
@@ -653,28 +944,39 @@ var (
 
 // add counts one line of tcpdump's output.
 func (r *pktapResult) add(line string) {
-	m := pktapLine.FindStringSubmatch(strings.TrimRight(line, "\r\n"))
+	line = strings.TrimRight(line, "\r\n")
+	m := pktapLine.FindStringSubmatch(line)
 	if m == nil {
+		if ipLine.MatchString(line) {
+			r.unparsed++ // an IP packet we can't read: not checked, so the run fails
+			if len(r.unparsedSample) < 5 {
+				r.unparsedSample = append(r.unparsedSample, line)
+			}
+		}
 		return // ARP, a continuation line, …
 	}
+	at := r.timeOf(m[1])
 	k := pktapKey{}
-	if pm := procRe.FindStringSubmatch(m[1]); pm != nil {
+	if pm := procRe.FindStringSubmatch(m[2]); pm != nil {
 		k.proc, _ = strconv.Atoi(pm[2])
 		if k.proc == 0 && pm[1] != "" {
 			k.proc = kernelPID // "kernel_task:0": tagged, with the kernel
 		}
+		if pm[1] != "" {
+			r.procNames[k.proc] = pm[1]
+		}
 	}
-	if em := eprocRe.FindStringSubmatch(m[1]); em != nil {
+	if em := eprocRe.FindStringSubmatch(m[2]); em != nil {
 		k.eproc, _ = strconv.Atoi(em[2])
 	}
-	if dm := dirRe.FindStringSubmatch(m[1]); dm != nil {
+	if dm := dirRe.FindStringSubmatch(m[2]); dm != nil {
 		k.dir = dm[1]
 		r.withDir++
 	}
 	var hasPorts bool
-	k.src, k.sport, hasPorts = splitPktapAddr(m[3], m[2] == "IP6")
-	k.dst, k.dport, _ = splitPktapAddr(m[4], m[2] == "IP6")
-	rest := m[5]
+	k.src, k.sport, hasPorts = splitPktapAddr(m[4], m[3] == "IP6")
+	k.dst, k.dport, _ = splitPktapAddr(m[5], m[3] == "IP6")
+	rest := m[6]
 	switch {
 	case strings.Contains(rest, "Flags ["):
 		k.proto = "tcp"
@@ -687,15 +989,46 @@ func (r *pktapResult) add(line string) {
 	default:
 		k.proto = "other"
 	}
-	r.counts[k]++
+	s := r.counts[k]
+	if s == nil {
+		s = &pktapStat{first: at}
+		r.counts[k] = s
+	}
+	s.n++
+	s.last = at
+	if k.proto == "udp" && k.dir != "in" {
+		to := net.JoinHostPort(k.dst, strconv.Itoa(k.dport))
+		if strings.HasSuffix(rest, "UDP, length 148") {
+			r.handshakes[to] = append(r.handshakes[to], handshake{at, k.proc, k.sport})
+		}
+		if r.tunnelSecs[to] == nil {
+			r.tunnelSecs[to] = map[int64]bool{}
+		}
+		r.tunnelSecs[to][at.Unix()] = true
+	}
 	if q := dnsQ.FindStringSubmatch(rest); q != nil && k.dport == 53 {
-		r.queryNames[k.dst+"|"+q[1]] = strings.ToLower(strings.TrimSuffix(q[3], "."))
+		r.queryNames[k.dst+"|"+q[1]+"|"+strconv.Itoa(k.sport)] = strings.ToLower(strings.TrimSuffix(q[3], "."))
 	} else if a := dnsR.FindStringSubmatch(rest); a != nil && k.sport == 53 {
-		key := k.src + "|" + a[1]
+		key := k.src + "|" + a[1] + "|" + strconv.Itoa(k.dport)
 		for _, am := range dnsAddr.FindAllStringSubmatch(a[2], -1) {
 			r.answers[key] = append(r.answers[key], strings.TrimSuffix(am[1], ","))
 		}
 	}
+}
+
+// timeOf turns tcpdump's time of day into a time on the run's date (a run
+// that passes midnight continues on the next day).
+func (r *pktapResult) timeOf(hms string) time.Time {
+	t, err := time.ParseInLocation("15:04:05.000000", hms, time.Local)
+	if err != nil {
+		return time.Time{}
+	}
+	at := r.day.Add(time.Duration(t.Hour())*time.Hour + time.Duration(t.Minute())*time.Minute +
+		time.Duration(t.Second())*time.Second + time.Duration(t.Nanosecond()))
+	if at.Before(time.Now().Add(-12 * time.Hour)) {
+		at = at.Add(24 * time.Hour)
+	}
+	return at
 }
 
 // answersByName is the addresses DNS returned for each name during the run,
@@ -706,6 +1039,52 @@ func (r *pktapResult) answersByName() map[string][]string {
 		out[name] = append(out[name], r.answers[key]...)
 	}
 	return out
+}
+
+// window is a span of time, when the app was connecting to a VPN server.
+type window struct{ from, to time.Time }
+
+// handshakeFrom reports whether a watched process sent a WireGuard
+// handshake initiation to ep (tagged with it, or untagged from its port).
+func (r *pktapResult) handshakeFrom(ep string, w *macWatch) bool {
+	for _, h := range r.handshakes[ep] {
+		if w.has(h.proc) || (h.proc == 0 || h.proc == kernelPID) && w.portPID("udp", h.sport) != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// connectWindows are the times the app may make a VPN account's documented
+// direct calls: from 90 s before each handshake that starts a session (one
+// with no tunnel traffic to that server in the 30 s before; later ones are
+// WireGuard rekeying) to 15 s after.
+func (r *pktapResult) connectWindows(endpoints map[string]bool) []window {
+	var out []window
+	for ep := range endpoints {
+		for _, h := range r.handshakes[ep] {
+			t := h.at
+			busy := false
+			for s := t.Unix() - 30; s < t.Unix(); s++ {
+				if r.tunnelSecs[ep][s] {
+					busy = true
+				}
+			}
+			if !busy {
+				out = append(out, window{t.Add(-90 * time.Second), t.Add(15 * time.Second)})
+			}
+		}
+	}
+	return out
+}
+
+func within(ws []window, from, to time.Time) bool {
+	for _, w := range ws {
+		if !from.Before(w.from) && !to.After(w.to) {
+			return true
+		}
+	}
+	return false
 }
 
 // splitPktapAddr splits tcpdump's "1.2.3.4.443" or "2600::1.443" (the port
@@ -749,11 +1128,10 @@ func connOf(k pktapKey) connKey {
 	return connKey{k.proto, k.src, k.dst, k.sport, k.dport}
 }
 
-// untagged is what forWatched couldn't attribute: packets sent with no
-// process tag, on connections none of whose packets had one either.
+// untagged is what forWatched couldn't attribute by tag alone.
 type untagged struct {
-	rescued   int64 // untagged packets claimed through a tagged packet on their connection
-	unclaimed int64 // untagged TCP/UDP (not DNS) to another computer, on a connection nobody's tag claims
+	rescued   int64 // untagged packets claimed through their connection or port
+	unclaimed int64 // untagged TCP/UDP (not DNS) to another computer that nothing claims
 	flows     []string
 	// Untagged and unclaimed too, but not what a leak by the app would be:
 	// ICMP is sent by the kernel (neighbour discovery, errors), and DNS is
@@ -761,56 +1139,82 @@ type untagged struct {
 	icmp, dns int64
 }
 
-// forWatched is the packets the watched processes sent as flows (packets
-// tagged with them, as proc or eproc, and untagged packets on a connection
-// some packet of which was tagged with them). pktap leaves some packets
-// untagged, often a connection's outgoing ones while tagging the replies.
-// Packets tagged with another process never count: on loopback, both ends of
-// a connection are on this computer. mDNSResponder's packets are left out:
-// lookups are judged from its log.
-func (r *pktapResult) forWatched(w *macWatch, local map[string]bool, mdns map[int]bool) ([]flow, untagged) {
-	ours := map[connKey]bool{}
+// forWatched is the packets the watched processes sent as flows: packets
+// tagged with them (as proc or eproc), and untagged or kernel-tagged
+// packets on a connection one of whose packets was tagged with them, or
+// sent from a port one of them had open. Packets tagged with another
+// process never count: on loopback, both ends of a connection are on this
+// computer. mDNSResponder's packets are left out: lookups are judged from
+// its log. Each flow notes whether it can be one of a VPN account's
+// documented calls (only from root, while connecting).
+func (r *pktapResult) forWatched(w *macWatch, local map[string]bool, mdns map[int]bool, root int, windows []window) ([]flow, untagged) {
+	owner := map[connKey]int{}
 	tagged := map[connKey]bool{}
 	for k := range r.counts {
 		if k.proc != 0 || k.eproc != 0 {
 			tagged[connOf(k)] = true
 		}
 		if !mdns[k.proc] && (w.has(k.proc) || w.has(k.eproc)) {
-			ours[connOf(k)] = true
+			c := connOf(k)
+			if owner[c] != root {
+				owner[c] = watchedPID(w, k)
+			}
 		}
 	}
 	var flows []flow
 	var u untagged
-	for k, n := range r.counts {
+	for k, s := range r.counts {
 		// On loopback each packet is seen leaving and arriving, the arriving
 		// copy tagged with the process receiving it: only what's sent counts.
 		if k.dir == "in" || !local[k.src] || mdns[k.proc] {
 			continue
 		}
 		c := connOf(k)
+		untaggedish := (k.proc == 0 || k.proc == kernelPID) && k.eproc == 0
+		pid := 0
 		switch {
 		case w.has(k.proc) || w.has(k.eproc):
-		case k.proc == 0 && k.eproc == 0 && ours[c]:
-			u.rescued += n
+			pid = watchedPID(w, k)
+		case untaggedish && owner[c] != 0:
+			pid = owner[c]
+			u.rescued += s.n
+		case untaggedish && (k.proto == "tcp" || k.proto == "udp") && w.portPID(k.proto, k.sport) != 0:
+			pid = w.portPID(k.proto, k.sport)
+			u.rescued += s.n
 		case k.proc == 0 && k.eproc == 0 && !tagged[c] && !local[k.dst] && !multicast(k.dst):
 			switch {
 			case k.proto == "icmp" || k.proto == "ipv6-icmp":
-				u.icmp += n
+				u.icmp += s.n
 			case k.dport == 53:
-				u.dns += n
+				u.dns += s.n
 			default:
-				u.unclaimed += n
+				u.unclaimed += s.n
 				u.flows = append(u.flows, fmt.Sprintf("%s %s > %s (%d packets)", strings.ToUpper(k.proto),
-					net.JoinHostPort(k.src, strconv.Itoa(k.sport)), net.JoinHostPort(k.dst, strconv.Itoa(k.dport)), n))
+					net.JoinHostPort(k.src, strconv.Itoa(k.sport)), net.JoinHostPort(k.dst, strconv.Itoa(k.dport)), s.n))
 			}
 			continue
 		default:
 			continue // someone else's
 		}
-		flows = append(flows, flow{proto: k.proto, src: k.src, dst: k.dst, sport: k.sport, dport: k.dport, packets: n})
+		f := flow{proto: k.proto, src: k.src, dst: k.dst, sport: k.sport, dport: k.dport, packets: s.n}
+		switch {
+		case pid != root:
+			f.notDocumented = "not from the app's main process"
+		case !within(windows, s.first, s.last):
+			f.notDocumented = "not while it was connecting to the VPN"
+		}
+		flows = append(flows, f)
 	}
 	sort.Strings(u.flows)
 	return flows, u
+}
+
+// watchedPID is which of a packet's tags is the watched process.
+func watchedPID(w *macWatch, k pktapKey) int {
+	if w.has(k.proc) {
+		return k.proc
+	}
+	return k.eproc
 }
 
 func multicast(addr string) bool {
@@ -822,8 +1226,9 @@ func multicast(addr string) bool {
 
 type mdnsLog struct {
 	*lineReader
-	mu   sync.Mutex
-	reqs []mdnsRequest
+	mu      sync.Mutex
+	reqs    []mdnsRequest
+	notices []string // the log saying it lost messages
 }
 
 // mdnsRequest is one lookup a client asked mDNSResponder for.
@@ -831,24 +1236,31 @@ type mdnsRequest struct {
 	at      time.Time
 	mdnsPID int
 	client  int
-	hash    string // <dn:…>, or the name itself if the log shows it
+	hash    string // <dn:…> or <mask.hash: '…'>, or the name itself if the log shows it
 }
 
 // [R6739] DNSServiceQueryRecord START -- qname: <private> <dn:72K6SQ>, qtype: A, flags: 0x15000, interface index: 0, client pid: 16734 (SharkBiteTorren), name hash: <dn:72K6SQ>
+// [R1234] getaddrinfo start -- flags: 0x0, ifindex: 0, protocols: 0, hostname: <mask.hash: 'Zm9v'>, options: 0x0, client pid: 99 (nscurl)
 var (
-	mdnsStart = regexp.MustCompile(`mDNSResponder\[(\d+)[^\]]*\].*\] DNSService\w+ START -- (?:qname|hostname): (.*?), .*client pid: (\d+)`)
-	mdnsHash  = regexp.MustCompile(`<dn:([^>]+)>`)
+	mdnsStart  = regexp.MustCompile(`mDNSResponder\[(\d+)[^\]]*\].*?\] \S+ (?i:start) -- (.*)$`)
+	mdnsClient = regexp.MustCompile(`\bclient pid: (\d+)`)
+	mdnsHash   = regexp.MustCompile(`<dn:([^>]+)>|<mask\.hash: '([^']+)'>`)
+	mdnsName   = regexp.MustCompile(`\b(?:qname|hostname): ([^,<\s]+)`)
+	logDropped = regexp.MustCompile(`(?i)\bdropp?ed\b|\bmessages? (?:were )?lost\b`)
 )
 
 func startMDNSLog() (*mdnsLog, error) {
 	l := &mdnsLog{}
 	lr, err := startLines([]string{"log", "stream", "--style", "compact", "--level", "default",
-		"--predicate", `process == "mDNSResponder" AND eventMessage CONTAINS " START -- "`},
+		"--predicate", `process == "mDNSResponder" AND eventMessage CONTAINS[c] " start -- "`},
 		func(line string) {
-			if r, ok := parseMDNSLine(line); ok {
-				l.mu.Lock()
+			r, ok := parseMDNSLine(line)
+			l.mu.Lock()
+			defer l.mu.Unlock()
+			if ok {
 				l.reqs = append(l.reqs, r)
-				l.mu.Unlock()
+			} else if logDropped.MatchString(line) {
+				l.notices = append(l.notices, line)
 			}
 		},
 		func(line string) bool { return strings.HasPrefix(line, "Filtering the log data") })
@@ -864,27 +1276,35 @@ func parseMDNSLine(line string) (mdnsRequest, bool) {
 	if m == nil {
 		return mdnsRequest{}, false
 	}
+	c := mdnsClient.FindStringSubmatch(m[2])
+	if c == nil {
+		return mdnsRequest{}, false
+	}
 	r := mdnsRequest{}
 	if len(line) >= 23 {
 		// "2026-10-21 00:59:24.799 Df mDNSResponder[656:145d] …", local time
 		r.at, _ = time.ParseInLocation("2006-01-02 15:04:05.000", line[:23], time.Local)
 	}
 	r.mdnsPID, _ = strconv.Atoi(m[1])
-	r.client, _ = strconv.Atoi(m[3])
+	r.client, _ = strconv.Atoi(c[1])
 	if h := mdnsHash.FindStringSubmatch(m[2]); h != nil {
-		r.hash = h[1]
+		r.hash = h[1] + h[2]
+	} else if n := mdnsName.FindStringSubmatch(m[2]); n != nil {
+		r.hash = strings.ToLower(strings.TrimSuffix(n[1], "."))
 	} else {
-		r.hash = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(m[2]), "."))
+		return mdnsRequest{}, false
 	}
 	return r, true
 }
 
-func (l *mdnsLog) finish() []mdnsRequest {
+// finish stops the log and returns the requests, and any notices of lost
+// messages.
+func (l *mdnsLog) finish() ([]mdnsRequest, []string) {
 	l.stop()
 	<-l.done
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.reqs
+	return l.reqs, l.notices
 }
 
 func mdnsPIDs(reqs []mdnsRequest) map[int]bool {
@@ -917,9 +1337,11 @@ func hashOf(reqs []mdnsRequest, own int, t timedLookup) string {
 
 // watchedLookups names the watched processes' lookups, using the hashes of
 // the names this process looked up (learned), and gives each documented one
-// the addresses DNS returned for it. localhost isn't counted: it's answered
-// on this computer.
-func watchedLookups(reqs []mdnsRequest, w *macWatch, own int, learned []timedLookup, answers map[string][]string) map[string][]string {
+// the addresses DNS returned for it. A documented name looked up by another
+// process than root, or outside the connect windows, is reported as such
+// (and so not allowed). localhost isn't counted: it's answered on this
+// computer.
+func watchedLookups(reqs []mdnsRequest, w *macWatch, own, root int, windows []window, learned []timedLookup, answers map[string][]string) map[string][]string {
 	names := map[string]string{} // hash → name
 	for _, t := range learned {
 		if h := hashOf(reqs, own, t); h != "" {
@@ -936,11 +1358,19 @@ func watchedLookups(reqs []mdnsRequest, w *macWatch, own int, learned []timedLoo
 			if strings.Contains(r.hash, ".") || r.hash == "localhost" {
 				name = r.hash // the log showed the name itself
 			} else {
-				name = "a name the check doesn't know (hash dn:" + r.hash + ")"
+				name = "a name the check doesn't know (hash " + r.hash + ")"
 			}
 		}
 		if name == "localhost" {
 			continue
+		}
+		if _, documented := documentedDirect[name]; documented {
+			switch {
+			case r.client != root:
+				name += " (by another process than the app's main one)"
+			case !within(windows, r.at, r.at):
+				name += " (while not connecting to the VPN)"
+			}
 		}
 		out[name] = dedupe(append(out[name], answers[name]...))
 	}
