@@ -263,7 +263,7 @@ func (a *App) CheckSearchProxy() (ProxyCheck, error) {
 	if s == nil {
 		return ProxyCheck{}, errors.New("the proxy isn't running; turn the option on first")
 	}
-	before := s.Requests.Load()
+	before, sentBefore := s.Requests.Load(), s.Sent.Load()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	if _, err := search.Search(ctx, sc, "sharkbite proxy check "+randomToken()[:8], ""); err != nil {
@@ -271,5 +271,7 @@ func (a *App) CheckSearchProxy() (ProxyCheck, error) {
 	}
 	time.Sleep(time.Second) // let connections still being opened arrive
 	n := s.Requests.Load() - before
-	return ProxyCheck{Used: n > 0, Connections: n}, nil
+	// A search right after another goes over the connections that one left
+	// open: no new connection, but its requests still pass through here.
+	return ProxyCheck{Used: n > 0 || s.Sent.Load() > sentBefore, Connections: n}, nil
 }

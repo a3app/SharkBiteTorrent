@@ -27,6 +27,9 @@ type Server struct {
 	// Requests counts CONNECT requests from clients that logged in, so the
 	// app can confirm a search server really sends its traffic through here.
 	Requests atomic.Int64
+	// Sent counts bytes clients sent through here. A search server reuses
+	// connections it already has open, so a search may make no new request.
+	Sent atomic.Int64
 
 	mu    sync.Mutex
 	ln    net.Listener
@@ -110,7 +113,7 @@ func (s *Server) handle(c net.Conn) {
 	c.SetDeadline(time.Time{})
 
 	done := make(chan struct{}, 2)
-	pipe := func(dst, src net.Conn) {
+	pipe := func(dst net.Conn, src io.Reader) {
 		io.Copy(dst, src)
 		if tc, ok := dst.(interface{ CloseWrite() error }); ok {
 			tc.CloseWrite()
@@ -119,10 +122,23 @@ func (s *Server) handle(c net.Conn) {
 		}
 		done <- struct{}{}
 	}
-	go pipe(up, c)
+	go pipe(up, countingReader{c, &s.Sent})
 	go pipe(c, up)
 	<-done
 	<-done
+}
+
+// countingReader adds what it reads to n as it goes (io.Copy only reports
+// the total once the connection ends).
+type countingReader struct {
+	r io.Reader
+	n *atomic.Int64
+}
+
+func (c countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n.Add(int64(n))
+	return n, err
 }
 
 // negotiate runs the greeting, auth and request, and returns host:port.

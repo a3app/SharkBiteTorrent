@@ -103,7 +103,7 @@
         <button onclick={runCheck} disabled={checking}>{checking ? 'Checking…' : "Check it's working"}</button>
         {#if check?.used}
           <span class="ok small">
-            ✓ {name(status.kind)}'s test search went through the VPN ({check.connections} connection{check.connections === 1 ? '' : 's'}).
+            ✓ {name(status.kind)}'s test search went through the VPN{check.connections > 0 ? ` (${check.connections} connection${check.connections === 1 ? '' : 's'})` : ' (over connections it already had open)'}.
           </span>
         {:else if check}
           <span class="warn small">
