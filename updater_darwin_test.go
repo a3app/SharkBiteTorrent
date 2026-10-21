@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeBundle makes an ad-hoc signed .app with the given id and version.
@@ -100,5 +101,27 @@ func TestCanSelfUpdateDarwin(t *testing.T) {
 	app := fakeBundle(t, ww, bundleID, "0.2.38", "x")
 	if canSelfUpdate(filepath.Join(app, "Contents", "MacOS", "SharkBiteTorrent")) {
 		t.Error("a .app in a folder anyone can write to")
+	}
+}
+
+// What an update killed partway left next to the app goes at the next
+// start, once it's over an hour old; the app and anything recent stay.
+func TestCleanUpdateLeftoversDarwin(t *testing.T) {
+	apps := t.TempDir()
+	app := fakeBundle(t, apps, bundleID, "0.2.38", "x")
+	old := time.Now().Add(-2 * time.Hour)
+	stale := filepath.Join(apps, ".SharkBiteTorrent-update-123")
+	fresh := filepath.Join(apps, ".SharkBiteTorrent-update-456")
+	oldCopy := app + ".old-update"
+	for _, d := range []string{stale, fresh, oldCopy} {
+		os.MkdirAll(filepath.Join(d, "x"), 0o755)
+	}
+	os.Chtimes(stale, old, old)
+	os.Chtimes(oldCopy, old, old)
+	cleanUpdateLeftovers(filepath.Join(app, "Contents", "MacOS", "SharkBiteTorrent"))
+	for p, want := range map[string]bool{stale: false, oldCopy: false, fresh: true, app: true} {
+		if _, err := os.Stat(p); (err == nil) != want {
+			t.Errorf("%s: exists %v, want %v", filepath.Base(p), err == nil, want)
+		}
 	}
 }

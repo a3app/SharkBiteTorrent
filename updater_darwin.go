@@ -6,6 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"golang.org/x/sys/unix"
 
 	"sharkbite/internal/systool"
 )
@@ -57,18 +60,56 @@ func applyUpdate(zip, version, exe string) error {
 	if err := checkBundle(newApp, version); err != nil {
 		return fmt.Errorf("the update isn't usable: %w", err)
 	}
+	if err := swapBundle(newApp, bundle); err != nil {
+		return err
+	}
+	// The old app is now at newApp, in dir, which is removed on return; the
+	// running copy keeps working from its deleted files until it quits.
+	return relaunchAfterExit("/usr/bin/open", "-n", bundle)
+}
+
+// swapBundle puts newApp in bundle's place and the old one at newApp, in one
+// step (RENAME_SWAP, on APFS and HFS+), so a crash can't leave no app. A
+// disk that can't (a network drive) gets two renames instead.
+func swapBundle(newApp, bundle string) error {
+	err := unix.RenamexNp(newApp, bundle, unix.RENAME_SWAP)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, unix.ENOTSUP) && !errors.Is(err, unix.EINVAL) {
+		return err
+	}
 	old := bundle + ".old-update"
 	os.RemoveAll(old) // left by an update that stopped partway
 	if err := os.Rename(bundle, old); err != nil {
 		return err
 	}
 	if err := os.Rename(newApp, bundle); err != nil {
-		os.Rename(old, bundle)
+		if rerr := os.Rename(old, bundle); rerr != nil {
+			return fmt.Errorf("installing the update failed (%v), and so did putting the old app back (%v): it's at %s", err, rerr, old)
+		}
 		return err
 	}
-	// The running copy keeps working from the deleted files until it quits.
-	os.RemoveAll(old)
-	return relaunchAfterExit("/usr/bin/open", "-n", bundle)
+	// So it goes with the update's folder; if not, cleanUpdateLeftovers
+	// removes it at a later start. The update itself is in place.
+	os.Rename(old, newApp)
+	return nil
+}
+
+// cleanUpdateLeftovers removes what an update that stopped partway (the app
+// was killed) left next to the app: its hidden folder, and the old copy two
+// renames leave. Over an hour old only, so a running update isn't touched.
+func cleanUpdateLeftovers(exe string) {
+	b := bundleOf(exe)
+	if b == "" {
+		return
+	}
+	left, _ := filepath.Glob(filepath.Join(filepath.Dir(b), ".SharkBiteTorrent-update-*"))
+	for _, p := range append(left, b+".old-update") {
+		if fi, err := os.Lstat(p); err == nil && fi.IsDir() && time.Since(fi.ModTime()) > time.Hour {
+			os.RemoveAll(p)
+		}
+	}
 }
 
 // checkBundle makes sure app is this app, at version, with a signature

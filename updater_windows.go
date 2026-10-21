@@ -52,6 +52,10 @@ func selfUpdateAsset(string, string) string { return installerAsset }
 // signed checksums), which closes the app, upgrades it and relaunches it.
 func applyUpdate(path, _, _ string) error { return runInstaller(path) }
 
+// cleanUpdateLeftovers: the installer cleans up after itself (and its
+// folder goes with the sharkbite-update-* ones cleanUpdateTemp removes).
+func cleanUpdateLeftovers(string) {}
+
 // Windows installs updates itself (InstallUpdate).
 func updateAsset(string, string) string { return "" }
 

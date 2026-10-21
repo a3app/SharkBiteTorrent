@@ -520,6 +520,7 @@ func (a *App) updateDownloadMarker() string {
 // cleanUpdateTemp removes installer folders left by earlier updates (the
 // installer is still running from its folder when the app quits).
 func (a *App) cleanUpdateTemp() {
+	cleanUpdateLeftovers(a.exe)
 	dirs, _ := filepath.Glob(filepath.Join(os.TempDir(), "sharkbite-update-*"))
 	for _, d := range dirs {
 		if fi, err := os.Stat(d); err == nil && time.Since(fi.ModTime()) > time.Hour {

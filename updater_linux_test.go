@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // The file offered matches how the app was installed.
@@ -116,5 +117,29 @@ func TestCanSelfUpdateLinuxWorldWritable(t *testing.T) {
 	os.Chmod(dir, 0o777)
 	if canSelfUpdate(filepath.Join(dir, "SharkBiteTorrent")) {
 		t.Error("a copy in a world-writable folder may update itself")
+	}
+}
+
+// Temporary files an update killed partway left go at the next start, once
+// they're over an hour old.
+func TestCleanUpdateLeftoversLinux(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "SharkBiteTorrent")
+	os.WriteFile(exe, nil, 0o755)
+	stale := filepath.Join(dir, ".SharkBiteTorrent.update-123")
+	fresh := filepath.Join(dir, ".LICENSE.update-456")
+	os.WriteFile(stale, nil, 0o600)
+	os.WriteFile(fresh, nil, 0o600)
+	old := time.Now().Add(-2 * time.Hour)
+	os.Chtimes(stale, old, old)
+	cleanUpdateLeftovers(exe)
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Error("a stale update file was left")
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Error("a recent one (an update in progress) was removed")
+	}
+	if _, err := os.Stat(exe); err != nil {
+		t.Error("the program was removed")
 	}
 }

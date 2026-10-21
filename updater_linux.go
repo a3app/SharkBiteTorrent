@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // packagedExe is where the pacman package installs the app: pacman updates
@@ -126,4 +127,21 @@ func wanted(name string) bool {
 		}
 	}
 	return false
+}
+
+// cleanUpdateLeftovers removes the hidden temporary files an update that
+// stopped partway (the app was killed) left next to the program. Over an
+// hour old only, so a running update isn't touched.
+func cleanUpdateLeftovers(exe string) {
+	if exe == packagedExe {
+		return
+	}
+	for _, name := range tarballFiles {
+		left, _ := filepath.Glob(filepath.Join(filepath.Dir(exe), "."+name+".update-*"))
+		for _, p := range left {
+			if fi, err := os.Lstat(p); err == nil && fi.Mode().IsRegular() && time.Since(fi.ModTime()) > time.Hour {
+				os.Remove(p)
+			}
+		}
+	}
 }
