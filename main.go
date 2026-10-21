@@ -54,11 +54,12 @@ func main() {
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
-		BackgroundColour: &options.RGBA{R: 24, G: 26, B: 31, A: 1},
-		StartHidden:      autostart,
-		OnStartup:        app.startup,
-		OnShutdown:       app.shutdown,
-		OnBeforeClose:    app.beforeClose,
+		BackgroundColour:  &options.RGBA{R: 24, G: 26, B: 31, A: 1},
+		StartHidden:       autostart,
+		OnStartup:         app.startup,
+		OnShutdown:        app.shutdown,
+		OnBeforeClose:     app.beforeClose,
+		HideWindowOnClose: hideOnClose,
 		// A second launch (e.g. clicking a magnet link while running) hands
 		// its arguments to this instance instead of starting another.
 		SingleInstanceLock: &options.SingleInstanceLock{

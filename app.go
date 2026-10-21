@@ -186,7 +186,7 @@ func (a *App) shutdown(ctx context.Context) {
 // beforeClose hides to the tray instead of quitting, if enabled.
 func (a *App) beforeClose(ctx context.Context) bool {
 	a.mu.Lock()
-	hide := a.settings.CloseToTray && !a.quitting
+	hide := !hideOnClose && a.settings.CloseToTray && !a.quitting
 	a.mu.Unlock()
 	if hide {
 		runtime.WindowHide(ctx)

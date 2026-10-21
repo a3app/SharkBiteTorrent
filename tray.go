@@ -10,6 +10,10 @@ import (
 	"fyne.io/systray"
 )
 
+// hideOnClose is macOS's native hide-on-close (see tray_darwin.go); here
+// closing goes through beforeClose and the Close to tray setting.
+const hideOnClose = false
+
 // runTray shows the notification-area icon. systray needs its own locked OS
 // thread on Windows, since it runs a separate message loop from Wails.
 func (a *App) runTray() {

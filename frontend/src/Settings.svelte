@@ -6,6 +6,7 @@
     GetStartup, SetStartup, OpenStartupSettings,
   } from '../wailsjs/go/main/App.js'
   import { main, type platform } from '../wailsjs/go/models'
+  import { Environment } from '../wailsjs/runtime/runtime.js'
   import VpnSettings from './VpnSettings.svelte'
   import SearchSettings from './SearchSettings.svelte'
   import RemoteSettings from './RemoteSettings.svelte'
@@ -34,6 +35,10 @@
   const referralNames = $derived(referralIds.map(id => providerNames[id] ?? id).join(' and '))
 
   GetAbout().then(a => (about = a))
+
+  // macOS has no tray icon: closing always hides the app (see tray_darwin.go).
+  let isMac = $state(false)
+  Environment().then(e => (isMac = e.platform === 'darwin'))
 
   // "Start when I sign in" lives in the OS (registry / autostart file), so
   // it's read from there and applied on Save like everything else.
@@ -225,10 +230,16 @@
               <span>Start Shark BiteTorrent in the background when I sign in</span>
             </label>
           {/if}
-          <label class="check">
-            <input type="checkbox" bind:checked={s.closeToTray} />
-            <span>Closing the window keeps Shark BiteTorrent running in the tray</span>
-          </label>
+          {#if isMac}
+            <p class="muted small">
+              Closing the window keeps Shark BiteTorrent running. Click its Dock icon to bring it back, or press Cmd+Q to quit.
+            </p>
+          {:else}
+            <label class="check">
+              <input type="checkbox" bind:checked={s.closeToTray} />
+              <span>Closing the window keeps Shark BiteTorrent running in the tray</span>
+            </label>
+          {/if}
           <label class="check">
             <input type="checkbox" bind:checked={s.scanDownloads} disabled={!scannerAvailable} />
             <span>
