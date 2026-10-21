@@ -81,10 +81,22 @@
     }
   }
 
+  // Adding or starting a torrent creates its files, which on a busy NAS can
+  // take a minute: show that it's happening and don't take the click twice.
+  let adding = $state(0)
+  async function runAdding(fn: () => Promise<unknown>) {
+    adding++
+    try {
+      await run(fn)
+    } finally {
+      adding--
+    }
+  }
+
   function addMagnet(ev: SubmitEvent) {
     ev.preventDefault()
     if (!magnet.trim()) return
-    run(async () => {
+    runAdding(async () => {
       await AddMagnet(magnet)
       magnet = ''
     })
@@ -186,6 +198,15 @@
     removingNow = new Set([...removingNow].filter(h => h !== hash))
   }
 
+  let startingNow = $state(new Set<string>())
+
+  async function startTorrent(hash: string) {
+    if (startingNow.has(hash)) return
+    startingNow = new Set([...startingNow, hash])
+    await run(() => StartTorrent(hash))
+    startingNow = new Set([...startingNow].filter(h => h !== hash))
+  }
+
   function confirmRemove() {
     const t = removing!
     removing = null
@@ -204,6 +225,7 @@
     if (t.state === 'seeding' && t.scanState === 'scanning') return 'Scanning for malware…'
     if (t.scanState === 'threat') return '⚠ Threat found'
     if (removingNow.has(t.hash)) return 'Removing…'
+    if (startingNow.has(t.hash)) return 'Starting…'
     if (t.confirm && t.state === 'paused') return 'Waiting for Start'
     return stateLabel[t.state] ?? t.state
   }
@@ -267,9 +289,9 @@
   <div class="toolbar">
     <form onsubmit={addMagnet}>
       <input placeholder="Paste a magnet link…" bind:value={magnet} disabled={!connected} />
-      <button class="primary" type="submit" disabled={!connected || !magnet.trim()}>Add</button>
+      <button class="primary" type="submit" disabled={!connected || !magnet.trim() || adding > 0}>{adding > 0 ? 'Adding…' : 'Add'}</button>
     </form>
-    <button onclick={() => run(PickTorrentFile)} disabled={!connected}>Open .torrent…</button>
+    <button onclick={() => runAdding(PickTorrentFile)} disabled={!connected || adding > 0}>Open .torrent…</button>
     <button class:active={searching} onclick={() => (searching = !searching)} disabled={!connected}>
       {searching ? '← Torrents' : 'Search'}
     </button>
@@ -291,7 +313,9 @@
           <b>{t.name || 'unnamed torrent'}</b>{t.size ? ` (${bytes(t.size)})` : ''}. Nothing is downloaded or contacted until you start it.
           {#if (t.warnings ?? []).length > 0}<b class="warn">⚠ Some of its files look risky: {(t.warnings ?? []).map(w => w.reason).join(' ')}</b>{/if}
         </span>
-        <button class="primary" onclick={() => run(() => StartTorrent(t.hash))}>Start</button>
+        <button class="primary" onclick={() => startTorrent(t.hash)} disabled={startingNow.has(t.hash)}>
+          {startingNow.has(t.hash) ? 'Starting…' : 'Start'}
+        </button>
       {/if}
       <button onclick={() => removeTorrent(t.hash, false)} disabled={removingNow.has(t.hash)}>Remove</button>
     </div>
