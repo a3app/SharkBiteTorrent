@@ -296,7 +296,7 @@ links*.go                Sponsor and VPN sign-up links (links.go); the nofunding
 tray*.go                 Tray icon (per-OS files)
 updater*.go, release.pub In-app updates, checked against the signed release checksums
 cmd/releasekey           Maintainer tool: create/back up the signing key, sign and publish a release
-cmd/leakcheck            Release check (Windows: admin; Linux: sudo): every connection and DNS lookup outside the VPN tunnel fails it
+cmd/leakcheck            Release check (Windows: admin; Linux, macOS: sudo): every connection and DNS lookup outside the VPN tunnel fails it
 internal/tunnel          In-process WireGuard + netstack, .conf parser, exit-IP check
 internal/engine          anacrolix/torrent wired to the tunnel; files, limits, removal
 internal/warp            Cloudflare WARP registration (via wgcf)

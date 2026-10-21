@@ -1,6 +1,6 @@
 // Command leakcheck verifies that nothing leaves this computer outside the
-// VPN tunnel. It's part of the release checklist (RELEASING.md). On Linux it
-// works differently (see linux.go). On Windows it must run as administrator: it turns on Windows' own logging
+// VPN tunnel. It's part of the release checklist (RELEASING.md). On Linux and
+// macOS it works differently (see linux.go and darwin.go). On Windows it must run as administrator: it turns on Windows' own logging
 // of network connections, process creation and DNS lookups for the duration,
 // then puts the previous settings back.
 //
@@ -106,13 +106,16 @@ func run() int {
 	app := flag.Bool("app", false, "launch and watch the installed app instead of running the engine")
 	exe := flag.String("exe", defaultExe(), "-app: the app to launch")
 	endpointFlag := flag.String("endpoint", "", "-app: the VPN server's WireGuard endpoint ip:port (default: read from the app's WARP or WireGuard settings)")
-	child := flag.String("child", "", "") // Linux: the engine run inside the watched cgroup (internal)
+	child := flag.String("child", "", "") // Linux, macOS: the engine run as the watched process (internal)
 	flag.Parse()
 	if runtime.GOOS == "linux" {
 		return runLinux(*secs, *selftest, *app, *exe, *endpointFlag, *child)
 	}
+	if runtime.GOOS == "darwin" {
+		return runDarwin(*secs, *selftest, *app, *exe, *endpointFlag, *child)
+	}
 	if runtime.GOOS != "windows" {
-		return fatalCode("leakcheck runs on Windows and Linux only")
+		return fatalCode("leakcheck runs on Windows, Linux and macOS only")
 	}
 	if !isAdmin() {
 		return fatalCode("run this from an administrator terminal: it needs to turn on Windows' connection auditing")
