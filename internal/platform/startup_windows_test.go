@@ -9,6 +9,13 @@ import (
 )
 
 func TestStartupWindows(t *testing.T) {
+	// Writing a sign-in (Run) entry from a test binary looks like malware
+	// adding itself to startup: Microsoft Defender's behaviour detection
+	// (Behavior:Win32/Persistence.A!ml) quarantined go.exe on a
+	// developer's PC over it. CI runs it; elsewhere, opt in.
+	if os.Getenv("CI") == "" && os.Getenv("SBT_REGISTRY_TESTS") == "" {
+		t.Skip("writes a Run entry, which antivirus can flag; set SBT_REGISTRY_TESTS=1 to run it")
+	}
 	runValue = "SharkBiteTorrentTest"
 	t.Cleanup(func() {
 		SetStartup("", false)

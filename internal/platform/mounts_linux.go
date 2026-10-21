@@ -27,7 +27,12 @@ func UnmountedDrive(path string) string {
 		return ""
 	}
 	defer f.Close()
-	path = filepath.Clean(path)
+	// Both as written and with links resolved: ~/Media can be a link to
+	// /mnt/nas.
+	paths := []string{filepath.Clean(path)}
+	if r := resolveExisting(path); r != paths[0] {
+		paths = append(paths, r)
+	}
 	best := ""
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
@@ -39,11 +44,29 @@ func UnmountedDrive(path string) string {
 		if mp == "/" || mp == "none" || mounted[mp] {
 			continue
 		}
-		if (path == mp || strings.HasPrefix(path, mp+"/")) && len(mp) > len(best) {
-			best = mp
+		for _, p := range paths {
+			if (p == mp || strings.HasPrefix(p, mp+"/")) && len(mp) > len(best) {
+				best = mp
+			}
 		}
 	}
 	return best
+}
+
+// resolveExisting resolves links in the deepest part of path that exists
+// and keeps the rest as written.
+func resolveExisting(path string) string {
+	path = filepath.Clean(path)
+	rest := ""
+	for p := path; ; p = filepath.Dir(p) {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return filepath.Join(r, rest)
+		}
+		if filepath.Dir(p) == p {
+			return path
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+	}
 }
 
 // unescapeMount undoes fstab's and mountinfo's octal escapes ("\040" for a

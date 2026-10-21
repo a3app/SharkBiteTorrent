@@ -39,6 +39,9 @@ type App struct {
 	configDir string
 	exe       string
 	markerMu  sync.Mutex // the update-download marker (updater.go)
+	// installing: an update is being installed (InstallUpdate); a second
+	// one at the same time (a double click) is refused.
+	installing atomic.Bool
 
 	mu          sync.Mutex
 	tun         *tunnel.Tunnel
@@ -945,10 +948,18 @@ func ensureDownloadDir(dir string) error {
 		return nil
 	}
 	parent := filepath.Dir(dir)
+	mkdir := os.Mkdir
 	if _, err := os.Stat(parent); err != nil {
-		return notConnected(parent + " doesn't exist")
+		// Inside the home folder a missing parent is just a folder that
+		// isn't there yet (no ~/Downloads, the default's parent, on a
+		// minimal Linux): create it. Elsewhere (a drive letter, /Volumes,
+		// /mnt) it's likely a drive that isn't connected.
+		if !insideHome(dir) {
+			return notConnected(parent + " doesn't exist")
+		}
+		mkdir = os.MkdirAll
 	}
-	if err := os.Mkdir(dir, 0o755); err != nil {
+	if err := mkdir(dir, 0o755); err != nil {
 		// A drive that's set to connect when used but can't (a NAS that's
 		// off) refuses with "operation not permitted", say.
 		var pe *fs.PathError
@@ -958,6 +969,19 @@ func ensureDownloadDir(dir string) error {
 		return notConnected("it couldn't be created (" + err.Error() + ")")
 	}
 	return nil
+}
+
+// userHome is a var so tests can use a folder of their own.
+var userHome = os.UserHomeDir
+
+// insideHome reports whether dir is in (not equal to) the user's home folder.
+func insideHome(dir string) bool {
+	home, err := userHome()
+	if err != nil || home == "" {
+		return false
+	}
+	rel, err := filepath.Rel(filepath.Clean(home), filepath.Clean(dir))
+	return err == nil && rel != "." && filepath.IsLocal(rel)
 }
 
 // recordAdded saves a torrent the engine has just been given from inside the
@@ -1103,8 +1127,11 @@ func (a *App) Remove(hash string, deleteFiles bool) error {
 		a.stopWork(hash, 10*time.Second) // a scan, .sfv check or Verify reading its files
 		err := eng.Remove(hash, deleteFiles)
 		// Forgotten before the reservation ends, so a VPN reconnect can't
-		// start it again in between.
-		a.forget(hash)
+		// start it again in between. Refused because its drive is away:
+		// it stays, untouched.
+		if !errors.Is(err, engine.ErrFolderUnavailable) {
+			a.forget(hash)
+		}
 		a.mu.Lock()
 		delete(a.removing, hash)
 		a.mu.Unlock()

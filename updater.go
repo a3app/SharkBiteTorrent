@@ -271,7 +271,15 @@ var versionPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+){1,3}(-[0-9A-Za-z.]+)?
 
 // allowDirect is as for CheckForUpdates: without it, a VPN that's down
 // returns errVPNDown instead of downloading over the normal connection.
-func (a *App) InstallUpdate(version string, allowDirect bool) error {
+func (a *App) InstallUpdate(version string, allowDirect bool) (err error) {
+	if !a.installing.CompareAndSwap(false, true) {
+		return errors.New("the update is already being installed")
+	}
+	defer func() {
+		if err != nil {
+			a.installing.Store(false) // failed: it can be tried again
+		}
+	}()
 	if !versionPattern.MatchString(version) {
 		return fmt.Errorf("not a version number: %q", version)
 	}

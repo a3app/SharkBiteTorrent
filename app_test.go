@@ -118,6 +118,10 @@ func TestAddedTorrentsNeverLegacy(t *testing.T) {
 // drive that isn't connected).
 func TestEnsureDownloadDir(t *testing.T) {
 	base := t.TempDir()
+	home := t.TempDir()
+	old := userHome
+	userHome = func() (string, error) { return home, nil }
+	t.Cleanup(func() { userHome = old })
 	if err := ensureDownloadDir(filepath.Join(base, "Torrents")); err != nil {
 		t.Fatal(err)
 	}
@@ -130,5 +134,17 @@ func TestEnsureDownloadDir(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(base, "Volumes")); !os.IsNotExist(err) {
 		t.Error("created folders above the download folder")
+	}
+	// Inside the home folder, missing parents are created (the default
+	// ~/Downloads/Torrents with no ~/Downloads).
+	def := filepath.Join(home, "Downloads", "Torrents")
+	if err := ensureDownloadDir(def); err != nil {
+		t.Fatalf("default folder without ~/Downloads: %v", err)
+	}
+	if fi, err := os.Stat(def); err != nil || !fi.IsDir() {
+		t.Error("the default folder wasn't created")
+	}
+	if insideHome(home) {
+		t.Error("the home folder itself counted as inside it")
 	}
 }

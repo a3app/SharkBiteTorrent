@@ -69,12 +69,19 @@ func applyUpdate(tarball, version, exe string) error {
 		} else if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			continue // a license that isn't here: this copy was set up without it
 		}
+		const maxFile = 300 << 20
+		if h.Size < 0 || h.Size > maxFile {
+			return fmt.Errorf("the update's %s is %d bytes, more than expected", name, h.Size)
+		}
 		tmp, err := os.CreateTemp(dir, "."+name+".update-")
 		if err != nil {
 			return err
 		}
 		got[name] = tmp.Name()
-		_, err = io.Copy(tmp, io.LimitReader(tr, 300<<20))
+		n, err := io.Copy(tmp, io.LimitReader(tr, maxFile))
+		if err == nil && n != h.Size {
+			err = fmt.Errorf("the update's %s is incomplete (%d of %d bytes)", name, n, h.Size)
+		}
 		if err == nil {
 			err = tmp.Sync()
 		}
