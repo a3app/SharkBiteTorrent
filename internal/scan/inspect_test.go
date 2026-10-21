@@ -42,3 +42,29 @@ func TestInspectBypasses(t *testing.T) {
 		t.Errorf("StripBidiControls: %q", got)
 	}
 }
+
+// A program named like a video release (or in a folder named like one) is a
+// fake film; software with ordinary names isn't flagged.
+func TestInspectVideoReleaseNames(t *testing.T) {
+	for _, files := range [][]File{
+		{{"You Can See Everything 2026.1080p. HD h264- ETHE.exe", 1283601623}}, // the real one
+		{{"Movie.2026.2160p.WEB-DL.DDP5.1/Movie.2026.2160p.WEB-DL.DDP5.1.exe", 900 << 20}},
+		{{"Show.S01E02.720p.HDTV/setup.exe", 40 << 20}},
+		{{"Film (2026) BluRay x265/Film.scr", 1 << 20}},
+		{{"Film.2026.HDCAM/Film.2026.HDCAM.msi", 1 << 20}},
+	} {
+		if w := Inspect(files); len(w) != 1 {
+			t.Errorf("%v: %d warnings %+v, want 1", files, len(w), w)
+		}
+	}
+	for _, files := range [][]File{
+		{{"VLC media player 3.0.21 x64/vlc-3.0.21-win64.exe", 40 << 20}},
+		{{"4K Video Downloader 4.33/setup.exe", 120 << 20}},
+		{{"HD Tune Pro 6.10/hdtunepro.exe", 5 << 20}},
+		{{"Some Game v1.0.1080/setup.exe", 8 << 30}}, // a version number, not a resolution
+	} {
+		if w := Inspect(files); len(w) != 0 {
+			t.Errorf("%v flagged: %+v", files, w)
+		}
+	}
+}

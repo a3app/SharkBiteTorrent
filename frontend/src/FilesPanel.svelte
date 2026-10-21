@@ -82,7 +82,12 @@
       {#if torrent.scanState === 'scanning'}
         <div class="muted">Scanning the finished files for malware…</div>
       {:else if torrent.scanState === 'clean'}
-        <div class="ok">✓ {torrent.scanEngine} found no threats.</div>
+        {#if warnings.length > 0}
+          <!-- No green tick under a warning: ClamAV passed a 1.2 GB fake-film .exe in full. -->
+          <div class="muted">{torrent.scanEngine} found no known threats, but that doesn't make the file above safe: antivirus doesn't recognise all new malware.</div>
+        {:else}
+          <div class="ok">✓ {torrent.scanEngine} found no known threats.</div>
+        {/if}
       {:else if torrent.scanState === 'threat'}
         <div class="threat">
           ⚠ {torrent.scanEngine} found: {(torrent.threats ?? []).join(', ')}. Don't open these files.
@@ -93,7 +98,7 @@
       {:else if torrent.scanState === 'toolarge'}
         <div class="caution">
           ⚠ Couldn't scan fully for malware: {tooLarge.join(', ')}.
-          {#if files.length > tooLarge.length}{torrent.scanEngine} found no threats in the other files.{/if}
+          {#if files.length > tooLarge.length}{torrent.scanEngine} found no known threats in the other files.{/if}
         </div>
         {#if torrent.canScanFully}
           <div>

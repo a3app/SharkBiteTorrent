@@ -6,6 +6,7 @@ package scan
 
 import (
 	"path"
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -43,6 +44,13 @@ var media = set(
 
 var video = set(".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".webm", ".mpg", ".mpeg", ".ts", ".flv")
 
+// videoRelease matches the words video release names carry (resolution,
+// codec, source, episode number). A program named like that is a fake
+// "movie": "You Can See Everything 2026.1080p. HD h264- ETHE.exe" was a
+// 1.2 GB Windows program that ClamAV scanned in full and passed. Ambiguous
+// words ("4K", "HD") are left out, so software isn't flagged for them.
+var videoRelease = regexp.MustCompile(`(?i)(^|[^a-z0-9])(480p|576p|720p|1080[pi]|1440p|2160p|x26[45]|h\.?26[45]|hevc|xvid|divx|web-?dl|web-?rip|blu-?ray|bdrip|brrip|hdrip|dvdrip|dvdscr|hdtv|hdcam|camrip|telesync|s\d{1,2}e\d{1,3})($|[^a-z0-9])`)
+
 var docLike = set(".pdf", ".doc", ".docx", ".txt", ".jpg", ".jpeg", ".png")
 
 func set(xs ...string) map[string]bool {
@@ -77,8 +85,9 @@ func StripBidiControls(s string) string {
 func isBidiControl(r rune) bool { return unicode.Is(unicode.Bidi_Control, r) }
 
 // Inspect flags the classic torrent malware tricks: a program disguised as
-// a video ("movie.mp4.exe"), a program or script shipped inside what is
-// otherwise a video/music torrent, and shortcut (.lnk) files. Software
+// a video ("movie.mp4.exe", or one named like a video release: "Film
+// 1080p x264.exe"), a program or script shipped inside what is otherwise a
+// video/music torrent, and shortcut (.lnk) files. Software
 // torrents that are mostly programs aren't flagged, since that's expected.
 func Inspect(files []File) []Warning {
 	var out []Warning
@@ -113,6 +122,12 @@ func Inspect(files []File) []Warning {
 			out = append(out, Warning{f.Path, "A Windows shortcut. Shortcuts in downloads are a common way to run hidden commands."})
 		case mostlyMedia || hasVideo:
 			out = append(out, Warning{f.Path, "A program or script inside a video/music torrent. Media files never need one to play."})
+		default:
+			// The torrent's folder is part of the path, so a program in a
+			// folder named like a film counts too.
+			if m := videoRelease.FindStringSubmatch(f.Path); m != nil {
+				out = append(out, Warning{f.Path, "A program named like a video release (\"" + m[2] + "\"). Real videos are files like .mkv or .mp4: opening this would run a program, not play a film."})
+			}
 		}
 	}
 	return out
