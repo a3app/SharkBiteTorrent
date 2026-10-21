@@ -78,7 +78,7 @@ Download the latest build from the [**Releases**](../../releases) page.
 | Windows (portable) | `SharkBiteTorrent.exe` | Run from anywhere. Use Settings → *Open magnet links…* to register. |
 | **Arch / CachyOS** | `sharkbitetorrent-*.pkg.tar.zst` | `sudo pacman -U sharkbitetorrent-*.pkg.tar.zst` |
 | Other Linux | `SharkBiteTorrent-*-linux-x86_64.tar.gz` | Needs GTK 3 and WebKitGTK 4.1. |
-| **macOS** (Intel + Apple Silicon) | `SharkBiteTorrent-macos-universal.zip` | Unsigned: the first time, macOS blocks it. Go to **System Settings → Privacy & Security → Open Anyway**. |
+| **macOS 13 or later** (Intel + Apple Silicon) | `SharkBiteTorrent-macos-universal.zip` | Unsigned: the first time, macOS blocks it. Go to **System Settings → Privacy & Security → Open Anyway**. |
 
 > **Note:** On Windows 11, the first magnet link you click after installing shows a one-time *"Pick an app"* prompt. Choose Shark BiteTorrent. Windows requires you to confirm this yourself; no installer can skip it.
 
@@ -223,9 +223,10 @@ xcode-select --install
 brew install go node
 ```
 
-Build a universal app (Intel + Apple Silicon):
+Build a universal app (Intel + Apple Silicon) for macOS 13 or later (the flags make all of it run there, not only on your own macOS version):
 
 ```sh
+export CGO_CFLAGS="-mmacosx-version-min=13.0" CGO_LDFLAGS="-mmacosx-version-min=13.0"
 wails build -trimpath -ldflags "-s -w" -platform darwin/universal
 codesign --force --deep --sign - build/bin/*.app   # ad-hoc signature so it launches
 # -> build/bin/SharkBiteTorrent.app

@@ -196,7 +196,15 @@ jobs:
         run: |
           go install github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}
           export PATH="$PATH:$(go env GOPATH)/bin"
+          # macOS 13 is the oldest Go supports. Without these, the app's
+          # Objective-C parts are built for the runner's own macOS, and the
+          # app wouldn't start on older ones whatever Info.plist says.
+          export CGO_CFLAGS="-mmacosx-version-min=13.0" CGO_LDFLAGS="-mmacosx-version-min=13.0"
           wails build -clean -trimpath -ldflags "-s -w" -platform darwin/universal
+          for arch in arm64 x86_64; do
+            minos=$(vtool -arch $arch -show-build build/bin/*.app/Contents/MacOS/* | awk '/minos/ {print $2}' | sort -u)
+            [ "$minos" = "13.0" ] || { echo "the $arch build needs macOS $minos, not 13.0"; exit 1; }
+          done
           for app in build/bin/*.app; do cp LICENSE THIRD_PARTY_LICENSES.txt "$app/Contents/Resources/"; done
           # Unsigned builds still need an ad-hoc signature to launch on Apple Silicon.
           codesign --force --deep --sign - "build/bin/Shark BiteTorrent.app" || codesign --force --deep --sign - build/bin/*.app
