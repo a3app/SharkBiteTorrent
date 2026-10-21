@@ -24,6 +24,9 @@ jobs:
         with: { go-version-file: go.mod }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 24 }
+      - name: Download Go modules (retried; see the script)
+        shell: bash
+        run: scripts/go-download.sh
 
       - name: Frontend (build, type check, npm audit)
         working-directory: frontend
@@ -60,6 +63,9 @@ jobs:
         with: { go-version-file: go.mod }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 24 }
+      - name: Download Go modules (retried; see the script)
+        shell: bash
+        run: scripts/go-download.sh
       - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config
       - name: Frontend build (the Go code embeds it)
         working-directory: frontend
@@ -78,6 +84,9 @@ jobs:
         with: { go-version-file: go.mod }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 24 }
+      - name: Download Go modules (retried; see the script)
+        shell: bash
+        run: scripts/go-download.sh
       - name: Frontend build (the Go code embeds it)
         working-directory: frontend
         run: npm ci --ignore-scripts && npm run build
