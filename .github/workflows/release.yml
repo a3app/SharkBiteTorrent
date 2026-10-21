@@ -53,6 +53,9 @@ jobs:
           wails build -clean -trimpath -ldflags "-s -w" -nsis -installscope user
           ls -la build/bin
           go run scripts/check-pe-imports.go build/bin/SharkBiteTorrent.exe
+          # Certificates are checked in Go, not by the OS (roots.go): make sure
+          # the setting made it into the program that ships.
+          go version -m build/bin/SharkBiteTorrent.exe | grep -q 'x509usefallbackroots=1' || { echo "x509usefallbackroots=1 isn't in the built program"; exit 1; }
       - name: Test
         # After the build: the Go code embeds frontend/dist, which the build creates.
         run: go test ./...
@@ -92,6 +95,9 @@ jobs:
           export PATH="$PATH:$(go env GOPATH)/bin"
           wails build -clean -trimpath -ldflags "-s -w" -tags webkit2_41
           go vet -tags webkit2_41 ./...   # after the build: needs frontend/dist
+          # Certificates are checked in Go, not by the OS (roots.go): make sure
+          # the setting made it into the program that ships.
+          go version -m build/bin/SharkBiteTorrent | grep -q 'x509usefallbackroots=1' || { echo "x509usefallbackroots=1 isn't in the built program"; exit 1; }
       - name: Package tarball
         run: |
           v=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)
@@ -205,6 +211,9 @@ jobs:
             minos=$(vtool -arch $arch -show-build build/bin/*.app/Contents/MacOS/* | awk '/minos/ {print $2}' | sort -u)
             [ "$minos" = "13.0" ] || { echo "the $arch build needs macOS $minos, not 13.0"; exit 1; }
           done
+          # Certificates are checked in Go, not by the OS (roots.go): make sure
+          # the setting made it into the program that ships.
+          go version -m build/bin/*.app/Contents/MacOS/SharkBiteTorrent | grep -q 'x509usefallbackroots=1' || { echo "x509usefallbackroots=1 isn't in the built program"; exit 1; }
           for app in build/bin/*.app; do cp LICENSE THIRD_PARTY_LICENSES.txt "$app/Contents/Resources/"; done
           # Unsigned builds still need an ad-hoc signature to launch on Apple Silicon.
           codesign --force --deep --sign - "build/bin/Shark BiteTorrent.app" || codesign --force --deep --sign - build/bin/*.app
@@ -223,11 +232,11 @@ jobs:
     strategy:
       matrix:
         include:
-          - { os: windows-2025, cgo: "0" } # release builds for Windows are pure Go
-          - { os: ubuntu-22.04, cgo: "1" }
-          - { os: macos-26, cgo: "1" }
+          - { os: windows-2025, cgo: "0", goflags: "" } # release builds for Windows are pure Go
+          - { os: ubuntu-22.04, cgo: "1", goflags: "-tags=webkit2_41" } # as the Linux release is built
+          - { os: macos-26, cgo: "1", goflags: "" }
     runs-on: ${{ matrix.os }}
-    env: { CGO_ENABLED: "${{ matrix.cgo }}" }
+    env: { CGO_ENABLED: "${{ matrix.cgo }}", GOFLAGS: "${{ matrix.goflags }}" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
@@ -235,6 +244,9 @@ jobs:
         with: { go-version-file: go.mod, cache: false }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: 24 }
+      - name: GTK and WebKitGTK headers (the Linux code is cgo)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config
       - name: Download Go modules (retried; see the script)
         shell: bash
         run: scripts/go-download.sh

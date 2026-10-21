@@ -348,7 +348,7 @@ func runDarwin(secs int, selftest, app bool, exe, endpointFlag, childWarp string
 		return 1
 	}
 	if app {
-		if bad := watched.unresolved(); len(bad) > 0 {
+		if bad := watched.unresolved(res.sentOffMachine); len(bad) > 0 {
 			fmt.Println("FAIL: launchctl couldn't say which app these WebKit processes work for, so their traffic may not have been covered:", strings.Join(bad, ", "))
 			return 1
 		}
@@ -372,10 +372,11 @@ func runDarwin(secs int, selftest, app bool, exe, endpointFlag, childWarp string
 		return fatalCode("no WireGuard handshake to a VPN server the app recorded was seen (did it connect?); pass -endpoint ip:port")
 	}
 	local := watched.localAddrs()
-	windows := res.connectWindows(endpoints)
+	res.claimUnseenChildren(watched, local)
+	windows := res.connectWindows(endpoints, watched)
 	flows, un := res.forWatched(watched, local, mdnsPIDs(reqs), root, windows)
-	fmt.Printf("untagged packets: %d claimed through their connection or port; unclaimed: %d ICMP (the kernel's), %d DNS (judged from the log), %d TCP/UDP\n",
-		un.rescued, un.icmp, un.dns, un.unclaimed)
+	fmt.Printf("untagged packets: %d claimed through their connection or port; unclaimed: %d ICMP (the kernel's), %d DNS (judged from the log), %d network-drive (the kernel's, home network), %d TCP/UDP\n",
+		un.rescued, un.icmp, un.dns, un.fileSharing, un.unclaimed)
 	res.showSystemActivity(reqs)
 	var total int64
 	for _, f := range flows {
@@ -547,11 +548,14 @@ type macWatch struct {
 	ports     map[string]int  // "tcp:50000", "udp:58017": ports watched processes had open → PID
 	addrs     map[string]bool // this computer's addresses, seen during the run
 	webkitAll map[int]string  // every WebKit process seen, to report unresolved ones
+	gone      map[int]bool    // WebKit processes that exited before launchctl answered
+	seen      map[int]bool    // every process seen running during the run
 }
 
 func newMacWatch(root int) *macWatch {
 	return &macWatch{pids: map[int]bool{root: true}, asked: map[int]bool{}, failures: map[int]int{},
-		webkit: map[int]string{}, ports: map[string]int{}, addrs: localAddrs(), webkitAll: map[int]string{}}
+		webkit: map[int]string{}, ports: map[string]int{}, addrs: localAddrs(), webkitAll: map[int]string{},
+		gone: map[int]bool{}, seen: map[int]bool{}}
 }
 
 func (w *macWatch) add(pid int) {
@@ -606,18 +610,27 @@ func (w *macWatch) hasNetworkingHelper() bool {
 	return false
 }
 
-// unresolved is the WebKit processes launchctl never answered for.
-func (w *macWatch) unresolved() []string {
+// unresolved is the WebKit processes launchctl never answered for that may
+// have been the app's and done something: still running, or gone after
+// sending packets (sent reports that).
+func (w *macWatch) unresolved(sent func(pid int) bool) []string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	var out []string
 	for p, name := range w.webkitAll {
-		if !w.asked[p] {
+		if !w.asked[p] && (!w.gone[p] || sent(p)) {
 			out = append(out, fmt.Sprintf("%s (PID %d)", filepath.Base(name), p))
 		}
 	}
 	sort.Strings(out)
 	return out
+}
+
+// everSeen reports whether pid was seen running during the run.
+func (w *macWatch) everSeen(pid int) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.seen[pid]
 }
 
 var responsiblePID = regexp.MustCompile(`(?m)^\s*responsible pid = (\d+)`)
@@ -642,6 +655,9 @@ func (w *macWatch) refresh() {
 		ppid, _ := strconv.Atoi(f[1])
 		children[ppid] = append(children[ppid], pid)
 		alive[pid] = true
+		w.mu.Lock()
+		w.seen[pid] = true
+		w.mu.Unlock()
 		if name := strings.Join(f[2:], " "); strings.Contains(name, "com.apple.WebKit.") {
 			webkit[pid] = name
 		}
@@ -661,7 +677,7 @@ func (w *macWatch) refresh() {
 		w.mu.Lock()
 		if m == nil {
 			if !alive[p] || err != nil && !processExists(p) {
-				delete(w.webkitAll, p) // it exited before it could be asked: nothing it did was missed by this
+				w.gone[p], w.failures[p] = true, 5 // exited first: whose it was can't be asked now
 			} else {
 				w.failures[p]++ // asked again next time
 			}
@@ -853,9 +869,20 @@ type pktapKey struct {
 // handshake is a WireGuard handshake initiation sent: when, and by whom
 // (Tailscale sends them too, to its own peers).
 type handshake struct {
-	at    time.Time
+	at time.Time
+	sender
+}
+
+// sender is who sent a packet: its tag, and its source port (for untagged
+// ones, matched against the ports watched processes had open).
+type sender struct {
 	proc  int
 	sport int
+}
+
+// ours reports whether a watched process sent it.
+func (s sender) ours(w *macWatch) bool {
+	return w.has(s.proc) || (s.proc == 0 || s.proc == kernelPID) && w.portPID("udp", s.sport) != 0
 }
 
 // pktapStat is how many packets a key had, and when the first and last were.
@@ -872,9 +899,10 @@ type pktapResult struct {
 	queryNames       map[string]string   // server|id|client port → name, every DNS query seen
 	answers          map[string][]string // the same key → addresses
 	// handshakes: the times WireGuard handshake initiations (148-byte UDP)
-	// were sent to each ip:port; tunnelSecs: the seconds UDP was sent there.
+	// were sent to each ip:port; tunnelSecs: the seconds UDP was sent there,
+	// by each sender.
 	handshakes     map[string][]handshake
-	tunnelSecs     map[string]map[int64]bool
+	tunnelSecs     map[string]map[sender]map[int64]bool
 	unparsed       int64 // IP packets whose line couldn't be read
 	unparsedSample []string
 	day            time.Time // the run's date, for tcpdump's times of day
@@ -883,7 +911,7 @@ type pktapResult struct {
 func newPktapResult() *pktapResult {
 	now := time.Now()
 	return &pktapResult{counts: map[pktapKey]*pktapStat{}, procNames: map[int]string{}, queryNames: map[string]string{},
-		answers: map[string][]string{}, handshakes: map[string][]handshake{}, tunnelSecs: map[string]map[int64]bool{},
+		answers: map[string][]string{}, handshakes: map[string][]handshake{}, tunnelSecs: map[string]map[sender]map[int64]bool{},
 		day: time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)}
 }
 
@@ -933,7 +961,7 @@ const kernelPID = -1
 var (
 	// 00:59:12.522988 (proc mDNSResponder:656, eproc dscacheutil:17455, out) IP 100.72.141.16.53153 > 100.100.100.100.53: 48106+ AAAA? example.com. (46)
 	pktapLine = regexp.MustCompile(`^(\d\d:\d\d:\d\d\.\d+) \((.*?)\) (IP6?) (\S+) > (\S+?): (.*)$`)
-	ipLine    = regexp.MustCompile(`^\S+ \(.*?\) IP6? `)
+	ipLine    = regexp.MustCompile(`^\S+ (?:\(.*?\) )?IP6? `)
 	procRe    = regexp.MustCompile(`(?:^|, )proc (.*?):(\d+)`)
 	eprocRe   = regexp.MustCompile(`(?:^|, )eproc (.*?):(\d+)`)
 	dirRe     = regexp.MustCompile(`(?:^|, )(in|out)$`)                                                   // "(in)", "(proc x:1, out)"
@@ -999,12 +1027,16 @@ func (r *pktapResult) add(line string) {
 	if k.proto == "udp" && k.dir != "in" {
 		to := net.JoinHostPort(k.dst, strconv.Itoa(k.dport))
 		if strings.HasSuffix(rest, "UDP, length 148") {
-			r.handshakes[to] = append(r.handshakes[to], handshake{at, k.proc, k.sport})
+			r.handshakes[to] = append(r.handshakes[to], handshake{at, sender{k.proc, k.sport}})
 		}
+		who := sender{k.proc, k.sport}
 		if r.tunnelSecs[to] == nil {
-			r.tunnelSecs[to] = map[int64]bool{}
+			r.tunnelSecs[to] = map[sender]map[int64]bool{}
 		}
-		r.tunnelSecs[to][at.Unix()] = true
+		if r.tunnelSecs[to][who] == nil {
+			r.tunnelSecs[to][who] = map[int64]bool{}
+		}
+		r.tunnelSecs[to][who][at.Unix()] = true
 	}
 	if q := dnsQ.FindStringSubmatch(rest); q != nil && k.dport == 53 {
 		r.queryNames[k.dst+"|"+q[1]+"|"+strconv.Itoa(k.sport)] = strings.ToLower(strings.TrimSuffix(q[3], "."))
@@ -1048,7 +1080,7 @@ type window struct{ from, to time.Time }
 // handshake initiation to ep (tagged with it, or untagged from its port).
 func (r *pktapResult) handshakeFrom(ep string, w *macWatch) bool {
 	for _, h := range r.handshakes[ep] {
-		if w.has(h.proc) || (h.proc == 0 || h.proc == kernelPID) && w.portPID("udp", h.sport) != 0 {
+		if h.ours(w) {
 			return true
 		}
 	}
@@ -1056,18 +1088,28 @@ func (r *pktapResult) handshakeFrom(ep string, w *macWatch) bool {
 }
 
 // connectWindows are the times the app may make a VPN account's documented
-// direct calls: from 90 s before each handshake that starts a session (one
-// with no tunnel traffic to that server in the 30 s before; later ones are
-// WireGuard rekeying) to 15 s after.
-func (r *pktapResult) connectWindows(endpoints map[string]bool) []window {
+// direct calls: from 90 s before each handshake of its own that starts a
+// session (one with no tunnel traffic of its own to that server in the 30 s
+// before; later ones are WireGuard rekeying) to 15 s after. Another
+// WireGuard client's handshakes to the same server (Cloudflare's own WARP
+// app) don't open one.
+func (r *pktapResult) connectWindows(endpoints map[string]bool, w *macWatch) []window {
 	var out []window
 	for ep := range endpoints {
 		for _, h := range r.handshakes[ep] {
+			if !h.ours(w) {
+				continue
+			}
 			t := h.at
 			busy := false
-			for s := t.Unix() - 30; s < t.Unix(); s++ {
-				if r.tunnelSecs[ep][s] {
-					busy = true
+			for who, secs := range r.tunnelSecs[ep] {
+				if !who.ours(w) {
+					continue
+				}
+				for s := t.Unix() - 30; s < t.Unix(); s++ {
+					if secs[s] {
+						busy = true
+					}
 				}
 			}
 			if !busy {
@@ -1134,10 +1176,15 @@ type untagged struct {
 	unclaimed int64 // untagged TCP/UDP (not DNS) to another computer that nothing claims
 	flows     []string
 	// Untagged and unclaimed too, but not what a leak by the app would be:
-	// ICMP is sent by the kernel (neighbour discovery, errors), and DNS is
-	// judged from mDNSResponder's log.
-	icmp, dns int64
+	// ICMP is sent by the kernel (neighbour discovery, errors), DNS is
+	// judged from mDNSResponder's log, and the kernel's file-sharing clients
+	// talk to network drives on the home network.
+	icmp, dns, fileSharing int64
 }
+
+// kernelFileSharing are the ports of the network drives the kernel itself
+// mounts (SMB, NetBIOS, NFS, AFP).
+var kernelFileSharing = map[int]bool{445: true, 139: true, 2049: true, 548: true}
 
 // forWatched is the packets the watched processes sent as flows: packets
 // tagged with them (as proc or eproc), and untagged or kernel-tagged
@@ -1151,8 +1198,8 @@ func (r *pktapResult) forWatched(w *macWatch, local map[string]bool, mdns map[in
 	owner := map[connKey]int{}
 	tagged := map[connKey]bool{}
 	for k := range r.counts {
-		if k.proc != 0 || k.eproc != 0 {
-			tagged[connOf(k)] = true
+		if k.proc != 0 && k.proc != kernelPID || k.eproc != 0 {
+			tagged[connOf(k)] = true // by a process (the kernel's tag says nothing about whose it is)
 		}
 		if !mdns[k.proc] && (w.has(k.proc) || w.has(k.eproc)) {
 			c := connOf(k)
@@ -1181,12 +1228,14 @@ func (r *pktapResult) forWatched(w *macWatch, local map[string]bool, mdns map[in
 		case untaggedish && (k.proto == "tcp" || k.proto == "udp") && w.portPID(k.proto, k.sport) != 0:
 			pid = w.portPID(k.proto, k.sport)
 			u.rescued += s.n
-		case k.proc == 0 && k.eproc == 0 && !tagged[c] && !local[k.dst] && !multicast(k.dst):
+		case untaggedish && !tagged[c] && !local[k.dst] && !multicast(k.dst):
 			switch {
 			case k.proto == "icmp" || k.proto == "ipv6-icmp":
 				u.icmp += s.n
 			case k.dport == 53:
 				u.dns += s.n
+			case k.proc == kernelPID && k.proto == "tcp" && kernelFileSharing[k.dport] && privateAddr(net.JoinHostPort(k.dst, "0")):
+				u.fileSharing += s.n // the kernel's own SMB/NFS/AFP client: a NAS
 			default:
 				u.unclaimed += s.n
 				u.flows = append(u.flows, fmt.Sprintf("%s %s > %s (%d packets)", strings.ToUpper(k.proto),
@@ -1207,6 +1256,44 @@ func (r *pktapResult) forWatched(w *macWatch, local map[string]bool, mdns map[in
 	}
 	sort.Strings(u.flows)
 	return flows, u
+}
+
+// appChildren are the programs the app may start on macOS (open for Finder
+// and links, clamscan, ditto/plutil/codesign/sh for updating). A process
+// is only added to the watched ones once a second; one of these that
+// started, sent and exited in between counts as the app's.
+var appChildren = map[string]bool{"open": true, "clamscan": true, "ditto": true, "plutil": true, "codesign": true, "sh": true}
+
+// sentOffMachine reports whether pid sent packets to another computer.
+func (r *pktapResult) sentOffMachine(pid int) bool {
+	for k := range r.counts {
+		if k.dir != "in" && (k.proc == pid || k.eproc == pid) && !net.ParseIP(k.dst).IsLoopback() {
+			return true
+		}
+	}
+	return false
+}
+
+// claimUnseenChildren handles processes pktap tagged that sent packets to
+// another computer but were never seen running (they lived less than a
+// second): ones named like a program the app starts are watched; the rest,
+// which may be any program's, are listed.
+func (r *pktapResult) claimUnseenChildren(w *macWatch, local map[string]bool) {
+	unseen := map[int]int64{}
+	for k, s := range r.counts {
+		if k.proc > 0 && k.dir != "in" && !w.has(k.proc) && !w.everSeen(k.proc) && !local[k.dst] {
+			unseen[k.proc] += s.n
+		}
+	}
+	for pid, n := range unseen {
+		name := r.procNames[pid]
+		if appChildren[name] {
+			w.add(pid)
+			fmt.Printf("note: %s (PID %d) wasn't seen running, but the app starts programs of that name, so its %d packets count as the app's\n", name, pid, n)
+		} else {
+			fmt.Printf("note: %s (PID %d) sent %d packets off this computer and wasn't seen running (it may be any program's)\n", name, pid, n)
+		}
+	}
 }
 
 // watchedPID is which of a packet's tags is the watched process.
@@ -1292,7 +1379,9 @@ func parseMDNSLine(line string) (mdnsRequest, bool) {
 	} else if n := mdnsName.FindStringSubmatch(m[2]); n != nil {
 		r.hash = strings.ToLower(strings.TrimSuffix(n[1], "."))
 	} else {
-		return mdnsRequest{}, false
+		// A request whose name this check can't read: recorded anyway, so a
+		// watched client's counts (as a name the check doesn't know).
+		r.hash = "unreadable request: " + strings.TrimSpace(m[2])
 	}
 	return r, true
 }

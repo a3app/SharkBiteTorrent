@@ -27,7 +27,8 @@ import (
 
 type dialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 
-// trackerRoots verifies trackers' certificates; nil means the system's.
+// trackerRoots verifies trackers' certificates; nil means the roots built
+// into the app (roots.go in package main: Go's own checks, not the OS's).
 // A var so tests can trust their own server.
 var trackerRoots *x509.CertPool
 

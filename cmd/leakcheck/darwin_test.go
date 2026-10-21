@@ -76,8 +76,9 @@ func TestPktapParse(t *testing.T) {
 		t.Errorf("process names: %v", r.procNames)
 	}
 	r.add("02:00:00.000010 (proc x:1, out) IP 192.168.4.51.1 > weird")
-	if r.unparsed != 1 {
-		t.Error("an IP line that couldn't be read wasn't counted")
+	r.add("02:00:00.000011 IP 192.168.4.51.1 > also weird") // no metadata
+	if r.unparsed != 2 {
+		t.Errorf("IP lines that couldn't be read: %d counted, want 2", r.unparsed)
 	}
 }
 
@@ -119,6 +120,11 @@ func TestParseMDNSLine(t *testing.T) {
 	if !ok || r.hash != "example.com" || r.client != 5 {
 		t.Errorf("parsed %+v %v", r, ok)
 	}
+	// A request whose name can't be read still counts.
+	r, ok = parseMDNSLine(`2026-10-21 00:59:24.799 Df mDNSResponder[656:145d] [com.apple.mDNSResponder:Default] [R9] DNSServiceBrowse START -- regtype: <private>, domain: <private>, client pid: 7 (y)`)
+	if !ok || r.client != 7 || !strings.HasPrefix(r.hash, "unreadable request: ") {
+		t.Errorf("unreadable request: %+v %v", r, ok)
+	}
 	if _, ok := parseMDNSLine("Filtering the log data using \"process == …\""); ok {
 		t.Error("parsed a non-request line")
 	}
@@ -156,16 +162,18 @@ func TestDarwinVerdictRules(t *testing.T) {
 	if !r.handshakeFrom("212.56.53.55:1337", w) || r.handshakeFrom("198.51.100.7:41641", w) {
 		t.Error("handshakes weren't credited to the right process (Tailscale's aren't the app's)")
 	}
-	windows := r.connectWindows(endpoints)
+	windows := r.connectWindows(endpoints, w)
 	if len(windows) != 1 {
 		t.Fatalf("connect windows: %v", windows)
 	}
 	flows, un := r.forWatched(w, local, map[int]bool{656: true}, 16734, windows)
 	// The planted-style connection (untagged SYN, reply tagged with the
 	// app) and the app's untagged UDP from a port it had open are claimed;
-	// untagged traffic nobody claims is listed (the UDP to .9), DNS and ICMP
-	// counted apart; the kernel's own SMB and SYN aren't anyone's leak.
-	if un.rescued != 2 || un.dns != 2 || un.icmp != 1 || un.unclaimed != 1 || len(un.flows) != 1 || !strings.Contains(un.flows[0], "203.0.113.9:6881") {
+	// untagged or kernel-tagged traffic nobody claims is listed (the UDP to
+	// .9, the kernel's SYN to .11); DNS, ICMP and the kernel's SMB to the
+	// NAS are counted apart.
+	if un.rescued != 2 || un.dns != 2 || un.icmp != 1 || un.fileSharing != 1 || un.unclaimed != 2 || len(un.flows) != 2 ||
+		!strings.Contains(un.flows[0], "203.0.113.11:80") || !strings.Contains(un.flows[1], "203.0.113.9:6881") {
 		t.Errorf("untagged: %+v", un)
 	}
 
@@ -238,5 +246,45 @@ func TestControlsMissing(t *testing.T) {
 	}
 	if m := c.missing(r, reqs, 43); len(m) != 3 {
 		t.Errorf("another process's traffic counted as the controls: %v", m)
+	}
+}
+
+// Another WireGuard client's handshake to the same server doesn't open a
+// connecting window; the app's does.
+func TestConnectWindowsOnlyTheApps(t *testing.T) {
+	r := newPktapResult()
+	r.day = time.Now().Add(-6 * time.Hour)
+	r.day = time.Date(r.day.Year(), r.day.Month(), r.day.Day(), 0, 0, 0, 0, time.Local)
+	r.add("01:00:00.000000 (proc Cloudflare WARP:900, out) IP 192.168.4.51.40000 > 162.159.192.5.2408: UDP, length 148")
+	w := newMacWatch(16734)
+	ep := map[string]bool{"162.159.192.5:2408": true}
+	if ws := r.connectWindows(ep, w); len(ws) != 0 || r.handshakeFrom("162.159.192.5:2408", w) {
+		t.Errorf("another client's handshake counted: %v", ws)
+	}
+	r.add("01:05:00.000000 (proc SharkBiteTorrent:16734, out) IP 192.168.4.51.40001 > 162.159.192.5.2408: UDP, length 148")
+	if ws := r.connectWindows(ep, w); len(ws) != 1 {
+		t.Errorf("the app's handshake didn't open a window: %v", ws)
+	}
+}
+
+// A process that sent packets off this computer but was never seen running
+// is the app's if it's named like a program the app starts; a WebKit
+// process that exited before launchctl answered is reported if it sent any.
+func TestUnseenProcesses(t *testing.T) {
+	r := newPktapResult()
+	r.add("01:00:00.000000 (proc open:777, out) IP 192.168.4.51.40000 > 93.184.216.34.443: Flags [S], seq 1, win 65535, length 0")
+	r.add("01:00:00.000001 (proc somebody:778, out) IP 192.168.4.51.40001 > 93.184.216.34.443: Flags [S], seq 1, win 65535, length 0")
+	r.add("01:00:00.000002 (proc com.apple.WebKit.Networking:779, out) IP 192.168.4.51.40002 > 93.184.216.34.443: Flags [S], seq 1, win 65535, length 0")
+	w := newMacWatch(16734)
+	w.seen[16734] = true
+	r.claimUnseenChildren(w, map[string]bool{"192.168.4.51": true})
+	if !w.has(777) || w.has(778) {
+		t.Errorf("open should be watched, the other not: %v", w.pids)
+	}
+	w.webkitAll[779], w.gone[779] = "com.apple.WebKit.Networking", true
+	w.webkitAll[780], w.gone[780] = "com.apple.WebKit.GPU", true // exited, sent nothing
+	w.webkitAll[781] = "com.apple.WebKit.WebContent"             // still running, never answered for
+	if got := w.unresolved(r.sentOffMachine); len(got) != 2 || !strings.Contains(strings.Join(got, " "), "779") || !strings.Contains(strings.Join(got, " "), "781") {
+		t.Errorf("unresolved: %v", got)
 	}
 }
