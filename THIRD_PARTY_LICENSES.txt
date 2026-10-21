@@ -7682,7 +7682,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ================================================================================
-golang.org/x/crypto  (LICENSE)
+golang.org/x/crypto  (LICENSE) - also golang.org/x/crypto/x509roots/fallback, under the same license: its trusted root certificates are those of Mozilla's CA Certificate Program
 ================================================================================
 Copyright 2009 The Go Authors.
 

@@ -175,15 +175,30 @@ func (a *App) isShuttingDown() bool {
 	return a.quitting || a.shuttingDown
 }
 
+// shutdownLimit bounds quitting. Closing the engine writes out pieces held
+// in memory, and on a stalled network drive closing a file can hang with no
+// limit of its own. Pieces not written by then are checked and downloaded
+// again at the next start, as after a crash.
+const shutdownLimit = 40 * time.Second
+
 func (a *App) shutdown(ctx context.Context) {
 	a.mu.Lock()
 	a.shuttingDown = true // a Reconnect in progress must not start anything new
 	a.mu.Unlock()
-	a.stopProxy()
-	a.remoteOpMu.Lock()
-	a.stopRemote()
-	a.remoteOpMu.Unlock()
-	a.disconnect()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.stopProxy()
+		a.remoteOpMu.Lock()
+		a.stopRemote()
+		a.remoteOpMu.Unlock()
+		a.disconnect()
+	}()
+	select {
+	case <-done:
+	case <-time.After(shutdownLimit):
+		runtime.LogWarning(ctx, "quitting: saving downloads took too long; the rest is checked at the next start")
+	}
 	quitTray()
 }
 
@@ -192,9 +207,10 @@ func (a *App) beforeClose(ctx context.Context) bool {
 	a.mu.Lock()
 	hide := !hideOnClose && a.settings.CloseToTray && !a.quitting
 	a.mu.Unlock()
-	if hide {
-		runtime.WindowHide(ctx)
-	}
+	// To the tray; or quitting, where saving what's downloaded can take a
+	// while (a busy network drive), so the window goes now rather than
+	// seeming frozen.
+	runtime.WindowHide(ctx)
 	return hide
 }
 
