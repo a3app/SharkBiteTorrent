@@ -789,7 +789,7 @@ func (a *App) remoteHandler(rs *remoteServer) http.Handler {
 		case "pause":
 			return a.Pause(hash)
 		case "resume":
-			return a.Resume(hash)
+			return a.resumeRemote(hash) // never accepts warnings: the phone doesn't show them
 		case "remove":
 			return a.Remove(hash, r.URL.Query().Get("files") == "1")
 		}

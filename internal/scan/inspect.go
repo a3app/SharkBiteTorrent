@@ -14,6 +14,10 @@ import (
 type File struct {
 	Path string // as listed in the torrent, "/"-separated
 	Size int64
+	// Top is the torrent's name when it's a folder of files (multi-file
+	// torrents' paths don't include it): a program in a folder named like
+	// a film is as suspicious as one named like a film.
+	Top string
 }
 
 // Warning is a reason to be careful with a torrent, from its file list alone.
@@ -44,12 +48,63 @@ var media = set(
 
 var video = set(".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".webm", ".mpg", ".mpeg", ".ts", ".flv")
 
-// videoRelease matches the words video release names carry (resolution,
-// codec, source, episode number). A program named like that is a fake
-// "movie": "You Can See Everything 2026.1080p. HD h264- ETHE.exe" was a
-// 1.2 GB Windows program that ClamAV scanned in full and passed. Ambiguous
-// words ("4K", "HD") are left out, so software isn't flagged for them.
-var videoRelease = regexp.MustCompile(`(?i)(^|[^a-z0-9])(480p|576p|720p|1080[pi]|1440p|2160p|x26[45]|h\.?26[45]|hevc|xvid|divx|web-?dl|web-?rip|blu-?ray|bdrip|brrip|hdrip|dvdrip|dvdscr|hdtv|hdcam|camrip|telesync|s\d{1,2}e\d{1,3})($|[^a-z0-9])`)
+// releaseWord finds the words video release names carry. A program named
+// like that is a fake "movie": "You Can See Everything 2026.1080p. HD
+// h264- ETHE.exe" was a 1.2 GB Windows program that ClamAV scanned in full
+// and passed. One strong word is enough (a resolution, a rip source, a
+// release group, an episode number); weak ones (a codec, a format, 4K) need
+// a second, since software is named after them too ("x265.exe", "4K Video
+// Downloader", a "BluRay ripper", an "HEVC" codec pack).
+func releaseWord(words []string) func(string) string {
+	var res []*regexp.Regexp
+	for _, w := range words {
+		res = append(res, regexp.MustCompile(`(?i)(^|[^a-z0-9])(`+w+`)($|[^a-z0-9])`))
+	}
+	return func(s string) string {
+		for _, re := range res {
+			if m := re.FindStringSubmatch(s); m != nil {
+				return m[2]
+			}
+		}
+		return ""
+	}
+}
+
+var (
+	strongRelease = releaseWord([]string{`480p`, `576p`, `720p`, `1080[pi]`, `1440p`, `2160p`,
+		`web-?dl`, `web-?rip`, `bdrip`, `brrip`, `bdremux`, `remux`, `hdrip`, `dvdrip`, `dvdscr`,
+		`hdtv`, `hdcam`, `camrip`, `telesync`, `yts`, `yify`, `rarbg`, `s\d{1,2}e\d{1,3}`})
+	weakRelease = []func(string) string{
+		releaseWord([]string{`x26[45]`, `h\.?26[45]`, `hevc`, `xvid`, `divx`, `av1`}),
+		releaseWord([]string{`blu-?ray`}),
+		releaseWord([]string{`hdr10\+?`, `hdr`, `dolby ?vision`, `dv`}),
+		releaseWord([]string{`4k`, `uhd`, `fullhd`}),
+		releaseWord([]string{`10bit`}),
+		releaseWord([]string{`ddp?5\.1`, `atmos`, `aac`, `dts`}),
+	}
+)
+
+// videoRelease returns a release word in s, if s is named like a video
+// release ("" if not).
+func videoRelease(s string) string {
+	if w := strongRelease(s); w != "" {
+		return w
+	}
+	var found []string
+	for _, kind := range weakRelease {
+		if w := kind(s); w != "" {
+			found = append(found, w)
+		}
+	}
+	if len(found) >= 2 {
+		return found[0] + ", " + found[1]
+	}
+	return ""
+}
+
+// diskImage files are in executable (opening one gets around Mark of the
+// Web) but a full-disc film rip is one too, so they aren't judged by name.
+var diskImage = set(".iso", ".img", ".vhd", ".vhdx")
 
 var docLike = set(".pdf", ".doc", ".docx", ".txt", ".jpg", ".jpeg", ".png")
 
@@ -114,7 +169,9 @@ func Inspect(files []File) []Warning {
 			continue
 		}
 		base := strings.ToLower(strings.TrimRight(path.Base(f.Path), ". "))
-		inner := path.Ext(strings.TrimSuffix(base, e))
+		// Spaces before the real extension ("movie.mp4      .exe") hide it
+		// in narrow columns.
+		inner := path.Ext(strings.TrimRight(strings.TrimSuffix(base, e), ". "))
 		switch {
 		case inner != "" && (media[inner] || docLike[inner]):
 			out = append(out, Warning{f.Path, "A program disguised as a " + strings.TrimPrefix(inner, ".") + " file (double extension)."})
@@ -122,11 +179,12 @@ func Inspect(files []File) []Warning {
 			out = append(out, Warning{f.Path, "A Windows shortcut. Shortcuts in downloads are a common way to run hidden commands."})
 		case mostlyMedia || hasVideo:
 			out = append(out, Warning{f.Path, "A program or script inside a video/music torrent. Media files never need one to play."})
+		case diskImage[e]:
 		default:
-			// The torrent's folder is part of the path, so a program in a
-			// folder named like a film counts too.
-			if m := videoRelease.FindStringSubmatch(f.Path); m != nil {
-				out = append(out, Warning{f.Path, "A program named like a video release (\"" + m[2] + "\"). Real videos are files like .mkv or .mp4: opening this would run a program, not play a film."})
+			// Its own name and the torrent's; not folders inside, where a
+			// video tool keeps its encoders ("x265/x265.exe").
+			if w := videoRelease(f.Top + "/" + path.Base(f.Path)); w != "" {
+				out = append(out, Warning{f.Path, "A program named like a video release (\"" + w + "\"). Real videos are files like .mkv or .mp4: opening this would run a program, not play a film."})
 			}
 		}
 	}

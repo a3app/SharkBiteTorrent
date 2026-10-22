@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -49,59 +48,44 @@ type ownership struct {
 	dirs    map[string]bool         // folders the store created
 	written bool                    // the record file exists with its header
 	marker  bool                    // instead, an empty v0.2.37 marker: the torrent passed its check then
-	fsType  uint64                  // the download folder's filesystem type (see folderAway); 0: not known
+	mount   string                  // the mount point the download folder was on (see folderAway); "" if not known
 }
 
 // folderAway is folderUnavailable plus what the torrent's record knows. A
 // drive mounted without an /etc/fstab line (a systemd mount unit, autofs,
 // by hand) leaves an ordinary folder behind when it's away, which
 // folderUnavailable can't tell from the drive; using it would tidy the
-// record of every file and download onto this computer's own disk. So once
-// the record lists files, a download folder on another kind of filesystem
-// than recorded (this computer's btrfs instead of the NAS's cifs), or an
-// empty one, means the drive is away. (Not the device number: a network
-// share gets a new one each time it's mounted.)
-func folderAway(dir, record string) error {
+// record of every file and download onto this computer's own disk. So the
+// record notes the mount point the folder was on (the NAS's /mnt/nas, say)
+// and the drive is away while nothing is mounted there. Not the device
+// number (a network share gets a new one at every mount), the filesystem
+// type (one disk can be mounted by different drivers) or an empty folder
+// (the user may have deleted the files).
+func folderAway(dir, mount string) error {
 	if err := folderUnavailable(dir); err != nil {
 		return err
 	}
-	if record == "" {
-		return nil
-	}
-	files, recorded := recordedFolder(record)
-	if files == 0 {
-		return nil
-	}
-	if t, ok := fsType(dir); ok && recorded != 0 && t != recorded {
-		return fmt.Errorf("the download folder %s isn't available: it's on a different drive than the torrent's files (is its drive connected?). The torrent continues when it's back", dir)
-	}
-	if f, err := os.Open(dir); err == nil {
-		_, err = f.Readdirnames(1)
-		f.Close()
-		if err == io.EOF {
-			return fmt.Errorf("the download folder %s is empty, but the torrent's files were there (is its drive connected?). The torrent continues when they're back", dir)
-		}
+	if mount != "" && !isMountRoot(mount) {
+		return fmt.Errorf("the download folder %s isn't available: the drive that was mounted at %s isn't now (is it connected?). The torrent continues when it's back", dir, mount)
 	}
 	return nil
 }
 
-// recordedFolder reads how many files a record lists and the filesystem
-// type it noted, without checking anything.
-func recordedFolder(record string) (files int, fsType uint64) {
+// recordedMount reads the mount point a record noted, without checking
+// anything.
+func recordedMount(record string) string {
 	b, err := os.ReadFile(record)
 	if err != nil || !bytes.HasPrefix(b, []byte(ownershipHeader)) {
-		return 0, 0
+		return ""
 	}
 	for _, line := range strings.Split(string(b), "\n") {
-		f := strings.SplitN(line, "\t", 3)
-		switch {
-		case len(f) == 3 && f[0] == "f":
-			files++
-		case len(f) == 3 && f[0] == "s":
-			fsType, _ = strconv.ParseUint(f[1], 16, 64)
+		if f := strings.SplitN(line, "\t", 3); len(f) == 3 && f[0] == "m" {
+			if m, err := hex.DecodeString(f[1]); err == nil {
+				return string(m)
+			}
 		}
 	}
-	return files, fsType
+	return ""
 }
 
 const ownershipHeader = "sbt-owned 3\t"
@@ -140,12 +124,14 @@ func loadOwnership(ownedDir string, ih metainfo.Hash, dir string, tidy bool) *ow
 	// With its drive disconnected every file would look gone: keep the
 	// entries as recorded (has checks each file when it's used) and leave
 	// the record alone.
-	available := folderAway(o.dir, o.path) == nil
+	available := folderAway(o.dir, recordedMount(o.path)) == nil
 	if !available {
 		tidy = false
 	}
 	rewrite := false
-	pending := map[string]string{} // noted (with the file's tag), and neither recorded nor cancelled since
+	pending := map[string]string{}      // noted (with the file's tag), and neither recorded nor cancelled since
+	listed := map[string]fileIdentity{} // every "f" line, current or not
+	allMissing := true
 	for sc.Scan() {
 		f := strings.SplitN(sc.Text(), "\t", 3)
 		if len(f) != 3 {
@@ -161,9 +147,15 @@ func loadOwnership(ownedDir string, ih metainfo.Hash, dir string, tidy bool) *ow
 		case "f":
 			delete(pending, p) // recorded after the note (one before it doesn't settle it)
 			want, err := parseIdentity(f[1])
+			if err == nil {
+				listed[p] = want
+			}
 			if err == nil && !available {
 				o.owned[p] = want
 				continue
+			}
+			if _, lerr := os.Lstat(p); !errors.Is(lerr, fs.ErrNotExist) {
+				allMissing = false
 			}
 			if got, gerr := identityOf(p); err != nil || gerr != nil || !got.same(want) {
 				rewrite = true // gone, or a different file now
@@ -172,8 +164,10 @@ func loadOwnership(ownedDir string, ih metainfo.Hash, dir string, tidy bool) *ow
 			o.owned[p] = want
 		case "d":
 			o.dirs[p] = true
-		case "s":
-			o.fsType, _ = strconv.ParseUint(f[1], 16, 64)
+		case "m":
+			if m, err := hex.DecodeString(f[1]); err == nil {
+				o.mount = string(m)
+			}
 		case "p":
 			rewrite = true
 			pending[p] = f[1]
@@ -183,6 +177,16 @@ func loadOwnership(ownedDir string, ih metainfo.Hash, dir string, tidy bool) *ow
 		default:
 			rewrite = true
 		}
+	}
+	if available && len(listed) > 0 && allMissing {
+		// Every file it lists is gone at once: more likely a drive that's
+		// away in a way folderAway can't see (a record from before the
+		// mount point was noted) than files the user deleted. Keeping the
+		// entries costs nothing (has checks each file when it's used).
+		for p, w := range listed {
+			o.owned[p] = w
+		}
+		tidy = false
 	}
 	for p, tag := range pending {
 		if !available {
@@ -371,8 +375,8 @@ func (o *ownership) adopt(paths []string, lengths []int64) error {
 func (o *ownership) saveLocked() error {
 	var b strings.Builder
 	b.WriteString(ownershipHeader + o.dir + "\n")
-	if o.fsType != 0 {
-		b.WriteString("s\t" + strconv.FormatUint(o.fsType, 16) + "\t-\n")
+	if o.mount != "" {
+		b.WriteString("m\t" + hex.EncodeToString([]byte(o.mount)) + "\t-\n")
 	}
 	for _, p := range sortedKeys(o.dirs) {
 		if rel, err := filepath.Rel(o.dir, p); err == nil {
@@ -505,16 +509,19 @@ func (s *fileStore) claim(ih metainfo.Hash, info *metainfo.Info, paths []string)
 	if err := noLinkedFolders(s.dir, paths); err != nil {
 		return err
 	}
-	// The folder's filesystem, for folderAway (claim only runs while the
-	// folder is available, so this is the drive's).
-	if t, ok := fsType(s.dir); ok && t != o.fsType {
+	// The mount point the folder is on, for folderAway (claim only runs
+	// while the folder is available, so this is the drive's).
+	if m := mountRoot(s.dir); m != "" && m != o.mount {
 		o.mu.Lock()
-		o.fsType = t
+		o.mount = m
 		if o.written {
 			o.saveLocked() // a record from before this was noted
 		}
 		o.mu.Unlock()
 	}
+	s.mu.Lock()
+	s.mount = o.mount
+	s.mu.Unlock()
 	switch {
 	case !o.written && (s.adopt || o.marker):
 		lengths := make([]int64, len(paths))

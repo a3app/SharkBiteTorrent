@@ -910,8 +910,12 @@ func (a *App) addSourceFrom(src string, external bool) error {
 			return fmt.Errorf("%s: not a valid .torrent file: %w", filepath.Base(src), err)
 		}
 		var files []scan.File
+		top := ""
+		if info.IsDir() {
+			top = info.BestName() // multi-file paths don't include it
+		}
 		for _, f := range info.UpvertedFiles() {
-			files = append(files, scan.File{Path: f.DisplayPath(&info), Size: f.Length})
+			files = append(files, scan.File{Path: f.DisplayPath(&info), Size: f.Length, Top: top})
 		}
 		pending = savedTorrent{Hash: mi.HashInfoBytes().HexString(), Name: info.BestName(), Size: info.TotalLength(), Warnings: scan.Inspect(files)}
 		// Keep our own copy so the torrent survives the original being deleted.
@@ -1048,20 +1052,27 @@ func (a *App) pendingFor(hash string) *savedTorrent {
 }
 
 // StartTorrent starts a torrent that was added from outside the app: only
-// now does the engine get it.
-func (a *App) StartTorrent(hash string) error {
+// now does the engine get it. Called from the window, where the banner
+// showed its warnings.
+func (a *App) StartTorrent(hash string) error { return a.startTorrent(hash, true) }
+
+// startTorrent starts a waiting torrent. sawWarnings: the user was shown
+// its warnings (the window's banner; not the phone page), so starting it
+// accepts them; without that, a torrent with warnings isn't started.
+func (a *App) startTorrent(hash string, sawWarnings bool) error {
 	a.mu.Lock()
 	s := a.pendingFor(hash)
 	var src, dir string
 	var accepted bool
 	if s != nil {
-		// Its warnings (from a .torrent's file list) were in the banner the
-		// user pressed Start in.
 		src, dir, accepted = s.Source, s.Dir, len(s.Warnings) > 0
 	}
 	a.mu.Unlock()
 	if s == nil {
-		return a.setPaused(hash, false)
+		return a.setPaused(hash, false, sawWarnings)
+	}
+	if accepted && !sawWarnings {
+		return engine.ErrWarnings
 	}
 	eng, err := a.engine()
 	if err != nil {
@@ -1083,10 +1094,17 @@ func (a *App) StartTorrent(hash string) error {
 	return nil
 }
 
-func (a *App) Pause(hash string) error  { return a.setPaused(hash, true) }
-func (a *App) Resume(hash string) error { return a.setPaused(hash, false) }
+func (a *App) Pause(hash string) error { return a.setPaused(hash, true, false) }
 
-func (a *App) setPaused(hash string, paused bool) error {
+// Resume is the window's Resume, where a torrent's warnings are shown:
+// resuming one with warnings accepts them.
+func (a *App) Resume(hash string) error { return a.setPaused(hash, false, true) }
+
+// resumeRemote is the phone's Resume: the phone page doesn't show warnings,
+// so a torrent with warnings the user hasn't accepted isn't resumed.
+func (a *App) resumeRemote(hash string) error { return a.setPaused(hash, false, false) }
+
+func (a *App) setPaused(hash string, paused, sawWarnings bool) error {
 	a.mu.Lock()
 	waiting := a.pendingFor(hash) != nil
 	a.mu.Unlock()
@@ -1094,21 +1112,28 @@ func (a *App) setPaused(hash string, paused bool) error {
 		if paused {
 			return nil // not running anyway
 		}
-		return a.StartTorrent(hash) // Resume (here or from the phone) starts it
+		return a.startTorrent(hash, sawWarnings) // Resume (here or from the phone) starts it
 	}
 	eng, err := a.engine()
 	if err != nil {
 		return err
 	}
+	accepted := false
+	if !paused && sawWarnings && eng.HasWarnings(hash) {
+		// Resumed in the window despite its warnings.
+		if err := eng.AcceptWarnings(hash); err != nil {
+			return err
+		}
+		accepted = true
+	}
 	if paused {
 		err = eng.Pause(hash)
 	} else {
-		err = eng.Resume(hash)
+		err = eng.Resume(hash) // engine.ErrWarnings if they're not accepted
 	}
 	if err != nil {
 		return err
 	}
-	accepted := !paused && eng.HasWarnings(hash) // resumed despite its warnings
 	a.updateSaved(hash, func(s *savedTorrent) {
 		s.Paused = paused
 		if !paused {
@@ -1132,9 +1157,9 @@ func (a *App) PauseAll() {
 func (a *App) ResumeAll() {
 	for _, t := range a.ListTorrents() {
 		// Not one added from outside (the user starts those), nor one
-		// paused for looking like a disguised program: one at a time.
-		if t.State == "paused" && !t.Confirm && t.Problem == "" {
-			a.Resume(t.Hash)
+		// with warnings not yet accepted: those one at a time, in the window.
+		if t.State == "paused" && !t.Confirm && !t.Held {
+			a.setPaused(t.Hash, false, false)
 		}
 	}
 }

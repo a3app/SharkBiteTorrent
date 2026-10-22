@@ -1,12 +1,16 @@
 package main
 
 import (
-	"github.com/anacrolix/torrent/bencode"
-	"github.com/anacrolix/torrent/metainfo"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/anacrolix/torrent/bencode"
+	"github.com/anacrolix/torrent/metainfo"
+
+	"sharkbite/internal/engine"
 )
 
 func TestExistingAncestor(t *testing.T) {
@@ -146,5 +150,39 @@ func TestEnsureDownloadDir(t *testing.T) {
 	}
 	if insideHome(home) {
 		t.Error("the home folder itself counted as inside it")
+	}
+}
+
+// A .torrent from outside the app whose file list has warnings, and whose
+// top folder is named like a film, isn't started from the phone (the phone
+// page doesn't show warnings), nor by Resume all.
+func TestWarnedTorrentNotStartedRemotely(t *testing.T) {
+	a := &App{configDir: t.TempDir()}
+	a.settings.DownloadDir = t.TempDir()
+	info := metainfo.Info{Name: "Movie.2026.1080p.WEB-DL", PieceLength: 16 << 10, Pieces: make([]byte, 20), Files: []metainfo.FileInfo{
+		{Path: []string{"setup.exe"}, Length: 1000},
+		{Path: []string{"readme.txt"}, Length: 10},
+	}}
+	ib, err := bencode.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(t.TempDir(), "movie.torrent")
+	f, _ := os.Create(src)
+	(&metainfo.MetaInfo{InfoBytes: ib}).Write(f)
+	f.Close()
+	if err := a.addSourceFrom(src, true); err != nil {
+		t.Fatal(err)
+	}
+	list := a.ListTorrents()
+	if len(list) != 1 || len(list[0].Warnings) == 0 {
+		t.Fatalf("a program in a folder named like a film isn't flagged: %+v", list)
+	}
+	if err := a.resumeRemote(list[0].Hash); !errors.Is(err, engine.ErrWarnings) {
+		t.Errorf("phone resume: %v, want ErrWarnings", err)
+	}
+	a.ResumeAll() // skips it (added from outside, and warned)
+	if l := a.ListTorrents(); !l[0].Confirm {
+		t.Error("Resume all started it")
 	}
 }

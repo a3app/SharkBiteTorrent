@@ -51,7 +51,8 @@ type fileStore struct {
 	own     *ownership    // set by claim; nil without ownedDir
 	blocked error         // set if the torrent mustn't write (shown in the list)
 	gone    error         // the download folder isn't available (its drive is disconnected); see reclaim
-	ih      metainfo.Hash // the torrent's, once opened (for its record; see unavailableNow)
+	ih      metainfo.Hash // the torrent's, once opened
+	mount   string        // the mount point its record noted (see folderAway)
 	ft      *fileTorrent  // the torrent's storage, once opened
 	removed bool          // being removed: don't write out buffered pieces on close
 }
@@ -107,16 +108,12 @@ func (s *fileStore) Unavailable() error {
 }
 
 // unavailableNow checks whether the download folder can be used now (see
-// folderAway), with what the torrent's record knows once it's opened.
+// folderAway), with the mount point the torrent's record noted.
 func (s *fileStore) unavailableNow() error {
 	s.mu.Lock()
-	ih, opened := s.ih, s.ft != nil
+	mount := s.mount
 	s.mu.Unlock()
-	record := ""
-	if s.ownedDir != "" && opened {
-		record = recordPath(s.ownedDir, ih, s.dir)
-	}
-	return folderAway(s.dir, record)
+	return folderAway(s.dir, mount)
 }
 
 // checkGone notes that the download folder has become unavailable, if it
@@ -240,11 +237,12 @@ func (s *fileStore) OpenTorrent(_ context.Context, info *metainfo.Info, ih metai
 	}
 	paths, err := torrentPaths(s.dir, info)
 	if err == nil {
-		record := ""
 		if s.ownedDir != "" {
-			record = recordPath(s.ownedDir, ih, s.dir)
+			s.mu.Lock()
+			s.mount = recordedMount(recordPath(s.ownedDir, ih, s.dir))
+			s.mu.Unlock()
 		}
-		if gone := folderAway(s.dir, record); gone != nil {
+		if gone := s.unavailableNow(); gone != nil {
 			// Claimed once it's back (see reclaim): its files, and so its
 			// ownership record, can't be checked now.
 			s.mu.Lock()
@@ -455,6 +453,10 @@ func (t *fileTorrent) ours(i int) error {
 // torrent's own.
 func (t *fileTorrent) createFile(i int) (*os.File, error) {
 	p := t.paths[i]
+	// Not onto the empty folder a drive that went away left behind.
+	if t.store.checkGone() {
+		return nil, t.store.Unavailable()
+	}
 	tag := newTag(t.lengths[i])
 	if t.own != nil {
 		if err := t.own.pending(p, tag); err != nil {
@@ -670,6 +672,9 @@ func (p *filePiece) diskIO(b []byte, off int64, create bool,
 		p.t.release(i, f)
 		n += m
 		if err != nil {
+			if p.t.store.checkGone() {
+				return n, p.t.store.Unavailable()
+			}
 			return n, err
 		}
 	}

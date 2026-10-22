@@ -75,7 +75,8 @@ type entry struct {
 	checking  atomic.Bool // verifying existing data after a restart
 	removing  bool        // Remove is deleting its files; guarded by Engine.mu
 	stopped   bool        // blocked, and data transfer turned off; guarded by Engine.mu
-	held      bool        // paused because of its warnings, until resumed; guarded by Engine.mu
+	held      bool        // paused because of its warnings, until accepted and resumed; guarded by Engine.mu
+	accepted  bool        // the user accepted its warnings (see AcceptWarnings); guarded by Engine.mu
 	waiting   bool        // download folder unavailable: data transfer off until it's back; guarded by Engine.mu
 
 	// "Verify files": re-hash finished pieces on disk (see Verify).
@@ -340,6 +341,10 @@ type AddOptions struct {
 // heldMessage is shown for a torrent paused because of its warnings.
 const heldMessage = "it was paused because it looks like a disguised program (see below). Press Resume only if you trust it."
 
+// ErrWarnings: resuming a torrent whose warnings the user hasn't accepted
+// (from the phone, or Resume all), which only the computer's window shows.
+var ErrWarnings = errors.New("this torrent looks like a disguised program; check its warning in the app on the computer, and resume it there if you trust it")
+
 // Add starts a torrent and returns its info hash.
 func (e *Engine) Add(o AddOptions) (string, error) {
 	var spec *torrent.TorrentSpec
@@ -368,7 +373,7 @@ func (e *Engine) Add(o AddOptions) (string, error) {
 	}
 	st := newFileStore(o.Dir, e.pc, e.ownedDir, o.Adopt)
 	spec.Storage = st
-	en := &entry{dir: o.Dir, storage: st, paused: o.Paused, skipped: map[int]bool{}, added: time.Now()}
+	en := &entry{dir: o.Dir, storage: st, paused: o.Paused, accepted: o.AcceptWarnings, skipped: map[int]bool{}, added: time.Now()}
 	for _, i := range o.Skipped {
 		en.skipped[i] = true
 	}
@@ -383,31 +388,34 @@ func (e *Engine) Add(o AddOptions) (string, error) {
 		return "", err
 	}
 	en.t = t
+	// No data until its file list has been checked (below), so a torrent
+	// that looks like a disguised program never starts downloading.
+	t.DisallowDataDownload()
 	if o.Paused {
-		t.DisallowDataDownload()
 		t.DisallowDataUpload()
 	}
 	go func() {
 		select {
 		case <-t.GotInfo():
-			if st.Blocked() != nil {
-				t.DisallowDataDownload() // its files aren't safe to write (shown in the list)
-				t.DisallowDataUpload()
-				return
-			}
-			// Checked now, before the download gets going: a torrent that
-			// looks like a disguised program waits for the user.
 			w := inspect(t)
 			e.mu.Lock()
 			en.warnings, en.inspected = w, true
-			hold := len(w) > 0 && !o.AcceptWarnings && !en.paused
-			if hold {
-				en.paused, en.held = true, true
+			// Held even if already paused (so Resume all and the phone leave
+			// it), until the user accepts its warnings on the computer.
+			en.held = len(w) > 0 && !en.accepted
+			if en.held {
+				en.paused = true
+			}
+			blocked := st.Blocked() != nil
+			switch {
+			case blocked || en.paused:
+				t.DisallowDataUpload() // blocked: its files aren't safe to write (shown in the list)
+			default:
+				t.AllowDataDownload()
 			}
 			e.mu.Unlock()
-			if hold {
-				t.DisallowDataDownload()
-				t.DisallowDataUpload()
+			if blocked {
+				return
 			}
 			e.applyPriorities(en)
 			if st.Unavailable() != nil {
@@ -460,8 +468,8 @@ func (e *Engine) Pause(hash string) error {
 		return err
 	}
 	e.mu.Lock()
+	defer e.mu.Unlock()
 	en.paused = true
-	e.mu.Unlock()
 	en.t.DisallowDataDownload()
 	en.t.DisallowDataUpload()
 	return nil
@@ -479,15 +487,20 @@ func (e *Engine) Resume(hash string) error {
 		return err
 	}
 	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(en.warnings) > 0 && !en.accepted {
+		return ErrWarnings
+	}
 	en.paused, en.held = false, false
-	e.mu.Unlock()
-	en.t.AllowDataDownload()
+	if en.inspected { // before that, the check turns downloading on (see Add)
+		en.t.AllowDataDownload()
+	}
 	en.t.AllowDataUpload()
 	return nil
 }
 
 // HasWarnings reports whether the torrent's file list got warnings (see
-// scan.Inspect): resuming it means the user accepts them.
+// scan.Inspect) that the user hasn't accepted.
 func (e *Engine) HasWarnings(hash string) bool {
 	en, err := e.find(hash)
 	if err != nil {
@@ -495,14 +508,32 @@ func (e *Engine) HasWarnings(hash string) bool {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return len(en.warnings) > 0
+	return len(en.warnings) > 0 && !en.accepted
+}
+
+// AcceptWarnings records that the user saw the torrent's warnings in the
+// app's window and wants it anyway; Resume then works. Only the desktop
+// window calls this: the phone page doesn't show warnings.
+func (e *Engine) AcceptWarnings(hash string) error {
+	en, err := e.find(hash)
+	if err != nil {
+		return err
+	}
+	e.mu.Lock()
+	en.accepted, en.held = true, false
+	e.mu.Unlock()
+	return nil
 }
 
 // inspect checks the torrent's file list for disguised programs.
 func inspect(t *torrent.Torrent) []scan.Warning {
+	top := ""
+	if info := t.Info(); info != nil && info.IsDir() {
+		top = info.BestName() // multi-file paths don't include it
+	}
 	var fs []scan.File
 	for _, f := range t.Files() {
-		fs = append(fs, scan.File{Path: f.DisplayPath(), Size: f.Length()})
+		fs = append(fs, scan.File{Path: f.DisplayPath(), Size: f.Length(), Top: top})
 	}
 	return scan.Inspect(fs)
 }
@@ -562,18 +593,21 @@ func (e *Engine) Remove(hash string, deleteFiles bool) error {
 	if err := h.FromHexString(hash); err != nil {
 		return err
 	}
+	// Refused before anything changes: dropping it first would erase its
+	// progress and take it off the list while its files stay on the drive.
+	// Checked before taking the lock: on a hung network drive it can take a
+	// while, and the list would freeze meanwhile.
+	if deleteFiles {
+		if en, err := e.find(hash); err == nil && (en.storage.Unavailable() != nil || en.storage.unavailableNow() != nil) {
+			return ErrFolderUnavailable
+		}
+	}
 	// Found and reserved in one step, so two Removes can't both proceed.
 	e.mu.Lock()
 	en, ok := e.entries[h]
 	if !ok || en.t == nil || en.removing {
 		e.mu.Unlock()
 		return fmt.Errorf("torrent %s: %w", hash, ErrNotFound)
-	}
-	// Refused before anything changes: dropping it first would erase its
-	// progress and take it off the list while its files stay on the drive.
-	if deleteFiles && (en.storage.Unavailable() != nil || en.storage.unavailableNow() != nil) {
-		e.mu.Unlock()
-		return ErrFolderUnavailable
 	}
 	en.removing = true
 	e.mu.Unlock()
@@ -790,6 +824,8 @@ type Status struct {
 	Warnings []scan.Warning `json:"warnings"`
 	// Problem: why the torrent is stopped (state "blocked").
 	Problem string `json:"problem"`
+	// Held: it has warnings the user hasn't accepted (see AcceptWarnings).
+	Held bool `json:"held"`
 	// Confirm: added from outside the app, waiting for the user to start
 	// it; filled in by the app.
 	Confirm bool `json:"confirm"`
@@ -862,10 +898,8 @@ func (e *Engine) List() []Status {
 			Peers:    st.ActivePeers,
 			Seeds:    st.ConnectedSeeders,
 		}
-		if t.Info() != nil && !en.inspected {
-			en.warnings, en.inspected = inspect(t), true
-		}
 		row.Warnings = en.warnings
+		row.Held = len(en.warnings) > 0 && !en.accepted
 		row.Verified = en.verified
 		if en.verifying.Load() {
 			row.Verifying = true

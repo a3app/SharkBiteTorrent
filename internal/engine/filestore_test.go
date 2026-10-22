@@ -562,52 +562,120 @@ func TestFolderGoneWhileRunning(t *testing.T) {
 	}
 }
 
+// setMount points the torrent's record at mount as the drive's mount point,
+// as claim notes it (tests can't mount anything, so a plain folder stands
+// for a drive that's away: nothing is mounted there).
+func setMount(t *testing.T, owned string, ih metainfo.Hash, dir, mount string) {
+	t.Helper()
+	o := loadOwnership(owned, ih, dir, false)
+	o.mu.Lock()
+	o.mount = mount
+	err := o.saveLocked()
+	o.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A drive mounted without an /etc/fstab line leaves an ordinary folder when
-// it's away. Once the record lists files, that folder counts as away if
-// it's on another kind of filesystem than recorded, or empty; the record
-// isn't tidied, and nothing is claimed or written there.
+// it's away. The record notes the mount point; while nothing is mounted
+// there the folder is away: nothing is claimed, created or tidied.
 func TestFolderAwayUnlistedMount(t *testing.T) {
 	dir, owned := t.TempDir(), t.TempDir()
-	info := multiInfo("Linux", []string{"a.iso"})
+	info := multiInfo("Show", []string{"a"}, []string{"b"})
 	_, impl := openStore(t, dir, owned, info, hashN(19))
 	if err := writePiece(t, impl, info); err != nil {
 		t.Fatal(err)
 	}
 	impl.Close()
 	rec := recordPath(owned, hashN(19), dir)
-	if files, typ := recordedFolder(rec); files != 1 || typ == 0 {
-		t.Fatalf("record lists %d files, filesystem type %x", files, typ)
-	}
-	if err := folderAway(dir, rec); err != nil {
-		t.Fatalf("away with its files there: %v", err)
+	if m := recordedMount(rec); m == "" || !isMountRoot(m) {
+		t.Fatalf("mount point noted: %q", m)
 	}
 
-	// The drive is away: the mount point is an empty folder on this
-	// computer's own disk.
-	os.RemoveAll(filepath.Join(dir, "Linux"))
+	setMount(t, owned, hashN(19), dir, dir) // dir is no mount point: "away"
 	before, _ := os.ReadFile(rec)
-	if folderAway(dir, rec) == nil {
-		t.Error("an empty folder whose record lists files isn't away")
-	}
-	st, _ := openStore(t, dir, owned, info, hashN(19))
+	st, impl := openStore(t, dir, owned, info, hashN(19))
 	if st.Unavailable() == nil {
-		t.Error("opened as available")
+		t.Fatal("opened as available with nothing mounted at its mount point")
+	}
+	if writePiece(t, impl, info) == nil {
+		t.Error("wrote with the drive away")
 	}
 	if after, _ := os.ReadFile(rec); !bytes.Equal(after, before) {
-		t.Errorf("record tidied while away:\n%s", after)
+		t.Errorf("record changed while away:\n%s", after)
 	}
+}
 
-	// Another kind of filesystem than recorded, even if not empty.
-	os.WriteFile(filepath.Join(dir, "something else"), nil, 0o644)
-	b := bytes.Replace(before, []byte("\ns\t"), []byte("\ns\t1"), 1) // a different type
-	os.WriteFile(rec, b, 0o600)
-	if folderAway(dir, rec) == nil {
-		t.Error("a folder on another filesystem than recorded isn't away")
+// Deleting the torrent's files doesn't make the folder look like a drive
+// that's away (the folder is still where it was): the torrent re-downloads.
+func TestDeletedFilesNotAway(t *testing.T) {
+	dir, owned := t.TempDir(), t.TempDir()
+	info := multiInfo("Linux", []string{"a.iso"})
+	_, impl := openStore(t, dir, owned, info, hashN(22))
+	writePiece(t, impl, info)
+	impl.Close()
+	os.RemoveAll(filepath.Join(dir, "Linux")) // the user deletes them
+	st, impl := openStore(t, dir, owned, info, hashN(22))
+	if st.Unavailable() != nil || st.Blocked() != nil {
+		t.Fatalf("unavailable %v, blocked %v", st.Unavailable(), st.Blocked())
 	}
+	if writePiece(t, impl, info) != nil {
+		t.Error("can't download again after the files were deleted")
+	}
+}
 
-	// A record with no files yet doesn't hold the folder back.
-	if folderAway(dir, recordPath(owned, hashN(20), dir)) != nil {
-		t.Error("away without any record")
+// A record from before the mount point was noted, whose files are all
+// missing at once (its drive away, in a way folderAway can't see), isn't
+// tidied: when the drive is back its files are still the torrent's.
+func TestAllMissingNotTidied(t *testing.T) {
+	base, owned := t.TempDir(), t.TempDir()
+	dir := filepath.Join(base, "Plex")
+	os.Mkdir(dir, 0o755)
+	info := multiInfo("Show", []string{"a"}, []string{"b"})
+	_, impl := openStore(t, dir, owned, info, hashN(23))
+	writePiece(t, impl, info)
+	impl.Close()
+	setMount(t, owned, hashN(23), dir, "") // an older record
+	rec := recordPath(owned, hashN(23), dir)
+	before, _ := os.ReadFile(rec)
+	os.Rename(dir, filepath.Join(base, "drive"))
+	os.Mkdir(dir, 0o755) // the empty mount point
+	loadOwnership(owned, hashN(23), dir, true)
+	if after, _ := os.ReadFile(rec); !bytes.Equal(after, before) {
+		t.Errorf("record tidied with every file missing:\n%s", after)
+	}
+	os.Remove(dir)
+	os.Rename(filepath.Join(base, "drive"), dir)
+	if o := loadOwnership(owned, hashN(23), dir, true); len(o.files()) != 1 {
+		t.Errorf("own files not recognised when the drive is back: %v", o.files())
+	}
+}
+
+// A drive that goes away mid-run: the next file isn't created on the empty
+// folder left behind.
+func TestNoCreateAfterDriveAway(t *testing.T) {
+	dir, owned := t.TempDir(), t.TempDir()
+	info := multiInfo("Show", []string{"a"}, []string{"b"})
+	info.Files[0].Length, info.Files[1].Length = 8, 8
+	st, _ := openStore(t, dir, owned, info, hashN(24))
+	f, err := st.ft.createFile(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	st.mu.Lock()
+	st.mount = dir // the drive went away: nothing mounted there now
+	st.mu.Unlock()
+	if f, err := st.ft.createFile(1); err == nil {
+		f.Close()
+		t.Error("created a file with the drive away")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Show", "b")); !os.IsNotExist(err) {
+		t.Error("file made on the empty folder")
+	}
+	if st.Unavailable() == nil {
+		t.Error("not noticed")
 	}
 }
 
