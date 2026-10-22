@@ -16,6 +16,10 @@ env:
 jobs:
   checks:
     runs-on: windows-2025 # the main platform; DPAPI and Defender tests run here
+    # bash everywhere: PowerShell doesn't stop when a command fails, so a
+    # multi-command step only failed if its LAST command did (Windows test
+    # failures passed Checks unnoticed until a release build caught them).
+    defaults: { run: { shell: bash } }
     env: { CGO_ENABLED: "0" } # test what ships: release builds are pure Go
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

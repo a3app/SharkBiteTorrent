@@ -581,6 +581,9 @@ func setMount(t *testing.T, owned string, ih metainfo.Hash, dir, mount string) {
 // it's away. The record notes the mount point; while nothing is mounted
 // there the folder is away: nothing is claimed, created or tidied.
 func TestFolderAwayUnlistedMount(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mount points aren't noted on Windows: a drive that's away there has no folder at all")
+	}
 	dir, owned := t.TempDir(), t.TempDir()
 	info := multiInfo("Show", []string{"a"}, []string{"b"})
 	_, impl := openStore(t, dir, owned, info, hashN(19))
@@ -655,6 +658,9 @@ func TestAllMissingNotTidied(t *testing.T) {
 // A drive that goes away mid-run: the next file isn't created on the empty
 // folder left behind.
 func TestNoCreateAfterDriveAway(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mount points aren't noted on Windows: a drive that's away there has no folder at all")
+	}
 	dir, owned := t.TempDir(), t.TempDir()
 	info := multiInfo("Show", []string{"a"}, []string{"b"})
 	info.Files[0].Length, info.Files[1].Length = 8, 8
@@ -682,6 +688,9 @@ func TestNoCreateAfterDriveAway(t *testing.T) {
 // A piece finished before the drive dropped mid-run stays finished: the
 // failed stat checks the folder first.
 func TestCompletionAfterDriveDrop(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows won't rename a folder with files open in it, which is how the test takes the drive away")
+	}
 	base, owned := t.TempDir(), t.TempDir()
 	dir := filepath.Join(base, "Plex")
 	os.Mkdir(dir, 0o755)
@@ -704,6 +713,9 @@ func TestCompletionAfterDriveDrop(t *testing.T) {
 // drive, download onto it, then refuse the real files once the drive is
 // back. When they're back it's claimed with its own files.
 func TestLegacyAllMissingWaits(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the all-missing rule is off on Windows, where a drive that's away has no folder at all")
+	}
 	base, owned := t.TempDir(), t.TempDir()
 	dir := filepath.Join(base, "Plex")
 	os.Mkdir(dir, 0o755)
