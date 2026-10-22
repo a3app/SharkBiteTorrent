@@ -687,6 +687,9 @@ func (t *fileTorrent) writeFinished(bufs map[int]*pieceBuf, deadline time.Time) 
 			}
 			if err == nil {
 				_, err = f.WriteAt(data[n:n+e.Length], e.Start)
+				if err == nil {
+					err = f.Sync() // on the drive before it's recorded (see syncData)
+				}
 				// A network drive can report a failed write only here; the
 				// piece is recorded only if this succeeds too.
 				if cerr := f.Close(); err == nil {
@@ -853,6 +856,35 @@ func (p *filePiece) flushAt(idx int, buf *pieceBuf) error {
 	return errors.Join(errs...)
 }
 
+// syncData waits until the piece's data is on the drive (fsync /
+// FlushFileBuffers on each file it covers). Without it a network drive's
+// client keeps writes in its cache and reports them done: if the connection
+// then drops, the cached data is lost but the piece was already recorded as
+// finished, so the download completed with damaged pieces (a CachyOS ISO
+// failed its checksum after a mapped drive was disconnected mid-download).
+// Costs about 10% of write speed on a NAS.
+func (p *filePiece) syncData() error {
+	ext := segments.Extent{Start: p.p.Offset(), Length: p.p.Length()}
+	for i, e := range p.t.index.LocateIter(ext) {
+		if e.Length == 0 {
+			continue
+		}
+		f, err := p.t.acquire(i, false)
+		if err != nil {
+			return err
+		}
+		if err := f.Sync(); err != nil {
+			p.t.discard(i, f)
+			if p.t.store.checkGone() {
+				return p.t.store.Unavailable()
+			}
+			return err
+		}
+		p.t.release(i, f)
+	}
+	return nil
+}
+
 func (p *filePiece) MarkComplete() error {
 	idx := p.p.Index()
 	p.t.mu.Lock()
@@ -877,6 +909,9 @@ func (p *filePiece) MarkComplete() error {
 		if err := p.flushAt(idx, buf); err != nil {
 			return err // not marked complete; the library will retry the piece
 		}
+	}
+	if err := p.syncData(); err != nil {
+		return err // not on the drive for sure: not marked complete
 	}
 	p.t.store.mu.Lock()
 	removed := p.t.store.removed
