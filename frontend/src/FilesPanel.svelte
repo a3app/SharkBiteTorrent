@@ -113,10 +113,14 @@
         <div class="muted">Verifying files on disk against the torrent's piece hashes… {Math.floor(torrent.verifyProgress * 100)}%</div>
       {:else if torrent.verified}
         {#if torrent.verified.bad === 0}
-          <div class="ok">✓ Verified: all {torrent.verified.pieces} finished pieces on disk match the torrent.</div>
+          <div class="ok">
+            ✓ Verified{torrent.verified.reason ? ' ' + torrent.verified.reason : ''}: all {torrent.verified.pieces} finished
+            pieces on disk match the torrent.
+          </div>
         {:else if torrent.state === 'seeding'}
           <div class="ok">
-            ✓ Verified: {torrent.verified.bad} damaged {torrent.verified.bad === 1 ? 'piece was' : 'pieces were'} downloaded again
+            ✓ Verified{torrent.verified.reason ? ' ' + torrent.verified.reason : ''}: {torrent.verified.bad} damaged
+            {torrent.verified.bad === 1 ? 'piece was' : 'pieces were'} downloaded again
             ({(torrent.verified.badFiles ?? []).join(', ')}); all {torrent.verified.pieces} now match.
           </div>
         {:else}

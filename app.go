@@ -53,11 +53,14 @@ type App struct {
 	settings    Settings
 	pending     []pendingSource // magnets/.torrent paths received before the VPN was up
 	quitting    bool
-	scanning    map[string]bool         // torrents being scanned right now
-	work        map[string]*torrentWork // background work reading a torrent's files (see workCtx)
-	removing    map[string]bool         // torrents being removed; kept across engine restarts
-	proxy       *socks.Server           // local SOCKS5 proxy into the tunnel, for Prowlarr/Jackett
-	proxyErr    string
+	scanning    map[string]bool // torrents being scanned right now
+	// autoVerified: torrents verified automatically this session, so "all
+	// downloads" doesn't re-read one again after its repair.
+	autoVerified map[string]bool
+	work         map[string]*torrentWork // background work reading a torrent's files (see workCtx)
+	removing     map[string]bool         // torrents being removed; kept across engine restarts
+	proxy        *socks.Server           // local SOCKS5 proxy into the tunnel, for Prowlarr/Jackett
+	proxyErr     string
 	// connMu serializes connecting and reconnecting, so the startup connect
 	// and quick successive Reconnects can't interleave. reconnectGen lets a
 	// queued Reconnect see that a newer one supersedes it.
@@ -107,6 +110,11 @@ type Settings struct {
 	LastUpdateCheck int64  `json:"lastUpdateCheck"` // unix seconds
 	// ScanDownloads scans finished torrents with the system antivirus.
 	ScanDownloads bool `json:"scanDownloads"`
+	// AutoVerify: re-check a finished torrent's files against its piece
+	// hashes before the malware scan. "suspect" (default): only if something
+	// during the download could have damaged them; "all": every download;
+	// "off": never.
+	AutoVerify string `json:"autoVerify"`
 	// Remote control from phones on the home network (remote.go); changed
 	// through SetRemote, not SaveSettings.
 	RemoteEnabled   bool `json:"remoteEnabled"`
@@ -140,6 +148,10 @@ type savedTorrent struct {
 	// v0.2.36 or older wrote: its existing files are adopted once.
 	Checked bool `json:"checked,omitempty"`
 	legacy  bool
+	// Suspect: why its files should be verified before the malware scan
+	// (its drive went away, a write failed, the app didn't shut down
+	// normally while it downloaded); cleared once verified.
+	Suspect string `json:"suspect,omitempty"`
 	// Scan is the antivirus result once the torrent finished (nil = not yet).
 	Scan *scanRecord `json:"scan,omitempty"`
 }
@@ -159,6 +171,7 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.loadSettings()
 	a.loadSaved()
+	a.noteUncleanExit()
 	a.handleArgs(os.Args[1:], true)
 	if !storeBuild {
 		platform.RefreshStartup(a.exe) // the app moved: keep sign-in start working
@@ -218,9 +231,31 @@ func (a *App) stopAllNow(ctx context.Context) {
 	}()
 	select {
 	case <-done:
+		os.Remove(a.runningMarker()) // shut down normally (see noteUncleanExit)
 	case <-time.After(shutdownLimit):
 		runtime.LogWarning(ctx, "quitting: saving downloads took too long; the rest is checked at the next start")
 	}
+}
+
+func (a *App) runningMarker() string { return filepath.Join(a.configDir, "running") }
+
+// noteUncleanExit: a marker left from the last run means the app didn't shut
+// down normally (a crash, power loss, a forced kill), so what it was
+// downloading may not all have reached the drive; those torrents are
+// verified before their malware scan. Then the marker is set for this run.
+func (a *App) noteUncleanExit() {
+	if _, err := os.Stat(a.runningMarker()); err == nil {
+		a.mu.Lock()
+		for i := range a.saved {
+			if s := &a.saved[i]; s.Scan == nil && s.Suspect == "" && !s.Confirm {
+				s.Suspect = "the app didn't shut down normally while it was downloading"
+			}
+		}
+		a.writeSaved()
+		a.mu.Unlock()
+	}
+	os.MkdirAll(a.configDir, 0o700)
+	os.WriteFile(a.runningMarker(), nil, 0o600)
 }
 
 // beforeClose hides to the tray instead of quitting, if enabled.
@@ -1499,6 +1534,7 @@ func (a *App) loadSettings() {
 		CloseToTray:     true,
 		AutoUpdateCheck: true,
 		ScanDownloads:   true,
+		AutoVerify:      "suspect",
 	}
 	if data, err := os.ReadFile(filepath.Join(a.configDir, "settings.json")); err == nil {
 		json.Unmarshal(data, &a.settings)

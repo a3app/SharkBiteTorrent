@@ -258,6 +258,25 @@
               files are marked as downloaded from the internet so the system checks them when opened.
             </p>
           {/if}
+          <label class="row">
+            <span class="lbl">Auto verify</span>
+            <select bind:value={s.autoVerify}>
+              <option value="off">Off</option>
+              <option value="suspect">Suspect downloads only</option>
+              <option value="all">All downloads</option>
+            </select>
+          </label>
+          <p class="muted small">
+            Re-checks a finished download's files against the torrent before the malware scan, and downloads any
+            damaged pieces again. Every piece is already checked when it arrives and confirmed to be on the drive
+            before it counts, so this matters when something could have gone wrong afterwards.
+            <b>Suspect downloads only</b> (the default) verifies a download if its drive disconnected, a read or
+            write failed, or the app didn't shut down normally while it was downloading.
+            <b>All downloads</b> also verifies everything else: it reads every finished download back from the
+            drive once more, which takes a while for large files and adds load on a network drive (around 10
+            minutes for a 50 GB file on a typical NAS), and it almost never finds anything the default wouldn't.
+            You can always run <b>Verify files</b> on a torrent yourself.
+          </p>
           {#if about?.store}
             <p class="muted small">
               Installed from the Microsoft Store: magnet links and .torrent files were registered when it was installed.

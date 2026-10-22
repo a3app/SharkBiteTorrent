@@ -90,3 +90,21 @@ func TestFailLog(t *testing.T) {
 		t.Errorf("second stop returned %v", got)
 	}
 }
+
+// A torrent becomes suspect on the first problem (the reason is kept) until
+// it's verified.
+func TestSuspect(t *testing.T) {
+	st := newFileStore(t.TempDir(), storage.NewMapPieceCompletion(), "", false)
+	if st.Suspect() != "" {
+		t.Fatal("suspect from the start")
+	}
+	st.markSuspect("its drive was disconnected")
+	st.markSuspect("reading or writing its files failed")
+	if got := st.Suspect(); got != "its drive was disconnected" {
+		t.Errorf("reason %q, want the first one", got)
+	}
+	st.ClearSuspect()
+	if st.Suspect() != "" {
+		t.Error("still suspect after ClearSuspect")
+	}
+}

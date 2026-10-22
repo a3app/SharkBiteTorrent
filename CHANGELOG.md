@@ -4,6 +4,10 @@ What changed in each release of Shark BiteTorrent. The release notes on GitHub a
 
 ## [Unreleased]
 
+### Added
+- **Auto verify** (Settings → Desktop): before the malware scan, a finished download's files are re-checked against the torrent if something could have damaged them: its drive disconnected, a read or write failed, or the app didn't shut down normally while it was downloading. Damaged pieces are downloaded again, and the complete, verified files are scanned. The files panel says why it was verified. It can also verify every download, or be turned off; verifying everything reads each download back from the drive once more, which is slow for large files on a network drive, so it's not the default.
+- After **Verify files** finds damaged pieces, the files are scanned for malware again once they've been downloaded again (the scan may have seen the damaged data).
+
 ### Fixed
 - When a network drive (a mapped drive on Windows, say) disconnected and came back, the torrent resumed but nothing it downloaded was saved: it kept using the connection that had dropped, so every write failed and it downloaded the same pieces over and over. It now reconnects to its files once the drive is back, and a read or write that fails is retried on a fresh connection.
 - **Remove with files** while a torrent's drive was disconnected said it wasn't removed, but the torrent still disappeared from the list the next time the app started. It now stays, untouched, and the message says plainly that nothing was removed.

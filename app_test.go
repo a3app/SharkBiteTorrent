@@ -186,3 +186,15 @@ func TestWarnedTorrentNotStartedRemotely(t *testing.T) {
 		t.Error("Resume all started it")
 	}
 }
+
+// Auto verify defaults to suspect downloads only, also for settings saved
+// before the option existed.
+func TestAutoVerifyMode(t *testing.T) {
+	a := &App{}
+	for in, want := range map[string]string{"": "suspect", "suspect": "suspect", "all": "all", "off": "off", "bogus": "suspect"} {
+		a.settings.AutoVerify = in
+		if got := a.autoVerifyMode(); got != want {
+			t.Errorf("%q: got %q, want %q", in, got, want)
+		}
+	}
+}

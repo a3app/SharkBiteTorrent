@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -43,6 +44,10 @@ import (
 // in this folder (see ownership.go); a torrent whose paths are taken by
 // other files is blocked instead.
 type fileStore struct {
+	// suspect: why data written for this torrent may not have reached the
+	// drive intact (its drive went away, a read or write failed), for an
+	// automatic Verify before the malware scan; "" if nothing happened.
+	suspect  atomic.Pointer[string]
 	dir      string // download folder for this torrent
 	pc       storage.PieceCompletion
 	ownedDir string // ownership records (see ownership.go); "" skips the checks
@@ -144,8 +149,22 @@ func (s *fileStore) checkGone() bool {
 		s.gone = err
 	}
 	s.mu.Unlock()
+	s.markSuspect("its drive was disconnected")
 	return true
 }
+
+// markSuspect notes why the torrent's data needs checking (the first
+// reason wins); Suspect reports it, ClearSuspect forgets it.
+func (s *fileStore) markSuspect(why string) { s.suspect.CompareAndSwap(nil, &why) }
+
+func (s *fileStore) Suspect() string {
+	if p := s.suspect.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+func (s *fileStore) ClearSuspect() { s.suspect.Store(nil) }
 
 // reclaim runs once the download folder is back: the torrent's check
 // (claim), skipped while its files couldn't be seen, and then writing
@@ -427,6 +446,7 @@ func (t *fileTorrent) giveBack(i int, f *os.File, bad bool) {
 		bad = true
 	}
 	if bad {
+		t.store.markSuspect("reading or writing its files failed")
 		f.Close()
 		t.handles[i].open--
 		t.freed.Signal() // a handle can be opened in its place

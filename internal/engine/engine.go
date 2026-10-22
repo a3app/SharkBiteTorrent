@@ -962,6 +962,9 @@ type Status struct {
 	Verified       *VerifyResult `json:"verified"`
 	// .sfv check of the finished files; filled in by the app.
 	SFV *SFVStatus `json:"sfv"`
+	// Suspect: why its data should be verified before the malware scan
+	// (its drive went away, a read or write failed); "" if nothing did.
+	Suspect string `json:"suspect"`
 }
 
 // VerifyResult is the outcome of re-checking a torrent's data on disk.
@@ -970,6 +973,8 @@ type VerifyResult struct {
 	Bad      int      `json:"bad"`      // of those, how many no longer matched
 	BadFiles []string `json:"badFiles"` // files containing bad pieces
 	At       int64    `json:"at"`       // unix seconds
+	// Reason: why it was verified automatically ("" if the user asked).
+	Reason string `json:"reason"`
 }
 
 // SFVStatus is the result of checking the torrent's own .sfv file(s).
@@ -1017,6 +1022,10 @@ func (e *Engine) List() []Status {
 		row.Warnings = en.warnings
 		row.Held = len(en.warnings) > 0 && !en.accepted
 		row.Verified = en.verified
+		row.Suspect = en.storage.Suspect()
+		if row.Suspect == "" && en.writeErr != nil {
+			row.Suspect = "writing its files failed"
+		}
 		if en.verifying.Load() {
 			row.Verifying = true
 			if of := en.verifyOf.Load(); of > 0 {
@@ -1315,4 +1324,26 @@ func (e *Engine) PieceMap(hash string) ([]PieceRun, error) {
 		}
 	}
 	return out, nil
+}
+
+// VerifyAuto is Verify run by the app on its own (see App.autoVerify):
+// the result records why, and the torrent stops being suspect.
+func (e *Engine) VerifyAuto(ctx context.Context, hash, reason string) (*VerifyResult, error) {
+	res, err := e.Verify(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
+	en, err := e.find(hash)
+	if err == nil {
+		en.storage.ClearSuspect()
+		e.mu.Lock()
+		if en.verified != nil {
+			r := *en.verified
+			r.Reason = reason
+			en.verified = &r
+			res = &r
+		}
+		e.mu.Unlock()
+	}
+	return res, nil
 }

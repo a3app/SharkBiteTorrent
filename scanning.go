@@ -55,6 +55,9 @@ func (a *App) scanLoop(ctx context.Context) {
 		}
 		a.markChecked(eng)
 		for _, t := range eng.List() {
+			if t.Suspect != "" {
+				a.noteSuspect(t.Hash, t.Suspect)
+			}
 			if t.State != "seeding" || ctx.Err() != nil {
 				continue
 			}
@@ -88,6 +91,9 @@ func (a *App) checkFinished(ctx context.Context, eng *engine.Engine, t engine.St
 	p, _, ok := eng.ContentPath(t.Hash)
 	if !ok {
 		return
+	}
+	if !a.autoVerify(ctx, eng, t) {
+		return // damaged pieces are being downloaded again; scanned once complete
 	}
 	// Only the torrent's own files: its folder may hold other files too.
 	for _, f := range eng.OwnedFiles(t.Hash) {
@@ -309,6 +315,18 @@ func (a *App) VerifyTorrent(hash string) error {
 			a.mu.Unlock()
 		}
 		if res.Bad > 0 {
+			// The files changed since the malware scan (it may have scanned
+			// the damaged data): scan them again once they're complete.
+			a.mu.Lock()
+			if s := a.savedFor(hash); s != nil && s.Scan != nil {
+				s.Scan = nil
+				a.writeSaved()
+			}
+			if a.autoVerified == nil {
+				a.autoVerified = map[string]bool{}
+			}
+			a.autoVerified[hash] = true // just verified: no second pass
+			a.mu.Unlock()
 			// A notice, not an error: nothing for the user to do, and the
 			// pieces are usually downloaded again within moments.
 			runtime.EventsEmit(a.ctx, "notice", fmt.Sprintf(
@@ -441,4 +459,76 @@ func (a *App) markChecked(eng *engine.Engine) {
 			a.updateSaved(h, func(s *savedTorrent) { s.Checked, s.legacy = true, false })
 		}
 	}
+}
+
+// noteSuspect saves why a torrent's files should be verified before the
+// malware scan (the first reason wins), so it survives a restart.
+func (a *App) noteSuspect(hash, why string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if s := a.savedFor(hash); s != nil && s.Suspect == "" && s.Scan == nil {
+		s.Suspect = why
+		a.writeSaved()
+	}
+}
+
+// autoVerifyMode is Settings.AutoVerify, "suspect" if unset.
+func (a *App) autoVerifyMode() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch a.settings.AutoVerify {
+	case "off", "all":
+		return a.settings.AutoVerify
+	}
+	return "suspect"
+}
+
+// autoVerify re-checks a finished torrent's files against its piece hashes
+// before the malware scan, when Settings ask for it: always, or only if
+// something during the download could have damaged them. It reports
+// whether to go on and scan: not if damaged pieces were found (they're
+// downloaded again, and the complete, verified files are scanned then).
+func (a *App) autoVerify(ctx context.Context, eng *engine.Engine, t engine.Status) bool {
+	mode := a.autoVerifyMode()
+	a.mu.Lock()
+	reason := ""
+	if s := a.savedFor(t.Hash); s != nil {
+		reason = s.Suspect
+	}
+	if reason == "" && t.Suspect != "" {
+		reason = t.Suspect
+	}
+	done := a.autoVerified[t.Hash]
+	a.mu.Unlock()
+	switch {
+	case mode == "off" || done:
+		return true
+	case reason != "":
+		reason = "because " + reason
+	case mode == "all":
+		reason = "as set in Settings"
+	default:
+		return true
+	}
+	res, err := eng.VerifyAuto(ctx, t.Hash, reason)
+	if err != nil {
+		return false // quitting, reconnecting or busy: tried again next time
+	}
+	a.mu.Lock()
+	if a.autoVerified == nil {
+		a.autoVerified = map[string]bool{}
+	}
+	a.autoVerified[t.Hash] = true
+	if s := a.savedFor(t.Hash); s != nil {
+		s.Suspect = ""
+		a.writeSaved()
+	}
+	a.mu.Unlock()
+	if res.Bad > 0 {
+		runtime.EventsEmit(a.ctx, "notice", fmt.Sprintf(
+			"“%s”: verified %s, %d of %d pieces were damaged (in %v). They're being downloaded again, and the files are scanned for malware once complete.",
+			t.Name, reason, res.Bad, res.Pieces, res.BadFiles))
+		return false
+	}
+	return true
 }

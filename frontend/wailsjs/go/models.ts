@@ -59,6 +59,7 @@ export namespace engine {
 	    bad: number;
 	    badFiles: string[];
 	    at: number;
+	    reason: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new VerifyResult(source);
@@ -70,6 +71,7 @@ export namespace engine {
 	        this.bad = source["bad"];
 	        this.badFiles = source["badFiles"];
 	        this.at = source["at"];
+	        this.reason = source["reason"];
 	    }
 	}
 	export class Status {
@@ -99,6 +101,7 @@ export namespace engine {
 	    verifyProgress: number;
 	    verified?: VerifyResult;
 	    sfv?: SFVStatus;
+	    suspect: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Status(source);
@@ -132,6 +135,7 @@ export namespace engine {
 	        this.verifyProgress = source["verifyProgress"];
 	        this.verified = this.convertValues(source["verified"], VerifyResult);
 	        this.sfv = this.convertValues(source["sfv"], SFVStatus);
+	        this.suspect = source["suspect"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -508,6 +512,7 @@ export namespace main {
 	    skippedVersion: string;
 	    lastUpdateCheck: number;
 	    scanDownloads: boolean;
+	    autoVerify: string;
 	    remoteEnabled: boolean;
 	    remotePort: number;
 	    remoteTailscale: boolean;
@@ -530,6 +535,7 @@ export namespace main {
 	        this.skippedVersion = source["skippedVersion"];
 	        this.lastUpdateCheck = source["lastUpdateCheck"];
 	        this.scanDownloads = source["scanDownloads"];
+	        this.autoVerify = source["autoVerify"];
 	        this.remoteEnabled = source["remoteEnabled"];
 	        this.remotePort = source["remotePort"];
 	        this.remoteTailscale = source["remoteTailscale"];
