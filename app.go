@@ -130,6 +130,10 @@ type savedTorrent struct {
 	Name     string         `json:"name,omitempty"`
 	Size     int64          `json:"size,omitempty"`
 	Warnings []scan.Warning `json:"warnings,omitempty"` // from a .torrent's file list, shown before Start
+	// WarningsAccepted: the user resumed (or started) it despite warnings
+	// about its files, so it isn't paused for them again (see
+	// engine.AddOptions.AcceptWarnings).
+	WarningsAccepted bool `json:"warningsAccepted,omitempty"`
 	// Checked: saved by a version that checks a torrent's paths before it
 	// writes (see engine/ownership.go); every entry this version writes has
 	// it. legacy is set when loading an entry without the field, which only
@@ -612,7 +616,7 @@ func (a *App) startEngine(tun *tunnel.Tunnel, eng *engine.Engine, st VpnStatus) 
 			continue // waiting for the user: not given to the engine yet
 		}
 		// Adopt only what an older version saved: its files are its own.
-		_, err := eng.Add(engine.AddOptions{Source: s.Source, Dir: s.Dir, Skipped: s.Skipped, Paused: s.Paused, Adopt: s.legacy})
+		_, err := eng.Add(engine.AddOptions{Source: s.Source, Dir: s.Dir, Skipped: s.Skipped, Paused: s.Paused, Adopt: s.legacy, AcceptWarnings: s.WarningsAccepted})
 		if err != nil {
 			runtime.LogWarningf(a.ctx, "%s", engine.Redact(fmt.Sprintf("restore %s: %v", s.Hash, err)))
 		}
@@ -1049,8 +1053,11 @@ func (a *App) StartTorrent(hash string) error {
 	a.mu.Lock()
 	s := a.pendingFor(hash)
 	var src, dir string
+	var accepted bool
 	if s != nil {
-		src, dir = s.Source, s.Dir
+		// Its warnings (from a .torrent's file list) were in the banner the
+		// user pressed Start in.
+		src, dir, accepted = s.Source, s.Dir, len(s.Warnings) > 0
 	}
 	a.mu.Unlock()
 	if s == nil {
@@ -1066,10 +1073,13 @@ func (a *App) StartTorrent(hash string) error {
 	if err := ensureDownloadDir(dir); err != nil {
 		return err
 	}
-	if _, err := eng.Add(engine.AddOptions{Source: src, Dir: dir}); err != nil {
+	if _, err := eng.Add(engine.AddOptions{Source: src, Dir: dir, AcceptWarnings: accepted}); err != nil {
 		return err
 	}
-	a.updateSaved(hash, func(s *savedTorrent) { s.Confirm, s.Paused, s.Name, s.Size, s.Checked = false, false, "", 0, true })
+	a.updateSaved(hash, func(s *savedTorrent) {
+		s.Confirm, s.Paused, s.Name, s.Size, s.Checked = false, false, "", 0, true
+		s.WarningsAccepted = s.WarningsAccepted || accepted
+	})
 	return nil
 }
 
@@ -1098,10 +1108,14 @@ func (a *App) setPaused(hash string, paused bool) error {
 	if err != nil {
 		return err
 	}
+	accepted := !paused && eng.HasWarnings(hash) // resumed despite its warnings
 	a.updateSaved(hash, func(s *savedTorrent) {
 		s.Paused = paused
 		if !paused {
 			s.Confirm = false // resumed: the user has accepted it
+		}
+		if accepted {
+			s.WarningsAccepted = true
 		}
 	})
 	return nil
@@ -1117,7 +1131,9 @@ func (a *App) PauseAll() {
 
 func (a *App) ResumeAll() {
 	for _, t := range a.ListTorrents() {
-		if t.State == "paused" && !t.Confirm { // added from outside: the user starts those
+		// Not one added from outside (the user starts those), nor one
+		// paused for looking like a disguised program: one at a time.
+		if t.State == "paused" && !t.Confirm && t.Problem == "" {
 			a.Resume(t.Hash)
 		}
 	}

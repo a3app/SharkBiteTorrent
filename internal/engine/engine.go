@@ -75,6 +75,7 @@ type entry struct {
 	checking  atomic.Bool // verifying existing data after a restart
 	removing  bool        // Remove is deleting its files; guarded by Engine.mu
 	stopped   bool        // blocked, and data transfer turned off; guarded by Engine.mu
+	held      bool        // paused because of its warnings, until resumed; guarded by Engine.mu
 	waiting   bool        // download folder unavailable: data transfer off until it's back; guarded by Engine.mu
 
 	// "Verify files": re-hash finished pieces on disk (see Verify).
@@ -330,7 +331,14 @@ type AddOptions struct {
 	// restoring a torrent after a restart: the storage forgets the progress of
 	// unfinished (.part) files, and verifying recovers it.
 	Recheck bool
+	// AcceptWarnings: the user has seen this torrent's warnings (a disguised
+	// program, see scan.Inspect) and resumed it anyway. Otherwise a torrent
+	// with warnings is paused as soon as its file list arrives.
+	AcceptWarnings bool
 }
+
+// heldMessage is shown for a torrent paused because of its warnings.
+const heldMessage = "it was paused because it looks like a disguised program (see below). Press Resume only if you trust it."
 
 // Add starts a torrent and returns its info hash.
 func (e *Engine) Add(o AddOptions) (string, error) {
@@ -386,6 +394,20 @@ func (e *Engine) Add(o AddOptions) (string, error) {
 				t.DisallowDataDownload() // its files aren't safe to write (shown in the list)
 				t.DisallowDataUpload()
 				return
+			}
+			// Checked now, before the download gets going: a torrent that
+			// looks like a disguised program waits for the user.
+			w := inspect(t)
+			e.mu.Lock()
+			en.warnings, en.inspected = w, true
+			hold := len(w) > 0 && !o.AcceptWarnings && !en.paused
+			if hold {
+				en.paused, en.held = true, true
+			}
+			e.mu.Unlock()
+			if hold {
+				t.DisallowDataDownload()
+				t.DisallowDataUpload()
 			}
 			e.applyPriorities(en)
 			if st.Unavailable() != nil {
@@ -457,11 +479,32 @@ func (e *Engine) Resume(hash string) error {
 		return err
 	}
 	e.mu.Lock()
-	en.paused = false
+	en.paused, en.held = false, false
 	e.mu.Unlock()
 	en.t.AllowDataDownload()
 	en.t.AllowDataUpload()
 	return nil
+}
+
+// HasWarnings reports whether the torrent's file list got warnings (see
+// scan.Inspect): resuming it means the user accepts them.
+func (e *Engine) HasWarnings(hash string) bool {
+	en, err := e.find(hash)
+	if err != nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(en.warnings) > 0
+}
+
+// inspect checks the torrent's file list for disguised programs.
+func inspect(t *torrent.Torrent) []scan.Warning {
+	var fs []scan.File
+	for _, f := range t.Files() {
+		fs = append(fs, scan.File{Path: f.DisplayPath(), Size: f.Length()})
+	}
+	return scan.Inspect(fs)
 }
 
 // waitForFolder keeps the torrent's data transfer off while its download
@@ -820,11 +863,7 @@ func (e *Engine) List() []Status {
 			Seeds:    st.ConnectedSeeders,
 		}
 		if t.Info() != nil && !en.inspected {
-			var fs []scan.File
-			for _, f := range t.Files() {
-				fs = append(fs, scan.File{Path: f.DisplayPath(), Size: f.Length()})
-			}
-			en.warnings, en.inspected = scan.Inspect(fs), true
+			en.warnings, en.inspected = inspect(t), true
 		}
 		row.Warnings = en.warnings
 		row.Verified = en.verified
@@ -866,6 +905,9 @@ func (e *Engine) List() []Status {
 			row.State, row.Problem = "blocked", gone.Error()
 		case en.paused:
 			row.State = "paused"
+			if en.held {
+				row.Problem = heldMessage
+			}
 		case en.checking.Load():
 			row.State = "checking"
 		case t.Info() == nil && st.ActivePeers > 0 && now.Sub(en.added) > metadataStallAfter:
