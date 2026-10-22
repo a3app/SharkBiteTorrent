@@ -2,6 +2,13 @@
 
 What changed in each release of Shark BiteTorrent. The release notes on GitHub are taken from this file, so every release's section should say what users will notice.
 
+## [Unreleased]
+
+### Fixed
+- When a network drive (a mapped drive on Windows, say) disconnected and came back, the torrent resumed but nothing it downloaded was saved: it kept using the connection that had dropped, so every write failed and it downloaded the same pieces over and over. It now reconnects to its files once the drive is back, and a read or write that fails is retried on a fresh connection.
+- **Remove with files** while a torrent's drive was disconnected said it wasn't removed, but the torrent still disappeared from the list the next time the app started. It now stays, untouched, and the message says plainly that nothing was removed.
+- Pieces already downloaded are no longer forgotten when the drive goes away while they're being checked.
+
 ## [0.2.39] - 2026-10-21
 
 ### Added

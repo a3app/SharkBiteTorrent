@@ -164,6 +164,9 @@ func (s *fileStore) reclaim() error {
 		}
 		t.mu.Unlock()
 	}
+	if t != nil {
+		t.dropHandles() // opened over the old connection: they'd fail every write
+	}
 	s.mu.Lock()
 	s.gone = nil
 	s.mu.Unlock()
@@ -251,6 +254,7 @@ func (s *fileStore) OpenTorrent(_ context.Context, info *metainfo.Info, ih metai
 		handles: map[int]*handlePool{},
 		bufs:    map[int]*pieceBuf{},
 		busy:    map[int]int{},
+		stale:   map[int]int{},
 	}
 	paths, err := torrentPaths(s.dir, info)
 	if err == nil {
@@ -321,6 +325,10 @@ type fileTorrent struct {
 	inUse         int         // handles handed out and not yet released, plus MarkCompletes running
 	closeTimedOut bool        // close stopped waiting for inUse
 	busy          map[int]int // handles in use, by file index
+	// stale counts handles in use that were opened before the download
+	// folder went away and came back (dropHandles): closed, not reused,
+	// when they're released.
+	stale map[int]int
 }
 
 // pieceBuf holds a piece's blocks until it's complete. have marks which
@@ -389,7 +397,16 @@ func (t *fileTorrent) acquire(i int, create bool) (*os.File, error) {
 	}
 }
 
-func (t *fileTorrent) release(i int, f *os.File) {
+func (t *fileTorrent) release(i int, f *os.File) { t.giveBack(i, f, false) }
+
+// discard gives back a handle that failed a read or write: it's closed, not
+// reused. On a network drive a handle can go bad for good (the connection
+// dropped and came back) while the folder looks fine; reusing it made every
+// write fail ("An unexpected network error occurred"), so the torrent
+// downloaded the same pieces over and over without saving them.
+func (t *fileTorrent) discard(i int, f *os.File) { t.giveBack(i, f, true) }
+
+func (t *fileTorrent) giveBack(i int, f *os.File, bad bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.inUse--
@@ -401,8 +418,35 @@ func (t *fileTorrent) release(i int, f *os.File) {
 		t.freed.Broadcast() // waitReleased
 		return
 	}
+	if t.stale[i] > 0 {
+		t.stale[i]--
+		bad = true
+	}
+	if bad {
+		f.Close()
+		t.handles[i].open--
+		t.freed.Signal() // a handle can be opened in its place
+		return
+	}
 	t.handles[i].idle = append(t.handles[i].idle, f)
 	t.freed.Signal()
+}
+
+// dropHandles closes the handles opened before the download folder went
+// away (they belong to a connection that no longer exists); those in use
+// are closed when they're given back. New ones are opened as needed.
+func (t *fileTorrent) dropHandles() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for i, pool := range t.handles {
+		for _, f := range pool.idle {
+			f.Close()
+			pool.open--
+		}
+		pool.idle = nil
+		t.stale[i] = t.busy[i]
+	}
+	t.freed.Broadcast()
 }
 
 // waitReleased waits (up to timeout) until the closed torrent's last file
@@ -686,7 +730,11 @@ func (p *filePiece) diskIO(b []byte, off int64, create bool,
 			return n, err
 		}
 		m, err := fn(f, b[n:n+int(e.Length)], e.Start)
-		p.t.release(i, f)
+		if err != nil && !errors.Is(err, io.EOF) {
+			p.t.discard(i, f)
+		} else {
+			p.t.release(i, f)
+		}
 		n += m
 		if err != nil {
 			if p.t.store.checkGone() {
@@ -850,6 +898,12 @@ func (p *filePiece) MarkNotComplete() error {
 		p.t.buffered -= int64(len(buf.data))
 	}
 	p.t.mu.Unlock()
+	// A check that failed because the drive is away read nothing: a piece
+	// recorded as finished keeps its record (forgetting it would download
+	// it again once the drive is back).
+	if p.t.store.Unavailable() != nil {
+		return nil
+	}
 	return p.t.pc.Set(p.key(), false)
 }
 
