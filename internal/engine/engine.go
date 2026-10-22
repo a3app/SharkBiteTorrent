@@ -636,7 +636,7 @@ var ErrNotFound = errors.New("not found")
 
 // ErrFolderUnavailable: Remove with files refused because the torrent's
 // download folder (its drive) isn't there. Nothing was changed.
-var ErrFolderUnavailable = errors.New("its download folder isn't available (is its drive connected?), so it wasn't removed. Connect the drive and try again, or remove it without deleting its files")
+var ErrFolderUnavailable = errors.New("its download folder isn't available (is its drive connected?). Connect the drive and try again, or remove it without deleting its files")
 
 // Remove drops the torrent. If deleteFiles is set, its downloaded files are
 // deleted too: only the files it created (see ownership.go), and only once

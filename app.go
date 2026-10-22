@@ -1218,20 +1218,29 @@ func (a *App) Remove(hash string, deleteFiles bool) error {
 	case <-time.After(1500 * time.Millisecond):
 		go func() {
 			if err := <-done; err != nil && !errors.Is(err, engine.ErrNotFound) {
-				a.notifyError(fmt.Errorf("removed, but some files couldn't be deleted: %w", err))
+				a.notifyError(removeError(err))
 			}
 		}()
+		return nil // the goroutine above forgets it (or keeps it, if refused)
 	}
+	// The goroutine has already forgotten the torrent, unless the remove
+	// was refused because its drive is away: then it stays, untouched.
 	if errors.Is(rmErr, engine.ErrNotFound) {
-		rmErr = nil // already removed (a second click while the first finished)
-	}
-	if err := a.forget(hash); err != nil {
-		return err
+		return nil // already removed (a second click while the first finished)
 	}
 	if rmErr != nil {
-		return fmt.Errorf("removed, but some files couldn't be deleted: %w", rmErr)
+		return removeError(rmErr)
 	}
 	return nil
+}
+
+// removeError says what happened: refused (nothing changed, the torrent
+// stays) or removed with some files left behind.
+func removeError(err error) error {
+	if errors.Is(err, engine.ErrFolderUnavailable) {
+		return fmt.Errorf("not removed: %w", err)
+	}
+	return fmt.Errorf("removed, but some files couldn't be deleted: %w", err)
 }
 
 // forget drops a torrent from the saved list, with the app's copy of its
