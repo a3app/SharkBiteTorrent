@@ -48,11 +48,12 @@ type fileStore struct {
 	adopt    bool   // a torrent saved by an older version: adopt its files if it has no record yet
 
 	mu      sync.Mutex
-	own     *ownership   // set by claim; nil without ownedDir
-	blocked error        // set if the torrent mustn't write (shown in the list)
-	gone    error        // the download folder isn't available (its drive is disconnected); see reclaim
-	ft      *fileTorrent // the torrent's storage, once opened
-	removed bool         // being removed: don't write out buffered pieces on close
+	own     *ownership    // set by claim; nil without ownedDir
+	blocked error         // set if the torrent mustn't write (shown in the list)
+	gone    error         // the download folder isn't available (its drive is disconnected); see reclaim
+	ih      metainfo.Hash // the torrent's, once opened (for its record; see unavailableNow)
+	ft      *fileTorrent  // the torrent's storage, once opened
+	removed bool          // being removed: don't write out buffered pieces on close
 }
 
 // dropping tells the store its torrent is being removed, before it's closed.
@@ -105,10 +106,24 @@ func (s *fileStore) Unavailable() error {
 	return s.gone
 }
 
+// unavailableNow checks whether the download folder can be used now (see
+// folderAway), with what the torrent's record knows once it's opened.
+func (s *fileStore) unavailableNow() error {
+	s.mu.Lock()
+	ih, opened := s.ih, s.ft != nil
+	s.mu.Unlock()
+	record := ""
+	if s.ownedDir != "" && opened {
+		record = recordPath(s.ownedDir, ih, s.dir)
+	}
+	return folderAway(s.dir, record)
+}
+
 // checkGone notes that the download folder has become unavailable, if it
-// has (after a file couldn't be opened or written), and reports whether.
+// has (after a file couldn't be opened, written or found), and reports
+// whether.
 func (s *fileStore) checkGone() bool {
-	err := folderUnavailable(s.dir)
+	err := s.unavailableNow()
 	if err == nil {
 		return false
 	}
@@ -225,7 +240,11 @@ func (s *fileStore) OpenTorrent(_ context.Context, info *metainfo.Info, ih metai
 	}
 	paths, err := torrentPaths(s.dir, info)
 	if err == nil {
-		if gone := folderUnavailable(s.dir); gone != nil {
+		record := ""
+		if s.ownedDir != "" {
+			record = recordPath(s.ownedDir, ih, s.dir)
+		}
+		if gone := folderAway(s.dir, record); gone != nil {
 			// Claimed once it's back (see reclaim): its files, and so its
 			// ownership record, can't be checked now.
 			s.mu.Lock()
@@ -251,7 +270,7 @@ func (s *fileStore) OpenTorrent(_ context.Context, info *metainfo.Info, ih metai
 	}
 	ft.freed = sync.NewCond(&ft.mu)
 	s.mu.Lock()
-	s.ft = ft
+	s.ft, s.ih = ft, ih
 	s.mu.Unlock()
 	return storage.TorrentImpl{
 		Piece: func(p metainfo.Piece) storage.PieceImpl {
@@ -835,6 +854,9 @@ func (p *filePiece) Completion() storage.Completion {
 	ext := segments.Extent{Start: p.p.Offset(), Length: p.p.Length()}
 	for i, e := range p.t.index.LocateIter(ext) {
 		fi, err := os.Stat(p.t.paths[i])
+		if err != nil && p.t.store.checkGone() {
+			return c // the drive went away while running: as above
+		}
 		if err != nil || fi.Size() < e.Start+e.Length {
 			return storage.Completion{Ok: true, Complete: false}
 		}

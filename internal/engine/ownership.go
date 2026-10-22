@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -48,6 +49,59 @@ type ownership struct {
 	dirs    map[string]bool         // folders the store created
 	written bool                    // the record file exists with its header
 	marker  bool                    // instead, an empty v0.2.37 marker: the torrent passed its check then
+	fsType  uint64                  // the download folder's filesystem type (see folderAway); 0: not known
+}
+
+// folderAway is folderUnavailable plus what the torrent's record knows. A
+// drive mounted without an /etc/fstab line (a systemd mount unit, autofs,
+// by hand) leaves an ordinary folder behind when it's away, which
+// folderUnavailable can't tell from the drive; using it would tidy the
+// record of every file and download onto this computer's own disk. So once
+// the record lists files, a download folder on another kind of filesystem
+// than recorded (this computer's btrfs instead of the NAS's cifs), or an
+// empty one, means the drive is away. (Not the device number: a network
+// share gets a new one each time it's mounted.)
+func folderAway(dir, record string) error {
+	if err := folderUnavailable(dir); err != nil {
+		return err
+	}
+	if record == "" {
+		return nil
+	}
+	files, recorded := recordedFolder(record)
+	if files == 0 {
+		return nil
+	}
+	if t, ok := fsType(dir); ok && recorded != 0 && t != recorded {
+		return fmt.Errorf("the download folder %s isn't available: it's on a different drive than the torrent's files (is its drive connected?). The torrent continues when it's back", dir)
+	}
+	if f, err := os.Open(dir); err == nil {
+		_, err = f.Readdirnames(1)
+		f.Close()
+		if err == io.EOF {
+			return fmt.Errorf("the download folder %s is empty, but the torrent's files were there (is its drive connected?). The torrent continues when they're back", dir)
+		}
+	}
+	return nil
+}
+
+// recordedFolder reads how many files a record lists and the filesystem
+// type it noted, without checking anything.
+func recordedFolder(record string) (files int, fsType uint64) {
+	b, err := os.ReadFile(record)
+	if err != nil || !bytes.HasPrefix(b, []byte(ownershipHeader)) {
+		return 0, 0
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.SplitN(line, "\t", 3)
+		switch {
+		case len(f) == 3 && f[0] == "f":
+			files++
+		case len(f) == 3 && f[0] == "s":
+			fsType, _ = strconv.ParseUint(f[1], 16, 64)
+		}
+	}
+	return files, fsType
 }
 
 const ownershipHeader = "sbt-owned 3\t"
@@ -86,7 +140,7 @@ func loadOwnership(ownedDir string, ih metainfo.Hash, dir string, tidy bool) *ow
 	// With its drive disconnected every file would look gone: keep the
 	// entries as recorded (has checks each file when it's used) and leave
 	// the record alone.
-	available := folderUnavailable(o.dir) == nil
+	available := folderAway(o.dir, o.path) == nil
 	if !available {
 		tidy = false
 	}
@@ -118,6 +172,8 @@ func loadOwnership(ownedDir string, ih metainfo.Hash, dir string, tidy bool) *ow
 			o.owned[p] = want
 		case "d":
 			o.dirs[p] = true
+		case "s":
+			o.fsType, _ = strconv.ParseUint(f[1], 16, 64)
 		case "p":
 			rewrite = true
 			pending[p] = f[1]
@@ -315,6 +371,9 @@ func (o *ownership) adopt(paths []string, lengths []int64) error {
 func (o *ownership) saveLocked() error {
 	var b strings.Builder
 	b.WriteString(ownershipHeader + o.dir + "\n")
+	if o.fsType != 0 {
+		b.WriteString("s\t" + strconv.FormatUint(o.fsType, 16) + "\t-\n")
+	}
 	for _, p := range sortedKeys(o.dirs) {
 		if rel, err := filepath.Rel(o.dir, p); err == nil {
 			b.WriteString("d\t-\t" + filepath.ToSlash(rel) + "\n")
@@ -445,6 +504,16 @@ func (s *fileStore) claim(ih metainfo.Hash, info *metainfo.Info, paths []string)
 	// wherever the link points.
 	if err := noLinkedFolders(s.dir, paths); err != nil {
 		return err
+	}
+	// The folder's filesystem, for folderAway (claim only runs while the
+	// folder is available, so this is the drive's).
+	if t, ok := fsType(s.dir); ok && t != o.fsType {
+		o.mu.Lock()
+		o.fsType = t
+		if o.written {
+			o.saveLocked() // a record from before this was noted
+		}
+		o.mu.Unlock()
 	}
 	switch {
 	case !o.written && (s.adopt || o.marker):

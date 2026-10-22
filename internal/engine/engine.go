@@ -481,7 +481,7 @@ func (e *Engine) waitForFolder(en *entry, recheckAfter bool) {
 	en.t.DisallowDataUpload()
 	tick := time.NewTicker(10 * time.Second)
 	defer tick.Stop()
-	for folderUnavailable(en.dir) != nil {
+	for en.storage.unavailableNow() != nil {
 		select {
 		case <-en.t.Closed():
 			return
@@ -528,7 +528,7 @@ func (e *Engine) Remove(hash string, deleteFiles bool) error {
 	}
 	// Refused before anything changes: dropping it first would erase its
 	// progress and take it off the list while its files stay on the drive.
-	if deleteFiles && (en.storage.Unavailable() != nil || folderUnavailable(en.dir) != nil) {
+	if deleteFiles && (en.storage.Unavailable() != nil || en.storage.unavailableNow() != nil) {
 		e.mu.Unlock()
 		return ErrFolderUnavailable
 	}
@@ -565,7 +565,7 @@ func (e *Engine) Remove(hash string, deleteFiles bool) error {
 		}
 		return nil
 	}
-	if en.storage.Unavailable() != nil || folderUnavailable(en.dir) != nil {
+	if en.storage.Unavailable() != nil || en.storage.unavailableNow() != nil {
 		// Its record stays, so adding it again once the drive is back
 		// finds its files as its own.
 		return errors.New("its download folder isn't available (is its drive connected?), so its files weren't deleted")

@@ -561,3 +561,72 @@ func TestFolderGoneWhileRunning(t *testing.T) {
 		t.Error("the download folder was created")
 	}
 }
+
+// A drive mounted without an /etc/fstab line leaves an ordinary folder when
+// it's away. Once the record lists files, that folder counts as away if
+// it's on another kind of filesystem than recorded, or empty; the record
+// isn't tidied, and nothing is claimed or written there.
+func TestFolderAwayUnlistedMount(t *testing.T) {
+	dir, owned := t.TempDir(), t.TempDir()
+	info := multiInfo("Linux", []string{"a.iso"})
+	_, impl := openStore(t, dir, owned, info, hashN(19))
+	if err := writePiece(t, impl, info); err != nil {
+		t.Fatal(err)
+	}
+	impl.Close()
+	rec := recordPath(owned, hashN(19), dir)
+	if files, typ := recordedFolder(rec); files != 1 || typ == 0 {
+		t.Fatalf("record lists %d files, filesystem type %x", files, typ)
+	}
+	if err := folderAway(dir, rec); err != nil {
+		t.Fatalf("away with its files there: %v", err)
+	}
+
+	// The drive is away: the mount point is an empty folder on this
+	// computer's own disk.
+	os.RemoveAll(filepath.Join(dir, "Linux"))
+	before, _ := os.ReadFile(rec)
+	if folderAway(dir, rec) == nil {
+		t.Error("an empty folder whose record lists files isn't away")
+	}
+	st, _ := openStore(t, dir, owned, info, hashN(19))
+	if st.Unavailable() == nil {
+		t.Error("opened as available")
+	}
+	if after, _ := os.ReadFile(rec); !bytes.Equal(after, before) {
+		t.Errorf("record tidied while away:\n%s", after)
+	}
+
+	// Another kind of filesystem than recorded, even if not empty.
+	os.WriteFile(filepath.Join(dir, "something else"), nil, 0o644)
+	b := bytes.Replace(before, []byte("\ns\t"), []byte("\ns\t1"), 1) // a different type
+	os.WriteFile(rec, b, 0o600)
+	if folderAway(dir, rec) == nil {
+		t.Error("a folder on another filesystem than recorded isn't away")
+	}
+
+	// A record with no files yet doesn't hold the folder back.
+	if folderAway(dir, recordPath(owned, hashN(20), dir)) != nil {
+		t.Error("away without any record")
+	}
+}
+
+// A piece finished before the drive dropped mid-run stays finished: the
+// failed stat checks the folder first.
+func TestCompletionAfterDriveDrop(t *testing.T) {
+	base, owned := t.TempDir(), t.TempDir()
+	dir := filepath.Join(base, "Plex")
+	os.Mkdir(dir, 0o755)
+	info := multiInfo("Linux", []string{"a.iso"})
+	st, impl := openStore(t, dir, owned, info, hashN(21))
+	if err := writePiece(t, impl, info); err != nil {
+		t.Fatal(err)
+	}
+	os.Rename(dir, filepath.Join(base, "away"))
+	if c := impl.Piece(info.Piece(0)).Completion(); !c.Ok || !c.Complete {
+		t.Errorf("finished piece reported missing after the drive dropped: %+v", c)
+	}
+	if st.Unavailable() == nil {
+		t.Error("the drop wasn't noticed")
+	}
+}
