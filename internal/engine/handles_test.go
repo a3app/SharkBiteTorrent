@@ -68,3 +68,25 @@ func TestStaleHandlesNotReused(t *testing.T) {
 		t.Errorf("pool: open %d idle %d, want 1 and 1", ft.handles[0].open, len(ft.handles[0].idle))
 	}
 }
+
+// Verify collects failed pieces as they fail, not by looking at what's
+// incomplete afterwards (by then a damaged piece may be downloaded again).
+func TestFailLog(t *testing.T) {
+	info := &metainfo.Info{Name: "f.bin", PieceLength: 16 << 10, Length: 48 << 10, Pieces: make([]byte, 60)}
+	st := newFileStore(t.TempDir(), storage.NewMapPieceCompletion(), "", false)
+	impl, err := st.OpenTorrent(t.Context(), info, hashN(6))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer impl.Close()
+	impl.Piece(info.Piece(2)).MarkNotComplete() // before Verify: not counted
+	stop := st.startFailLog()
+	impl.Piece(info.Piece(1)).MarkNotComplete()
+	impl.Piece(info.Piece(0)).MarkNotComplete()
+	if got := stop(); len(got) != 2 || got[0] != 0 || got[1] != 1 {
+		t.Errorf("failed pieces %v, want [0 1]", got)
+	}
+	if got := stop(); len(got) != 0 {
+		t.Errorf("second stop returned %v", got)
+	}
+}

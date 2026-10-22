@@ -114,11 +114,15 @@
       {:else if torrent.verified}
         {#if torrent.verified.bad === 0}
           <div class="ok">✓ Verified: all {torrent.verified.pieces} finished pieces on disk match the torrent.</div>
+        {:else if torrent.state === 'seeding'}
+          <div class="ok">
+            ✓ Verified: {torrent.verified.bad} damaged {torrent.verified.bad === 1 ? 'piece was' : 'pieces were'} downloaded again
+            ({(torrent.verified.badFiles ?? []).join(', ')}); all {torrent.verified.pieces} now match.
+          </div>
         {:else}
           <div class="threat">
             ⚠ {torrent.verified.bad} of {torrent.verified.pieces} pieces didn't match
-            ({(torrent.verified.badFiles ?? []).join(', ')}).
-            {torrent.state === 'seeding' ? 'They were downloaded again.' : 'They are being downloaded again.'}
+            ({(torrent.verified.badFiles ?? []).join(', ')}). They are being downloaded again.
           </div>
         {/if}
       {/if}

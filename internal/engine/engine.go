@@ -73,12 +73,14 @@ type entry struct {
 	warnings  []scan.Warning // from the file list, computed once metadata arrives
 	inspected bool
 	checking  atomic.Bool // verifying existing data after a restart
-	removing  bool        // Remove is deleting its files; guarded by Engine.mu
-	stopped   bool        // blocked, and data transfer turned off; guarded by Engine.mu
-	writeErr  error       // writing its data failed (not its drive going away); paused until resumed; guarded by Engine.mu
-	held      bool        // paused because of its warnings, until accepted and resumed; guarded by Engine.mu
-	accepted  bool        // the user accepted its warnings (see AcceptWarnings); guarded by Engine.mu
-	waiting   bool        // download folder unavailable: data transfer off until it's back; guarded by Engine.mu
+	// findingPeers: a DHT lookup for it is running (see findPeers).
+	findingPeers atomic.Bool
+	removing     bool  // Remove is deleting its files; guarded by Engine.mu
+	stopped      bool  // blocked, and data transfer turned off; guarded by Engine.mu
+	writeErr     error // writing its data failed (not its drive going away); paused until resumed; guarded by Engine.mu
+	held         bool  // paused because of its warnings, until accepted and resumed; guarded by Engine.mu
+	accepted     bool  // the user accepted its warnings (see AcceptWarnings); guarded by Engine.mu
+	waiting      bool  // download folder unavailable: data transfer off until it's back; guarded by Engine.mu
 
 	// "Verify files": re-hash finished pieces on disk (see Verify).
 	verifying            atomic.Bool
@@ -206,7 +208,40 @@ func New(tun *tunnel.Tunnel, opts Options) (*Engine, error) {
 	}
 	e.dht = ds
 	cl.AddDhtServer(torrent.AnacrolixDhtServerWrapper{Server: ds})
+	go e.peerWatchdog()
 	return e, nil
+}
+
+// peerWatchdog asks the DHT again, once a minute, for every torrent that
+// still needs data (or its file list) but has no peers connected. The
+// library's own announcer only runs when something wakes it, and a torrent
+// could sit at 0 peers indefinitely: one restored at start from a magnet
+// link with no trackers stayed at "Fetching metadata" until Pause/Resume.
+func (e *Engine) peerWatchdog() {
+	tick := time.NewTicker(time.Minute)
+	defer tick.Stop()
+	for {
+		select {
+		case <-e.cl.Closed():
+			return
+		case <-tick.C:
+		}
+		e.mu.Lock()
+		var idle []*entry
+		for _, en := range e.entries {
+			if en.t != nil && !en.paused && !en.waiting && !en.removing && !en.stopped && !en.held {
+				idle = append(idle, en)
+			}
+		}
+		e.mu.Unlock()
+		for _, en := range idle {
+			t := en.t
+			if t.Stats().ActivePeers > 0 || t.Info() != nil && t.BytesMissing() == 0 {
+				continue
+			}
+			e.findPeers(en)
+		}
+	}
 }
 
 // newDirect starts the client on the computer's own network, for users who
@@ -561,6 +596,32 @@ func (e *Engine) resumeLocked(en *entry) {
 		en.t.AllowDataDownload()
 	}
 	en.t.AllowDataUpload()
+	e.findPeers(en)
+}
+
+// findPeers asks the DHT for the torrent's peers now. The library looks for
+// peers only when something wakes its announcer, and a torrent that was
+// finished (connected to no one: seeders drop each other) and needs pieces
+// again, after Verify found damaged ones or its drive came back, was never
+// woken: it sat at 0 peers until the app restarted.
+func (e *Engine) findPeers(en *entry) {
+	if e.dht == nil || en.t == nil || !en.findingPeers.CompareAndSwap(false, true) {
+		return // one lookup at a time per torrent
+	}
+	t, ds := en.t, e.dht
+	go func() {
+		defer en.findingPeers.Store(false)
+		done, stop, err := t.AnnounceToDht(torrent.AnacrolixDhtServerWrapper{Server: ds})
+		if err != nil {
+			return
+		}
+		defer stop()
+		select {
+		case <-done:
+		case <-t.Closed():
+		case <-time.After(2 * time.Minute):
+		}
+	}()
 }
 
 // HasWarnings reports whether the torrent's file list got warnings (see
@@ -574,7 +635,6 @@ func (e *Engine) HasWarnings(hash string) bool {
 	defer e.mu.Unlock()
 	return len(en.warnings) > 0 && !en.accepted
 }
-
 
 // inspect checks the torrent's file list for disguised programs.
 func inspect(t *torrent.Torrent) []scan.Warning {
@@ -624,6 +684,7 @@ func (e *Engine) waitForFolder(en *entry, recheckAfter bool) {
 			en.t.AllowDataDownload()
 		}
 		en.t.AllowDataUpload()
+		e.findPeers(en)
 	}
 	e.mu.Unlock()
 	if resume && recheckAfter {
@@ -1092,8 +1153,12 @@ func (e *Engine) Verify(ctx context.Context, hash string) (*VerifyResult, error)
 	}
 	en.verifyDone.Store(0)
 	en.verifyOf.Store(int64(len(pieces)))
+	// Failures are collected as they happen: by the time all pieces are
+	// checked, a damaged one found early may already be downloaded again,
+	// and counting incomplete pieces at the end then reported "all match".
+	stopLog := en.storage.startFailLog()
+	defer stopLog() // also on the early returns (a second call returns nothing)
 
-	var mu sync.Mutex
 	var bad []int
 	sem := make(chan struct{}, 16)
 	var wg sync.WaitGroup
@@ -1107,18 +1172,43 @@ func (e *Engine) Verify(ctx context.Context, hash string) (*VerifyResult, error)
 		wg.Add(1)
 		go func(i int) {
 			defer func() { <-sem; wg.Done() }()
-			err := t.Piece(i).VerifyDataContext(ctx)
-			if err == nil && !t.PieceState(i).Complete {
-				mu.Lock()
-				bad = append(bad, i)
-				mu.Unlock()
-			}
+			t.Piece(i).VerifyDataContext(ctx)
 			en.verifyDone.Add(1)
 		}(i)
 	}
 	wg.Wait()
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
+	}
+	// VerifyData can return before the library has recorded the result, so
+	// counting right away sometimes found no damaged pieces ("all match")
+	// while the library then marked some missing. Wait until none of them
+	// is still being checked or marked, then count.
+	settle := time.Now().Add(15 * time.Second)
+	for time.Now().Before(settle) {
+		busy := false
+		for _, i := range pieces {
+			if s := t.PieceState(i); s.Checking || s.Hashing || s.QueuedForHash || s.Marking {
+				busy = true
+				break
+			}
+		}
+		if !busy {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	verifying := map[int]bool{}
+	for _, i := range pieces {
+		verifying[i] = true
+	}
+	for _, i := range stopLog() {
+		if verifying[i] { // not a piece that just failed while downloading
+			bad = append(bad, i)
+		}
+	}
+	if len(bad) > 0 {
+		e.findPeers(en) // it needs pieces again: find someone to get them from
 	}
 
 	res := &VerifyResult{Pieces: len(pieces), Bad: len(bad), BadFiles: []string{}, At: time.Now().Unix()}

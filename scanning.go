@@ -309,8 +309,10 @@ func (a *App) VerifyTorrent(hash string) error {
 			a.mu.Unlock()
 		}
 		if res.Bad > 0 {
-			runtime.EventsEmit(a.ctx, "error", fmt.Sprintf(
-				"⚠ “%s”: %d of %d pieces didn't match and are being downloaded again (in %v).", name, res.Bad, res.Pieces, res.BadFiles))
+			// A notice, not an error: nothing for the user to do, and the
+			// pieces are usually downloaded again within moments.
+			runtime.EventsEmit(a.ctx, "notice", fmt.Sprintf(
+				"“%s”: %d of %d pieces on disk were damaged (in %v) and are being downloaded again.", name, res.Bad, res.Pieces, res.BadFiles))
 		}
 	}()
 	return nil

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -329,6 +330,9 @@ type fileTorrent struct {
 	// folder went away and came back (dropHandles): closed, not reused,
 	// when they're released.
 	stale map[int]int
+	// failLog, while Verify runs, collects the pieces that failed their
+	// check (see MarkNotComplete); nil otherwise.
+	failLog map[int]bool
 }
 
 // pieceBuf holds a piece's blocks until it's complete. have marks which
@@ -928,6 +932,9 @@ func (p *filePiece) MarkComplete() error {
 func (p *filePiece) MarkNotComplete() error {
 	idx := p.p.Index()
 	p.t.mu.Lock()
+	if p.t.failLog != nil {
+		p.t.failLog[idx] = true
+	}
 	if buf := p.t.bufs[idx]; buf != nil {
 		delete(p.t.bufs, idx) // failed the hash check: discard
 		p.t.buffered -= int64(len(buf.data))
@@ -992,5 +999,30 @@ func overlay(buf *pieceBuf, b []byte, off int64) {
 		lo := max(i*blockSize, off)
 		hi := min((i+1)*blockSize, off+int64(len(b)), int64(len(buf.data)))
 		copy(b[lo-off:hi-off], buf.data[lo:hi])
+	}
+}
+
+// startFailLog begins collecting the pieces that fail their check; the
+// returned func stops and returns them, sorted.
+func (s *fileStore) startFailLog() func() []int {
+	s.mu.Lock()
+	t := s.ft
+	s.mu.Unlock()
+	if t == nil {
+		return func() []int { return nil }
+	}
+	t.mu.Lock()
+	t.failLog = map[int]bool{}
+	t.mu.Unlock()
+	return func() []int {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		out := make([]int, 0, len(t.failLog))
+		for i := range t.failLog {
+			out = append(out, i)
+		}
+		t.failLog = nil
+		slices.Sort(out)
+		return out
 	}
 }
