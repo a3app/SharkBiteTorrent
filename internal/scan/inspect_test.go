@@ -55,7 +55,11 @@ func TestInspectVideoReleaseNames(t *testing.T) {
 		{{"Movie.2026.REMUX.HDR.exe", 1, ""}},
 		{{"Movie (2026) [YTS] FullHD.exe", 1, ""}},
 		{{"Movie.2026.UHD.4K.HDR10.DV.exe", 1, ""}},
-		{{"movie.mp4          .exe", 1, ""}}, // padding before the real extension
+		{{"movie.mp4          .exe", 1, ""}},          // padding before the real extension
+		{{"movie.mp4\u3000\u3000.exe", 1, ""}},        // ideographic spaces
+		{{"movie.mp4\u2800\u2800.exe", 1, ""}},        // Braille blanks
+		{{"movie.mp4\u00a0\u200b.exe", 1, ""}},        // no-break space, zero-width space
+		{{"Film.2026.1080p.WEB-DL.iso", 2 << 20, ""}}, // far too small to be a film
 	} {
 		if w := Inspect(files); len(w) != 1 {
 			t.Errorf("%v: %d warnings %+v, want 1", files, len(w), w)

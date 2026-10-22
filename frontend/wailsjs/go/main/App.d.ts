@@ -86,7 +86,7 @@ export function Remove(arg1:string,arg2:boolean):Promise<void>;
 
 export function RemoveRemoteDevice(arg1:string):Promise<void>;
 
-export function Resume(arg1:string):Promise<void>;
+export function Resume(arg1:string,arg2:number):Promise<void>;
 
 export function ResumeAll():Promise<void>;
 

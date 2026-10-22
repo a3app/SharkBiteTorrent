@@ -296,7 +296,7 @@
       {searching ? '← Torrents' : 'Search'}
     </button>
     <span class="sep"></span>
-    <button onclick={() => sel && run(() => Resume(sel.hash))} disabled={!sel || sel.state !== 'paused'}>Resume</button>
+    <button onclick={() => sel && run(() => Resume(sel.hash, (sel.warnings ?? []).length))} disabled={!sel || sel.state !== 'paused'}>Resume</button>
     <button onclick={() => sel && run(() => Pause(sel.hash))} disabled={!sel || sel.state === 'paused'}>Pause</button>
     <button onclick={() => { removing = sel ?? null; deleteFiles = false }} disabled={!sel || removingNow.has(sel.hash)}>Remove…</button>
   </div>
@@ -442,7 +442,7 @@
   <div class="menu" role="menu" style="left:{menu.x}px; top:{menu.y}px">
     <button role="menuitem" onclick={() => menuAction(t => OpenFolder(t.hash))}>Show files</button>
     {#if menu.t.state === 'paused'}
-      <button role="menuitem" onclick={() => menuAction(t => Resume(t.hash))}>Resume</button>
+      <button role="menuitem" onclick={() => menuAction(t => Resume(t.hash, (t.warnings ?? []).length))}>Resume</button>
     {:else}
       <button role="menuitem" onclick={() => menuAction(t => Pause(t.hash))}>Pause</button>
     {/if}

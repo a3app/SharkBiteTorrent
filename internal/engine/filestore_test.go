@@ -698,3 +698,56 @@ func TestCompletionAfterDriveDrop(t *testing.T) {
 		t.Error("the drop wasn't noticed")
 	}
 }
+
+// A record without a mount point (from v0.2.38, say) whose files are all
+// missing at once waits: claiming it would note this computer's disk as the
+// drive, download onto it, then refuse the real files once the drive is
+// back. When they're back it's claimed with its own files.
+func TestLegacyAllMissingWaits(t *testing.T) {
+	base, owned := t.TempDir(), t.TempDir()
+	dir := filepath.Join(base, "Plex")
+	os.Mkdir(dir, 0o755)
+	info := multiInfo("Show", []string{"a"}, []string{"b"})
+	_, impl := openStore(t, dir, owned, info, hashN(25))
+	writePiece(t, impl, info)
+	impl.Close()
+	setMount(t, owned, hashN(25), dir, "") // an older record
+	rec := recordPath(owned, hashN(25), dir)
+	before, _ := os.ReadFile(rec)
+	os.Rename(dir, filepath.Join(base, "drive"))
+	os.Mkdir(dir, 0o755) // the empty mount point
+	st, impl := openStore(t, dir, owned, info, hashN(25))
+	if st.Unavailable() == nil {
+		t.Fatal("claimed with every file missing")
+	}
+	if writePiece(t, impl, info) == nil {
+		t.Error("wrote onto the empty mount point")
+	}
+	if after, _ := os.ReadFile(rec); !bytes.Equal(after, before) {
+		t.Errorf("record changed while waiting:\n%s", after)
+	}
+	os.Remove(dir)
+	os.Rename(filepath.Join(base, "drive"), dir)
+	if st.unavailableNow() != nil {
+		t.Fatal("still waiting with the files back")
+	}
+	if err := st.reclaim(); err != nil || len(st.files()) != 1 {
+		t.Fatalf("reclaim: %v, files %v", err, st.files())
+	}
+	if recordedMount(rec) == "" {
+		t.Error("mount point not noted once the drive was there")
+	}
+}
+
+// A download folder reached through a link is judged by where the link
+// points: the link's own folder says nothing about the drive.
+func TestMountRootThroughLink(t *testing.T) {
+	target := t.TempDir()
+	link := filepath.Join(t.TempDir(), "Media")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	if got, want := mountRoot(link), mountRoot(target); got != want || got == link {
+		t.Errorf("mountRoot(link) = %q, want %q", got, want)
+	}
+}

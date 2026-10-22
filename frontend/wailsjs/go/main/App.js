@@ -162,8 +162,8 @@ export function RemoveRemoteDevice(arg1) {
   return window['go']['main']['App']['RemoveRemoteDevice'](arg1);
 }
 
-export function Resume(arg1) {
-  return window['go']['main']['App']['Resume'](arg1);
+export function Resume(arg1, arg2) {
+  return window['go']['main']['App']['Resume'](arg1, arg2);
 }
 
 export function ResumeAll() {

@@ -86,6 +86,7 @@ export namespace engine {
 	    seeds: number;
 	    warnings: scan.Warning[];
 	    problem: string;
+	    held: boolean;
 	    confirm: boolean;
 	    scanState: string;
 	    scanEngine: string;
@@ -118,6 +119,7 @@ export namespace engine {
 	        this.seeds = source["seeds"];
 	        this.warnings = this.convertValues(source["warnings"], scan.Warning);
 	        this.problem = source["problem"];
+	        this.held = source["held"];
 	        this.confirm = source["confirm"];
 	        this.scanState = source["scanState"];
 	        this.scanEngine = source["scanEngine"];

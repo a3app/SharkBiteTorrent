@@ -1097,14 +1097,23 @@ func (a *App) startTorrent(hash string, sawWarnings bool) error {
 func (a *App) Pause(hash string) error { return a.setPaused(hash, true, false) }
 
 // Resume is the window's Resume, where a torrent's warnings are shown:
-// resuming one with warnings accepts them.
-func (a *App) Resume(hash string) error { return a.setPaused(hash, false, true) }
+// resuming one accepts the warnings shown (their number, as displayed;
+// see engine.ResumeAccepting).
+func (a *App) Resume(hash string, shownWarnings int) error {
+	return a.setPausedShown(hash, false, true, shownWarnings)
+}
 
 // resumeRemote is the phone's Resume: the phone page doesn't show warnings,
 // so a torrent with warnings the user hasn't accepted isn't resumed.
 func (a *App) resumeRemote(hash string) error { return a.setPaused(hash, false, false) }
 
 func (a *App) setPaused(hash string, paused, sawWarnings bool) error {
+	return a.setPausedShown(hash, paused, sawWarnings, -1)
+}
+
+// setPausedShown: shown is how many warnings the window displayed for it
+// (-1: unknown, from a Start in the outside-add banner, which showed them).
+func (a *App) setPausedShown(hash string, paused, sawWarnings bool, shown int) error {
 	a.mu.Lock()
 	waiting := a.pendingFor(hash) != nil
 	a.mu.Unlock()
@@ -1119,16 +1128,12 @@ func (a *App) setPaused(hash string, paused, sawWarnings bool) error {
 		return err
 	}
 	accepted := false
-	if !paused && sawWarnings && eng.HasWarnings(hash) {
-		// Resumed in the window despite its warnings.
-		if err := eng.AcceptWarnings(hash); err != nil {
-			return err
-		}
-		accepted = true
-	}
-	if paused {
+	switch {
+	case paused:
 		err = eng.Pause(hash)
-	} else {
+	case sawWarnings && shown >= 0:
+		accepted, err = eng.ResumeAccepting(hash, shown)
+	default:
 		err = eng.Resume(hash) // engine.ErrWarnings if they're not accepted
 	}
 	if err != nil {

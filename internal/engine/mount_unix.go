@@ -8,10 +8,16 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// mountRoot is the mount point dir is on: the folder at or above it whose
-// parent is on another device ("/" for the root filesystem).
+// mountRoot is the mount point dir is on: the folder at or above it (links
+// resolved) whose parent is on another device ("/" for the root
+// filesystem).
 func mountRoot(dir string) string {
-	p := filepath.Clean(dir)
+	// Links resolved first: for ~/Media -> /mnt/nas the mount point is
+	// /mnt/nas, and a link's own folder says nothing about the drive.
+	p, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		p = filepath.Clean(dir)
+	}
 	dev, ok := devOf(p)
 	if !ok {
 		return ""

@@ -31,6 +31,7 @@ var executable = set(
 	".exe", ".scr", ".com", ".pif", ".bat", ".cmd", ".vbs", ".vbe", ".js", ".jse",
 	".wsf", ".wsh", ".ps1", ".msi", ".msp", ".hta", ".cpl", ".jar", ".reg", ".lnk",
 	".url", ".scf", ".chm", ".msix", ".appx", ".xll", ".library-ms", ".py",
+	".msc", ".application", ".appref-ms", ".settingcontent-ms", ".psm1", ".wsc", ".sct", ".diagcab",
 	// Office documents with macros
 	".docm", ".xlsm", ".pptm",
 	// Disk images: opening one gets around Mark of the Web
@@ -102,6 +103,10 @@ func videoRelease(s string) string {
 	return ""
 }
 
+func isPadding(r rune) bool {
+	return r == '.' || unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) || r == '\u2800' || r == '\u3164' || r == '\u115f' || r == '\u1160' || r == '\uffa0'
+}
+
 // diskImage files are in executable (opening one gets around Mark of the
 // Web) but a full-disc film rip is one too, so they aren't judged by name.
 var diskImage = set(".iso", ".img", ".vhd", ".vhdx")
@@ -169,9 +174,10 @@ func Inspect(files []File) []Warning {
 			continue
 		}
 		base := strings.ToLower(strings.TrimRight(path.Base(f.Path), ". "))
-		// Spaces before the real extension ("movie.mp4      .exe") hide it
-		// in narrow columns.
-		inner := path.Ext(strings.TrimRight(strings.TrimSuffix(base, e), ". "))
+		// Padding before the real extension ("movie.mp4      .exe") hides
+		// it in narrow columns: spaces of any kind, invisible formatting
+		// characters, and the blank-looking Braille and Hangul fillers.
+		inner := path.Ext(strings.TrimRightFunc(strings.TrimSuffix(base, e), isPadding))
 		switch {
 		case inner != "" && (media[inner] || docLike[inner]):
 			out = append(out, Warning{f.Path, "A program disguised as a " + strings.TrimPrefix(inner, ".") + " file (double extension)."})
@@ -180,6 +186,12 @@ func Inspect(files []File) []Warning {
 		case mostlyMedia || hasVideo:
 			out = append(out, Warning{f.Path, "A program or script inside a video/music torrent. Media files never need one to play."})
 		case diskImage[e]:
+			// A full-disc film rip is a disk image too, but tens of GB; a
+			// small one named like a film is the disc-image-with-a-shortcut
+			// trick.
+			if w := videoRelease(f.Top + "/" + path.Base(f.Path)); w != "" && f.Size < 500<<20 {
+				out = append(out, Warning{f.Path, "A disk image named like a video release (\"" + w + "\") but far too small to be a film. Opening it can run a program inside."})
+			}
 		default:
 			// Its own name and the torrent's; not folders inside, where a
 			// video tool keeps its encoders ("x265/x265.exe").

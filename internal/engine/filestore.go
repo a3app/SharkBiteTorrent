@@ -51,7 +51,7 @@ type fileStore struct {
 	own     *ownership    // set by claim; nil without ownedDir
 	blocked error         // set if the torrent mustn't write (shown in the list)
 	gone    error         // the download folder isn't available (its drive is disconnected); see reclaim
-	ih      metainfo.Hash // the torrent's, once opened
+	ih      metainfo.Hash // the torrent's, once it's being opened
 	mount   string        // the mount point its record noted (see folderAway)
 	ft      *fileTorrent  // the torrent's storage, once opened
 	removed bool          // being removed: don't write out buffered pieces on close
@@ -111,9 +111,23 @@ func (s *fileStore) Unavailable() error {
 // folderAway), with the mount point the torrent's record noted.
 func (s *fileStore) unavailableNow() error {
 	s.mu.Lock()
-	mount := s.mount
+	mount, ih := s.mount, s.ih
 	s.mu.Unlock()
-	return folderAway(s.dir, mount)
+	if err := folderAway(s.dir, mount); err != nil {
+		return err
+	}
+	// A record from before mount points were noted (or never claimed
+	// while its drive was there): if every file it lists is missing at
+	// once, its drive is more likely away than the files deleted. Claiming
+	// it now would note this computer's disk as the drive, download onto
+	// it, and then refuse the real files once the drive is back. So it
+	// waits for a file to reappear. (Not on Windows, which notes no mount
+	// points: a drive that's away there has no folder at all.)
+	if mount == "" && s.ownedDir != "" && ih != (metainfo.Hash{}) && mountRoot("/") != "" &&
+		allListedMissing(recordPath(s.ownedDir, ih, s.dir), s.dir) {
+		return fmt.Errorf("none of the torrent's files are in %s (is its drive connected?). The torrent continues when they're back; if you deleted them, remove the torrent and add it again", s.dir)
+	}
+	return nil
 }
 
 // checkGone notes that the download folder has become unavailable, if it
@@ -225,6 +239,9 @@ const (
 )
 
 func (s *fileStore) OpenTorrent(_ context.Context, info *metainfo.Info, ih metainfo.Hash) (storage.TorrentImpl, error) {
+	s.mu.Lock()
+	s.ih = ih // for its record, from here on (see unavailableNow)
+	s.mu.Unlock()
 	ft := &fileTorrent{
 		store:   s,
 		info:    info,
@@ -268,7 +285,7 @@ func (s *fileStore) OpenTorrent(_ context.Context, info *metainfo.Info, ih metai
 	}
 	ft.freed = sync.NewCond(&ft.mu)
 	s.mu.Lock()
-	s.ft, s.ih = ft, ih
+	s.ft = ft
 	s.mu.Unlock()
 	return storage.TorrentImpl{
 		Piece: func(p metainfo.Piece) storage.PieceImpl {

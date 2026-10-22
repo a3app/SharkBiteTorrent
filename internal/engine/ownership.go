@@ -71,6 +71,31 @@ func folderAway(dir, mount string) error {
 	return nil
 }
 
+// allListedMissing reports whether a record lists files and none of them
+// is there (see fileStore.unavailableNow).
+func allListedMissing(record, dir string) bool {
+	b, err := os.ReadFile(record)
+	if err != nil || !bytes.HasPrefix(b, []byte(ownershipHeader)) {
+		return false
+	}
+	listed := false
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.SplitN(line, "\t", 3)
+		if len(f) != 3 || f[0] != "f" {
+			continue
+		}
+		p := filepath.Join(dir, filepath.FromSlash(f[2]))
+		if !isSub(dir, p) {
+			continue
+		}
+		listed = true
+		if _, err := os.Lstat(p); !errors.Is(err, fs.ErrNotExist) {
+			return false
+		}
+	}
+	return listed
+}
+
 // recordedMount reads the mount point a record noted, without checking
 // anything.
 func recordedMount(record string) string {
