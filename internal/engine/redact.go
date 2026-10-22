@@ -26,8 +26,17 @@ func Redact(s string) string {
 }
 
 func redactingLogger() *slog.Logger {
+	// SBT_LOG_LEVEL=debug or info: more detail for diagnosing (trackers,
+	// peers); warnings only otherwise.
+	level := slog.LevelWarn
+	switch os.Getenv("SBT_LOG_LEVEL") {
+	case "debug":
+		level = slog.LevelDebug
+	case "info":
+		level = slog.LevelInfo
+	}
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelWarn,
+		Level: level,
 		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
 			switch v := a.Value.Resolve(); v.Kind() {
 			case slog.KindString:
